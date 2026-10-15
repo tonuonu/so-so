@@ -52,7 +52,9 @@ command adapters, match rules, exclusions, specialists, and a default route. Mod
 preferences are translated into validated internal policy and retained with the
 goal. Explicit policy determines eligible models; context limits and quota
 availability then determine which eligible model receives the call. A small local
-model or your own command can classify jobs into named routes.
+model or your own command can classify jobs into named routes. Initial policy
+setup currently needs a discoverable Ollama service or an installed Codex, Claude
+or Kimi CLI; a custom API or command alone is not yet sufficient to bootstrap it.
 
 ## What happens
 
@@ -78,9 +80,12 @@ can run in parallel isolated worktrees; delivery integrates reviewed steps in or
 ## Current evidence and limits
 
 See the [validation record](docs/validation.md) for deterministic tests, live trials,
-rejected candidates and self-improvement evidence. The full single-command journey
-and mixed Qwen/Kimi trials are still undergoing validation; do not interpret earlier
-small examples as proof of arbitrary autonomous application delivery.
+rejected candidates and self-improvement evidence. Live single-command trials with RTX Qwen, a small RTX router and Kimi completed
+an expense ledger (19/19 external checks) and a todo service (20/20). A third
+Minesweeper project has accepted logic passing 9/9 core checks, but its UI and
+generated test integration remain unfinished. The runner passes 169 automated
+tests and Linux CI on Python 3.11–3.13. These are small-project results, not proof
+of arbitrary autonomous application delivery.
 
 The runtime itself uses Python's standard library. Bootstrap can provision Python
 locally and install Git through supported Linux package managers when permission

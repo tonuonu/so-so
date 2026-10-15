@@ -190,3 +190,18 @@ A useful but rejected draft can receive up to three repairs with concrete review
 feedback. It remains separate from accepted source and must pass fresh evaluation
 and review. Invalid evaluations, protected-file changes and exhausted repair
 attempts cannot be accepted through this continuation path.
+
+## Third mixed-model project: Minesweeper core
+
+Accepted increment `f4e803401ba586063f12df43fd2bbc41f3ac1c01` passed all nine
+independent core checks: board size/mine count, safe first click across 30 seeds,
+determinism, independently recomputed neighbor counts, flood reveal, flag count,
+win/loss and reset. The external harness adapts the exported API names without
+changing application code. See the [record](evidence/minesweeper-progress.json)
+and [generated source](evidence/minesweeper-progress.patch).
+
+This third project remains unfinished: no browser UI, timer or keyboard controls
+were verified, and its generated test file has an import mismatch. The controller
+accepted useful logic, not goal completion; implementation continues. These three
+trials show two completed applications and one useful partial implementation,
+not a guarantee of completing an arbitrary assignment.

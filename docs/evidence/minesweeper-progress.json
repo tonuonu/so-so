@@ -1,0 +1,61 @@
+{
+  "kind": "External snapshot game-logic checks",
+  "checks": [
+    {
+      "name": "9x9 board and exactly ten mines",
+      "ok": true
+    },
+    {
+      "name": "safe first click across 30 seeds",
+      "ok": true
+    },
+    {
+      "name": "same seed and click reproduce mine layout",
+      "ok": true
+    },
+    {
+      "name": "neighbor counts independently recomputed",
+      "ok": true
+    },
+    {
+      "name": "first empty region floods multiple cells",
+      "ok": true
+    },
+    {
+      "name": "flag decrements remaining mine count",
+      "ok": true
+    },
+    {
+      "name": "revealing mine loses",
+      "ok": true
+    },
+    {
+      "name": "revealing all safe cells wins",
+      "ok": true
+    },
+    {
+      "name": "restart clears reveals and flags",
+      "ok": true
+    }
+  ],
+  "limitations": [
+    "Browser UI, timer, keyboard controls and rendering not tested.",
+    "Accepted incremental game logic; no browser page yet."
+  ],
+  "provenance": {
+    "entrypoint": "./so-so with INTENT.md",
+    "head": "f4e803401ba586063f12df43fd2bbc41f3ac1c01",
+    "status": "accepted partial progress; goal unfinished",
+    "router": "existing RTX gemma4:e2b on CPU",
+    "worker_models": [
+      "RTX Qwen3.8-27B Q4_K_M",
+      "configured Kimi CLI"
+    ],
+    "files": {
+      "game.js": "d18fb22ec9c384dcc4a08cc40632d11fd7625403632d03c532b5a54e09b04a04",
+      "tests.js": "1d76fc6a705be97d341a1db5734b597440139e5ec29223af5db1a1c3a0421865"
+    },
+    "generated_test_result": "node tests.js fails: TypeError: createGame is not a function; module exports an object containing createGame",
+    "external_harness": "Only adapts exported API names; does not alter application source."
+  }
+}
