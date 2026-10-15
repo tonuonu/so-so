@@ -2,6 +2,7 @@ import json
 from pathlib import Path
 import tempfile
 import time
+import threading
 import unittest
 from unittest.mock import patch
 from soso.models import Router, Budget, ModelUnavailable, ModelOutputTruncated
@@ -182,3 +183,121 @@ class RoutingPolicyTests(unittest.TestCase):
                           'selector': {'model': 'triage', 'routes': {'code': ['qwen']}}}
         with self.assertRaisesRegex(ValueError, 'unreachable'):
             Router(cfg, Budget(10, 30), lambda *a, **k: None)
+
+
+class AiluminateRoutingTests(unittest.TestCase):
+    def policy(self):
+        return {'models': {n: {'kind': 'ollama', 'model': n} for n in ('triage', 'gemma', 'qwen', 'main')},
+                'routes': {'worker': ['gemma'], 'planner': ['main'], 'reviewer': ['main']},
+                'routing': {'rules': [{'role': r, 'models': ['main']} for r in ('planner', 'reviewer')],
+                            'selector': {'model': 'triage', 'taxonomy': 'ailuminate',
+                                         'routes': {'ordinary': ['gemma', 'qwen'], 'sensitive': ['qwen'], 'uncertain': ['qwen']}},
+                            'default': ['gemma', 'qwen']}}
+
+    def test_each_class_selects_declared_destination_and_only_calls_classifier(self):
+        from unittest.mock import patch
+        import json
+        for label, expected in [('ordinary', ['gemma', 'qwen']), ('sensitive', ['qwen']), ('uncertain', ['qwen'])]:
+            router = Router(self.policy(), Budget(5, 30), lambda *a, **k: None)
+            with patch.object(router, '_call', return_value=json.dumps({'route': label})) as call:
+                self.assertEqual(router._select('worker', 'A sample task', Path.cwd()), expected)
+                self.assertEqual(call.call_count, 1)
+                self.assertEqual(call.call_args.args[0]['model'], 'triage')
+                self.assertIn('not a verdict of harmful', call.call_args.args[1])
+                self.assertEqual(set(call.call_args.args[0]['response_schema']['properties']['route']['enum']), {'ordinary', 'sensitive', 'uncertain'})
+
+    def test_main_model_roles_bypass_worker_classifier(self):
+        from unittest.mock import patch
+        router = Router(self.policy(), Budget(5, 30), lambda *a, **k: None)
+        with patch.object(router, '_call') as call:
+            for role in ('planner', 'reviewer'):
+                self.assertEqual(router._select(role, 'A sample task', Path.cwd()), ['main'])
+            call.assert_not_called()
+
+    def test_invalid_label_uses_explicit_default(self):
+        from unittest.mock import patch
+        router = Router(self.policy(), Budget(5, 30), lambda *a, **k: None)
+        with patch.object(router, '_call', return_value='{"route":"invented"}'):
+            self.assertEqual(router._select('worker', 'sample', Path.cwd()), ['gemma', 'qwen'])
+
+    def test_unknown_taxonomy_or_missing_category_rejected(self):
+        for change in ('unknown', 'missing'):
+            cfg = self.policy()
+            if change == 'unknown': cfg['routing']['selector']['taxonomy'] = 'invented'
+            else: del cfg['routing']['selector']['routes']['uncertain']
+            with self.assertRaises(ValueError): Router(cfg, Budget(5, 30), lambda *a, **k: None)
+
+class BusyOverflowTests(unittest.TestCase):
+    def router(self):
+        return Router({'models':{'local':{'kind':'command','command':['local']},
+            'cloud':{'kind':'command','command':['cloud']},
+            'guard':{'kind':'ollama','model':'llama-guard3:1b','context_bytes':1000}},
+            'routes':{'worker':['local'],'planner':['local']},
+            'routing':{'busy_overflow':{'primary':'local','model':'cloud','guard':'guard'}}},
+            Budget(20,3),lambda *a,**k:None)
+
+    def test_idle_primary_skips_guard_and_cloud_even_on_retry(self):
+        r=self.router()
+        with patch.object(r,'_call',return_value='{"tool":"done"}') as call:
+            r.ask('worker','packet',Path.cwd(),attempt=9)
+        self.assertEqual(call.call_args.args[0]['command'],['local'])
+        self.assertEqual(call.call_count,1)
+        self.assertTrue(r.slots['local'].acquire(False))
+
+    def test_busy_safe_allows_cloud_and_checks_whole_packet(self):
+        r=self.router();r.slots['local'].acquire()
+        with patch.object(r,'_call',side_effect=['safe','{"tool":"done"}']) as call:
+            r.ask('worker','full request',Path.cwd(),task='assignment')
+        self.assertEqual(call.call_args_list[1].args[0]['command'],['cloud'])
+        self.assertIn('assignment',call.call_args_list[0].args[1])
+        self.assertIn('full request',call.call_args_list[0].args[1])
+        self.assertFalse(call.call_args_list[0].args[0]['json_mode'])
+        r.slots['local'].release()
+
+    def test_non_safe_or_failed_guard_waits_for_local(self):
+        for verdict in ['unsafe\nS2','SAFE','safe\nS2','',RuntimeError('offline')]:
+            with self.subTest(verdict=verdict):
+                r=self.router();r.slots['local'].acquire();calls=[]
+                def call(model,*args):
+                    if model['kind']=='ollama':
+                        calls.append('guard');r.slots['local'].release()
+                        if isinstance(verdict,Exception):raise verdict
+                        return verdict
+                    calls.append(model['command'][0]);return '{"tool":"done"}'
+                with patch.object(r,'_call',side_effect=call):r.ask('worker','packet',Path.cwd())
+                self.assertEqual(calls,['guard','local'])
+
+    def test_oversized_input_does_not_classify_prefix_or_use_cloud(self):
+        r=self.router();r.slots['local'].acquire()
+        timer=threading.Timer(.03,r.slots['local'].release);timer.start()
+        try:
+            with patch.object(r,'_call',return_value='{"tool":"done"}') as call:
+                r.ask('worker','x'*1001,Path.cwd())
+            self.assertEqual(call.call_count,1)
+            self.assertEqual(call.call_args.args[0]['command'],['local'])
+        finally:timer.join()
+
+    def test_cloud_unavailable_returns_to_local(self):
+        r=self.router();r.slots['local'].acquire();calls=[]
+        def call(model,*args):
+            if model['kind']=='ollama':calls.append('guard');return 'safe'
+            n=model['command'][0];calls.append(n)
+            if n=='cloud':r.slots['local'].release();raise ModelUnavailable()
+            return '{"tool":"done"}'
+        with patch.object(r,'_call',side_effect=call):r.ask('worker','packet',Path.cwd())
+        self.assertEqual(calls,['guard','cloud','local'])
+
+    def test_local_error_never_triggers_cloud(self):
+        r=self.router()
+        with patch.object(r,'_call',side_effect=ValueError('bad')) as call:
+            with self.assertRaises(RuntimeError):r.ask('worker','packet',Path.cwd())
+        self.assertEqual(call.call_count,1)
+        self.assertTrue(r.slots['local'].acquire(False))
+
+    def test_native_guard_transport_omits_json_and_thinking(self):
+        r=self.router()
+        reply={'returncode':0,'timed_out':False,'truncated':False,'output':json.dumps({'status':200,'data':{'message':{'content':'safe'}}})}
+        with patch('soso.models.execute',return_value=reply) as call:
+            r._call({'kind':'ollama','url':'http://localhost:11434','model':'llama-guard3:1b','json_mode':False,'send_think':False},'packet',Path.cwd(),1)
+        body=json.loads(call.call_args.kwargs['stdin'])['body']
+        self.assertNotIn('format',body);self.assertNotIn('think',body)

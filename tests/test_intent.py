@@ -55,3 +55,33 @@ class MarkdownPoolTests(unittest.TestCase):
             result = resolve_pool('Use small on RTX for routing', Path(tmp))
             self.assertEqual(result['models']['router']['url'], 'http://rtx:11434')
             self.assertEqual(result['models']['router']['options'], {'num_gpu': 0})
+
+
+class ExplicitProjectPolicyTests(unittest.TestCase):
+    def test_explicit_policy_bypasses_discovery_and_intent_cache(self):
+        import json
+        from soso.models import Budget
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            policy = {'use_project_model_policy': True,
+                      'models': {'main': {'kind': 'ollama', 'model': 'main-model'}},
+                      'routes': {'worker': ['main']}}
+            (root / 'soso.json').write_text(json.dumps(policy))
+            with patch('soso.intent.configure_models') as discover, patch.object(Router, 'ask') as ask:
+                self.assertEqual(resolve_pool('first assignment', root)['routes']['worker'], ['main'])
+                policy['models']['main']['model'] = 'updated-main-model'
+                (root / 'soso.json').write_text(json.dumps(policy))
+                self.assertEqual(resolve_pool('different assignment', root)['models']['main']['model'], 'updated-main-model')
+                discover.assert_not_called()
+                ask.assert_not_called()
+                self.assertFalse((root / '.so-so').exists())
+
+    def test_invalid_explicit_policy_fails_without_silent_discovery(self):
+        import json
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / 'soso.json').write_text(json.dumps({'use_project_model_policy': True, 'models': {}}))
+            with patch('soso.intent.configure_models') as discover:
+                with self.assertRaises(ValueError):
+                    resolve_pool('assignment', root)
+                discover.assert_not_called()

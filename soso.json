@@ -1,32 +1,69 @@
 {
   "models": {
-    "local": {
-      "kind": "ollama",
-      "url": "http://127.0.0.1:11434",
-      "model": "YOUR_INSTALLED_MODEL",
-      "context_tokens": 8192,
-      "context_bytes": 20000,
+    "main": {
+      "kind": "openai",
+      "url": "http://192.168.6.183:8091/v1",
+      "model": "/root/llm/models/qwen38-uncensored/Qwen3.8-Flash-Next-Uncensored.Q8_0.gguf",
+      "context_bytes": 200000,
+      "max_tokens": 8192,
+      "timeout": 600,
       "parallel": 1
     },
-    "codex": {
-      "kind": "codex",
-      "args": [
-        "--ignore-user-config"
-      ],
-      "parallel": 2,
-      "timeout": 180,
-      "context_bytes": 24000
+    "qwen_norefusal": {
+      "kind": "ollama",
+      "url": "http://127.0.0.1:11434",
+      "model": "hf.co/mradermacher/Qwen3.8-27B-Heretic-NoRefusal-GGUF:Q4_K_M",
+      "context_tokens": 32768,
+      "context_bytes": 60000,
+      "max_tokens": 8192,
+      "timeout": 600,
+      "parallel": 1,
+      "think": false
+    },
+    "gemma3n": {
+      "kind": "ollama",
+      "url": "http://127.0.0.1:11434",
+      "model": "gemma3n:latest",
+      "context_tokens": 32768,
+      "context_bytes": 60000,
+      "max_tokens": 8192,
+      "timeout": 600,
+      "parallel": 1,
+      "think": false
+    },
+    "triage": {
+      "kind": "ollama",
+      "url": "http://127.0.0.1:11434",
+      "model": "llama-guard3:1b",
+      "context_tokens": 8192,
+      "context_bytes": 8000,
+      "max_tokens": 64,
+      "timeout": 60,
+      "parallel": 1,
+      "temperature": 0,
+      "json_mode": false,
+      "send_think": false,
+      "options": {
+        "num_gpu": 99
+      }
+    },
+    "kimi": {
+      "kind": "kimi",
+      "executable": "kimi",
+      "context_bytes": 60000,
+      "timeout": 600,
+      "parallel": 1
     }
   },
   "routes": {
     "planner": [
-      "codex"
-    ],
-    "worker": [
-      "codex"
+      "main"
     ],
     "reviewer": [
-      "codex"
+      "qwen_norefusal"
+    ],
+    "worker": [
+      "qwen_norefusal"
     ]
   },
   "evaluate": [
@@ -68,5 +105,37 @@
   "mode": "optimize",
   "prepared_intent_sha256": "b3d9a1c65917070e5a9275046255b5e10c3c9b70dbc0f80c488cbe1f4a00c7c9",
   "evaluation_timeout": 300,
-  "command_timeout": 300
+  "command_timeout": 300,
+  "use_project_model_policy": true,
+  "routing": {
+    "rules": [
+      {
+        "role": "planner",
+        "models": [
+          "main"
+        ]
+      },
+      {
+        "role": "reviewer",
+        "models": [
+          "qwen_norefusal"
+        ]
+      },
+      {
+        "role": "worker",
+        "models": [
+          "qwen_norefusal"
+        ]
+      }
+    ],
+    "default": [
+      "main"
+    ],
+    "busy_overflow": {
+      "role": "worker",
+      "primary": "qwen_norefusal",
+      "model": "kimi",
+      "guard": "triage"
+    }
+  }
 }

@@ -83,3 +83,45 @@ New Markdown policies receive a separate semantic review before caching. The rev
 checks ordered fallbacks and model/resource preferences against the original intent.
 Existing cached policies remain unchanged so an ongoing goal keeps its chosen
 routing. Revise `INTENT.md` to compile and review a new policy for a new goal.
+
+
+## Included deployment policy
+
+The tracked `soso.json` contains the maintainer's working deployment, including
+its LAN endpoint and installed model names. Other installations must adapt those
+values, or set `use_project_model_policy` to `false` to restore discovery and
+Markdown-based model preferences. The LAN endpoint is not a public service.
+
+The tracked `soso.json` selects an explicit project model policy with
+`use_project_model_policy: true`. The normal `./so-so` launcher uses it for both
+`INTENT.md` and command-line assignments, before model discovery or intent-policy
+cache lookup. No cache needs to be prepared by hand. Disabling that setting
+restores Markdown-based policy compilation. An explicit project policy takes
+precedence over model preferences in the assignment; edit the policy to change
+its destinations. Existing running goals retain their frozen policy.
+
+The Xeon-hosted large Qwen is the high-level planner. The local Qwen 27B
+uncensored model performs code generation and routine reviews. Planning frequency
+is determined by milestones, not a guaranteed percentage of model calls.
+
+`routing.busy_overflow` permits Kimi only when the primary worker slot is occupied
+and local Llama Guard 3:1b returns exactly `safe` for the complete assignment plus
+outgoing request. Unsafe, malformed, unavailable, or oversized classification
+stays local and waits for Qwen. The classifier never answers the request.
+A failed local generation or a retry alone does not authorize cloud overflow.
+If Kimi fails or has no credits, the request falls back to local Qwen.
+
+The guard uses its native safe/unsafe protocol, not JSON classification. Its 8K
+context has a conservative 8,000-byte input limit to leave room for the template;
+larger requests stay local. This is a model verdict, not a proof of safety.
+
+Two worker slots are enabled. Busy detection tracks calls sharing this Router
+instance, including its reviews; it does not detect another process using Ollama.
+The delivery planner currently schedules one next increment at a time, so overflow
+only occurs when callers actually overlap. This is not a claim of universal
+parallel milestone execution. Kimi must be installed and authenticated in the
+launcher's PATH; otherwise the local fallback remains available.
+
+Llama Guard and the 32K-context local Qwen were observed fully GPU-resident
+together on a 24 GB RTX 3090 Ti, with roughly 3.4 GiB free. Larger contexts or
+other workloads may change this. No INTENT run is started by configuring routing.

@@ -22,6 +22,13 @@ so-so is MIT-licensed. The host needs access to this repository and to the
 inference services your assignment uses. The launcher cannot invent credentials
 or system installation permission.
 
+The repository itself includes the maintainer's explicit model policy in
+`soso.json`: a LAN-hosted planner, local Qwen worker, and guarded Kimi overflow.
+That policy takes precedence when running from this checkout; its LAN service is
+not publicly accessible. See [the included deployment policy](docs/routing.md#included-deployment-policy)
+to adapt it or restore automatic discovery. Projects without that explicit policy
+use the Markdown interface described below.
+
 ## Describe the outcome
 
 `INTENT.md` is ordinary Markdown. Include the outcome and whatever resources or

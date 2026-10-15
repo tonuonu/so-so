@@ -20,6 +20,15 @@ def resolve_pool(text, cwd):
     valid cache entries are reused unchanged without retroactive semantic review.
     """
     cwd = Path(cwd)
+    # An explicitly selected project policy is source configuration, not a cache.
+    # It applies to both INTENT.md and command-line assignments.
+    project_policy = cwd / 'soso.json'
+    if project_policy.is_file():
+        configured = json.loads(project_policy.read_text())
+        if configured.get('use_project_model_policy') is True:
+            pool = load_model_pool(project_policy)
+            Router(pool, Budget(1, 1), lambda *a, **k: None)
+            return pool
     folder = cwd / '.so-so' / 'pools'
     folder.mkdir(parents=True, exist_ok=True)
     key = hashlib.sha256(text.encode()).hexdigest()
