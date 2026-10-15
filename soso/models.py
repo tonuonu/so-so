@@ -225,6 +225,8 @@ class Router:
                     classifier = model
                     if model.get('kind') == 'ollama':
                         classifier = dict(model)
+                        classifier.setdefault('think', False)
+                        classifier.setdefault('max_tokens', 256)
                         classifier['response_schema'] = {'type': 'object', 'properties': {
                             'route': {'type': 'string', 'enum': list(selector['routes'])}},
                             'required': ['route'], 'additionalProperties': False}

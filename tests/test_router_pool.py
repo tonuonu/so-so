@@ -50,6 +50,8 @@ class RoutingPolicyTests(unittest.TestCase):
         router = Router(cfg, Budget(10, 30), lambda *a, **k: None)
         with patch.object(router, '_call', return_value='{"route":"code"}') as call:
             self.assertEqual(router._select('worker', 'Implement parser', Path.cwd()), ['qwen'])
+        self.assertIs(call.call_args.args[0]['think'], False)
+        self.assertEqual(call.call_args.args[0]['max_tokens'], 256)
         schema = call.call_args.args[0]['response_schema']
         self.assertEqual(schema['properties']['route']['enum'], ['code', 'hard'])
         self.assertNotIn('response_schema', router.models['triage'])
