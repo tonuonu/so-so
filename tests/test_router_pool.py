@@ -17,6 +17,41 @@ def config():
 
 
 class RoutingPolicyTests(unittest.TestCase):
+    def test_worker_batch_returns_only_first_action_with_explicit_deferral(self):
+        cfg = config(); cfg['delivery'] = True
+        router = Router(cfg, Budget(10, 30), lambda *a, **k: None)
+        response = {'actions': [{'tool': 'write', 'path': 'server.py', 'content': 'code'},
+                                {'tool': 'run', 'argv': ['must-not-run']}], 'note': 'Next add tests.'}
+        with patch.object(router, '_call', return_value=json.dumps(response)):
+            action = router.ask('worker', 'packet', Path.cwd(), task='implement')
+        self.assertEqual(action, {'tool': 'write', 'path': 'server.py', 'content': 'code',
+                                  'note': 'Next add tests.', '_unexecuted_actions': 1})
+        self.assertNotIn('actions', action)
+
+    def test_worker_batch_cannot_hide_pending_work_behind_done(self):
+        cfg = config(); cfg['delivery'] = True
+        router = Router(cfg, Budget(10, 30), lambda *a, **k: None)
+        response = {'actions': [{'tool': 'done'}, {'tool': 'write', 'path': 'later', 'content': 'x'}]}
+        with patch.object(router, '_call', side_effect=[json.dumps(response), '{"tool":"list"}']) as call:
+            self.assertEqual(router.ask('worker', 'packet', Path.cwd(), task='implement'), {'tool': 'list'})
+        self.assertEqual(call.call_count, 2)
+
+    def test_direct_worker_cannot_forge_batch_metadata(self):
+        router = Router(config(), Budget(10, 30), lambda *a, **k: None)
+        with patch.object(router, '_call', return_value='{"tool":"list","_unexecuted_actions":999}'):
+            self.assertEqual(router.ask('worker', 'packet', Path.cwd(), task='implement'), {'tool': 'list'})
+
+    def test_mixed_direct_and_batch_actions_are_rejected(self):
+        cfg = config(); cfg['delivery'] = True
+        for tool, wrapped in (('done', False), ('done', True), ('write', False), ('write', True)):
+            router = Router(cfg, Budget(10, 30), lambda *a, **k: None)
+            response = {'tool': tool, 'actions': [{'tool': 'run', 'argv': ['must-not-run']}]}
+            if wrapped:
+                response = {'actions': [response]}
+            with patch.object(router, '_call', side_effect=[json.dumps(response), '{"tool":"list"}']) as call:
+                self.assertEqual(router.ask('worker', 'packet', Path.cwd(), task='implement'), {'tool': 'list'})
+                self.assertEqual(call.call_count, 2)
+
     def test_rules_match_task_not_protocol_and_default_is_explicit(self):
         router = Router(config(), Budget(10, 30), lambda *a, **k: None)
         calls = []

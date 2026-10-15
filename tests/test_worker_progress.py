@@ -115,6 +115,33 @@ class WorkerProgressTests(RepoCase):
                 self.assertEqual('loop_feedback' in self.last(router.calls[-1]), not changed)
                 self.assertEqual(router.calls[-1]['attempt'], 0 if changed else 2)
 
+    def test_wrapped_actions_execute_only_first_and_report_deferred_requests(self):
+        config = self.config(max_steps=2, allow_exec=True)
+        router = Router(config, Budget(10, 30), lambda *args, **kwargs: None)
+        batch = {'actions': [
+            {'tool': 'write', 'path': 'server.py', 'content': 'print("working server")'},
+            {'tool': 'write', 'path': 'evaluate.py', 'content': 'DEFERRED_PROTECTED_SENTINEL'},
+            {'tool': 'run', 'argv': [sys.executable, '-c',
+                 'from pathlib import Path; Path("must-not-exist").write_text("executed")']},
+        ], 'note': 'Need to add tests after server exists.'}
+        events = []
+        with patch.object(router, '_call', side_effect=[json.dumps(batch), '{"tool":"done"}']) as infer:
+            result = worker(router, 'Build the server', self.root, config,
+                            lambda event, **data: events.append((event, data)))
+        self.assertTrue(result['finished'])
+        self.assertEqual(result['steps'], 2)
+        self.assertEqual((self.root / 'server.py').read_text(), 'print("working server")')
+        self.assertNotIn('DEFERRED_PROTECTED_SENTINEL', (self.root / 'evaluate.py').read_text())
+        self.assertFalse((self.root / 'must-not-exist').exists())
+        prompt = infer.call_args_list[1].args[1]
+        last = json.loads(prompt.split('LAST RESULT:\n')[1])
+        self.assertTrue(last['ok'])
+        self.assertIn('remaining 2 requested actions were NOT executed', last['protocol_feedback'])
+        self.assertIn('Return exactly one next action', last['protocol_feedback'])
+        self.assertIn(batch['note'], prompt)
+        self.assertNotIn('DEFERRED_PROTECTED_SENTINEL', prompt)
+        self.assertEqual([data['tool'] for event, data in events if event == 'tool'], ['write'])
+
     def test_escalation_uses_only_the_original_policy_route(self):
         config = self.config(max_steps=3,
                              models={name: {'kind': 'command', 'command': [name]} for name in ('local', 'fallback', 'unrelated')},

@@ -289,6 +289,21 @@ class Router:
                     if unavailable_response is not None:
                         raise unavailable_response
                     raise
+                if role == 'worker':
+                    result.pop('_unexecuted_actions', None)
+                    if 'tool' in result and 'actions' in result:
+                        raise ValueError('ambiguous direct action and batch')
+                    batch = result.get('actions')
+                    if 'tool' not in result and isinstance(batch, list) and batch and isinstance(batch[0], dict):
+                        first = dict(batch[0])
+                        if 'actions' in first:
+                            raise ValueError('nested action batch')
+                        first.pop('_unexecuted_actions', None)
+                        if first.get('tool') != 'done' or len(batch) == 1:
+                            if 'note' not in first and isinstance(result.get('note'), str):
+                                first['note'] = result['note']
+                            first['_unexecuted_actions'] = len(batch) - 1
+                            result = first
                 valid = (role != 'worker' or result.get('tool') in
                          ('list', 'read', 'search', 'write', 'replace', 'delete', 'run', 'diff', 'check', 'skill', 'done'))
                 if role == 'reviewer':

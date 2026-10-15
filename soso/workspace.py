@@ -282,7 +282,8 @@ def worker(router, task, root, config, log, variant=0):
                   + "\nWORKING MEMORY:\n" + note
                   + "\nRECENT ACTIONS:\n" + json.dumps(recent, ensure_ascii=True, separators=(",", ":"))
                   + "\nLAST RESULT:\n" + json.dumps(last, ensure_ascii=False))
-        action = router.ask("worker", prompt, root, attempt=max(failures, progress.stalls), task=task)
+        action = dict(router.ask("worker", prompt, root, attempt=max(failures, progress.stalls), task=task))
+        deferred = action.pop("_unexecuted_actions", 0)
         ws.timeout = min(config.get("command_timeout", 30), router.budget.remaining())
         if isinstance(action.get("note"), str):
             note = action["note"][:1800]
@@ -298,6 +299,10 @@ def worker(router, task, root, config, log, variant=0):
             last = {"error": str(exc)[:1000], "protocol": 'Return one action object with a "tool" key from the listed Actions.',
                     "received_keys": list(action)[:15]}
             failures += 1
+        if type(deferred) is int and deferred > 0:
+            last["protocol_feedback"] = (f"Only the first action was dispatched; see its actual result here. "
+                f"The remaining {deferred} requested actions were NOT executed. "
+                "Return exactly one next action after inspecting this result; do not assume deferred writes or commands ran.")
         record = {"tool": str(action.get("tool", "?"))[:20],
                   "path": str(action.get("path", action.get("prefix", "")))[:80],
                   "status": "error" if "error" in last else "loop" if "loop_feedback" in last else "instructions" if last.get("retry_required") else "ok"}

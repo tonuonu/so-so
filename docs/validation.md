@@ -5,7 +5,7 @@ The runner was exercised with real inference as well as deterministic fixtures.
 
 ## Automated checks
 
-The delivery implementation passed 147 deterministic tests on macOS Python 3.11.
+The delivery implementation passed 152 deterministic tests on macOS Python 3.11.
 The earlier 117-test snapshot also passed in a Linux container; GitHub Actions
 checks the current commit on Linux. These cover tool paths, protected policy, subprocess and
 HTTP deadlines, routing, Git isolation, evaluation binding, restart recovery,
@@ -132,3 +132,14 @@ that draft in the next epoch. Regression checks cover worker, evaluator and revi
 interruptions, quota waits, changed policy/history/ref rejection, and interruptions
 on both sides of the acceptance merge. Fresh evaluation and review remain required.
 These recovery checks pass; live application trials continue.
+
+## Worker response compatibility
+
+A live Kimi worker returned four requested tools inside an `actions` array. The
+runner rejected the wrapper before writing any files. It now accepts only the
+first action and explicitly tells the next step that all remaining actions were
+not executed. Ambiguous direct-plus-batch or nested batches are rejected.
+Replaying that recorded first action through the repaired adapter produced a todo
+server that passed 19 of 20 external checks; the deferred test file was absent.
+See the [replay record](evidence/todo-protocol-replay.json). This is isolated replay
+evidence, not autonomous application completion.

@@ -1,0 +1,120 @@
+{
+  "kind": "external acceptance",
+  "applications": [
+    {
+      "application": "todos",
+      "checks": [
+        {
+          "name": "root server.py exists",
+          "ok": true,
+          "detail": ""
+        },
+        {
+          "name": "service starts on a dynamic localhost port",
+          "ok": true,
+          "detail": ""
+        },
+        {
+          "name": "health payload",
+          "ok": true,
+          "detail": ""
+        },
+        {
+          "name": "new selected file starts empty",
+          "ok": true,
+          "detail": ""
+        },
+        {
+          "name": "duplicate titles receive distinct IDs",
+          "ok": true,
+          "detail": ""
+        },
+        {
+          "name": "PATCH changes selected item only",
+          "ok": true,
+          "detail": ""
+        },
+        {
+          "name": "DELETE returns empty 204 and removes selected item",
+          "ok": true,
+          "detail": ""
+        },
+        {
+          "name": "reject malformed JSON",
+          "ok": true,
+          "detail": ""
+        },
+        {
+          "name": "reject empty title",
+          "ok": true,
+          "detail": ""
+        },
+        {
+          "name": "reject missing title",
+          "ok": true,
+          "detail": ""
+        },
+        {
+          "name": "reject nontext title",
+          "ok": true,
+          "detail": ""
+        },
+        {
+          "name": "PATCH rejects malformed JSON",
+          "ok": true,
+          "detail": ""
+        },
+        {
+          "name": "unknown IDs and paths return 404",
+          "ok": true,
+          "detail": ""
+        },
+        {
+          "name": "rejected requests preserve persisted bytes",
+          "ok": true,
+          "detail": ""
+        },
+        {
+          "name": "read-during-write JSON atomicity smoke check",
+          "ok": true,
+          "detail": "No torn JSON observed; bounded sampling does not prove atomicity for every interleaving."
+        },
+        {
+          "name": "all ten concurrent creates survive with unique IDs",
+          "ok": true,
+          "detail": ""
+        },
+        {
+          "name": "service restarts using the same file",
+          "ok": true,
+          "detail": ""
+        },
+        {
+          "name": "restart preserves every item and completion state",
+          "ok": true,
+          "detail": ""
+        },
+        {
+          "name": "automated tests execute and pass",
+          "ok": false,
+          "detail": "observed unittest count: 0"
+        },
+        {
+          "name": "usage documentation smoke check",
+          "ok": true,
+          "detail": "Documentation contents still merit a human review."
+        }
+      ],
+      "limitations": [],
+      "status": "failed"
+    }
+  ],
+  "scope": "Only listed checks ran. Frozen policies and implementations were not edited by this harness.",
+  "provenance": {
+    "kind": "Recorded real Kimi response replay through repaired Router and Workspace",
+    "application_sha256": "666df18c066cde8eca9302eb3fbfafd7c1fc1ce5a17353d9cdb4b70c3270665f",
+    "executed_actions": 1,
+    "unexecuted_actions": 3,
+    "limitation": "Isolated replay of first action; not autonomous delivery or acceptance. Remaining model-proposed files and command were not executed."
+  }
+}
