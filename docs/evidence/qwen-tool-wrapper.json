@@ -1,0 +1,13 @@
+{
+  "model": "hf.co/mradermacher/Qwen3.8-27B-Heretic-NoRefusal-GGUF:Q4_K_M",
+  "host": "RTX",
+  "scenario": "Live replay of a real worker prompt, no tools executed",
+  "response": "<tool_call>\n{\"tool\":\"read\",\"path\":\"game.js\",\"start\":81,\"lines\":144}\n</invoke>\n</parameter>\n</function>\n</tool_call>",
+  "parsed": {
+    "tool": "read",
+    "path": "game.js",
+    "start": 81,
+    "lines": 144
+  },
+  "limit": "Only one JSON object with an explicit tool_call frame and whitelisted closing tags is accepted. Multiple objects, prose, unknown tags and incomplete frames are rejected."
+}

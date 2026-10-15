@@ -221,12 +221,146 @@ class DeliveryTests(unittest.TestCase):
         original = self.answer
         def answer(router, role, prompt, cwd, **kwargs):
             if role == 'reviewer' and prompt.startswith('Independently review this increment.'):
-                return {'approve': False, 'useful': True, 'reason': 'Introduces a regression.'}
+                return {'approve': False, 'useful': False, 'reason': 'Introduces a regression.'}
             return original(router, role, prompt, cwd, **kwargs)
         self.answer = answer
         state = self.start()
         self.assertIsNone(state['draft'])
         self.assertFalse((Path(state['worktree']) / 'stage.txt').exists())
+
+    def test_useful_rejection_repairs_existing_files_before_fresh_acceptance(self):
+        original = self.answer
+        reviews = []
+        tasks = []
+        first = None
+        def answer(router, role, prompt, cwd, **kwargs):
+            if role == 'reviewer' and prompt.startswith('Independently review this increment.'):
+                reviews.append(prompt)
+                if len(reviews) == 1:
+                    return {'approve': False, 'useful': True, 'reason': 'Fix the tests to use the actual game API.'}
+                self.assertFalse((Path(first['worktree']) / 'stage.txt').exists())
+                self.assertEqual(git(Path(first['worktree']), 'rev-parse', 'HEAD'), first['head'])
+            return original(router, role, prompt, cwd, **kwargs)
+        def work(router, task, path, config, log, index):
+            tasks.append(task)
+            file = Path(path) / 'stage.txt'
+            if len(tasks) == 1:
+                self.assertFalse(file.exists())
+                file.write_text('1')
+            else:
+                self.assertEqual(file.read_text(), '1')
+                self.assertIn('Fix the tests to use the actual game API.', task)
+                self.assertEqual(task.count('REVIEW REPAIR REQUIRED:'), 1)
+                file.write_text('2')
+            return {'finished': True}
+        self.answer = answer
+        with patch('soso.engine.worker', side_effect=work), \
+                patch('soso.engine.evaluate', wraps=evaluate) as evaluations:
+            first = self.start()
+            draft = first['draft']
+            self.assertEqual(draft['phase'], 'worker')
+            self.assertEqual(draft['repairs'], 1)
+            self.assertEqual(draft['task'], tasks[0])
+            self.assertEqual(draft['base'], first['head'])
+            self.assertEqual(draft['policy'], first['policy'])
+            self.assertEqual(git(self.repo, 'rev-parse', draft['ref']), draft['commit'])
+            report = json.loads(Path(first['epochs'][-1]['report']).read_text())
+            self.assertIsNone(report['rounds'][0]['accepted'])
+            self.assertEqual(report['best'], 0)
+            with patch('soso.delivery.time.time', return_value=time.time() + 5):
+                resumed = self.start(resume_goal=first['goal_id'])
+        self.assertEqual(evaluations.call_count, 2)
+        self.assertEqual(len(reviews), 2)
+        self.assertEqual(resumed['status'], 'complete')
+        self.assertIsNone(resumed['draft'])
+        self.assertEqual(resumed['policy'], first['policy'])
+        self.assertEqual((Path(resumed['worktree']) / 'stage.txt').read_text(), '2')
+
+    def test_useful_rejection_repairs_are_bounded_across_epochs(self):
+        original = self.answer
+        tasks = []
+        def answer(router, role, prompt, cwd, **kwargs):
+            if role == 'reviewer' and prompt.startswith('Independently review this increment.'):
+                return {'approve': False, 'useful': True, 'reason': 'Repair the API test assertions.'}
+            return original(router, role, prompt, cwd, **kwargs)
+        def work(router, task, path, config, log, index):
+            tasks.append(task)
+            file = Path(path) / 'stage.txt'
+            self.assertEqual(file.read_text() if file.exists() else '0', str(len(tasks) - 1))
+            self.assertLessEqual(task.count('REVIEW REPAIR REQUIRED:'), 1)
+            file.write_text(str(len(tasks)))
+            return {'finished': True}
+        self.answer = answer
+        with patch('soso.engine.worker', side_effect=work):
+            state = self.start()
+            accepted = state['head']
+            for repairs in (1, 2, 3):
+                self.assertEqual(state['draft']['repairs'], repairs)
+                self.assertEqual(state['head'], accepted)
+                self.assertEqual(state['draft']['task'], tasks[0])
+                with patch('soso.delivery.time.time', return_value=max(time.time() + 5, state['next_retry_at'] + 1)):
+                    state = self.start(resume_goal=state['goal_id'])
+        self.assertEqual(len(tasks), 4)
+        self.assertIsNone(state['draft'])
+        self.assertEqual(state['head'], accepted)
+        self.assertFalse((Path(state['worktree']) / 'stage.txt').exists())
+
+    def test_repair_budget_pause_preserves_count_and_original_task(self):
+        original = self.answer
+        tasks = []
+        reviews = []
+        def answer(router, role, prompt, cwd, **kwargs):
+            if role == 'reviewer' and prompt.startswith('Independently review this increment.'):
+                reviews.append(prompt)
+                if len(reviews) == 1:
+                    return {'approve': False, 'useful': True, 'reason': 'Repair the API tests.'}
+            return original(router, role, prompt, cwd, **kwargs)
+        def work(router, task, path, config, log, index):
+            tasks.append(task)
+            file = Path(path) / 'stage.txt'
+            self.assertEqual(file.read_text() if file.exists() else '0', str(len(tasks) - 1))
+            file.write_text(str(len(tasks)))
+            if len(tasks) == 2:
+                raise BudgetExceeded('repair epoch exhausted')
+            return {'finished': True}
+        self.answer = answer
+        with patch('soso.engine.worker', side_effect=work):
+            first = self.start()
+            with patch('soso.delivery.time.time', return_value=time.time() + 5):
+                paused = self.start(resume_goal=first['goal_id'])
+            self.assertEqual(paused['draft']['repairs'], 1)
+            self.assertEqual(paused['draft']['task'], tasks[0])
+            self.assertEqual(paused['draft']['repair_feedback'], 'Repair the API tests.')
+            self.assertEqual(paused['head'], first['head'])
+            with patch('soso.delivery.time.time', return_value=max(time.time() + 5, paused['next_retry_at'] + 1)):
+                resumed = self.start(resume_goal=first['goal_id'])
+        self.assertEqual(tasks[1], tasks[2])
+        self.assertEqual(resumed['status'], 'complete')
+        self.assertEqual(len(reviews), 2)
+
+    def test_protected_change_during_repair_discards_draft(self):
+        original = self.answer
+        count = 0
+        def answer(router, role, prompt, cwd, **kwargs):
+            if role == 'reviewer' and prompt.startswith('Independently review this increment.'):
+                return {'approve': False, 'useful': True, 'reason': 'Repair the API tests.'}
+            return original(router, role, prompt, cwd, **kwargs)
+        def work(router, task, path, config, log, index):
+            nonlocal count
+            count += 1
+            if count == 1:
+                (Path(path) / 'stage.txt').write_text('1')
+            else:
+                (Path(path) / '.soso-delivery/evaluate.py').write_text('print(100)')
+            return {'finished': True}
+        self.answer = answer
+        with patch('soso.engine.worker', side_effect=work):
+            first = self.start()
+            with patch('soso.delivery.time.time', return_value=time.time() + 5):
+                rejected = self.start(resume_goal=first['goal_id'])
+        self.assertIsNone(rejected['draft'])
+        self.assertEqual(rejected['head'], first['head'])
+        self.assertEqual(rejected['policy'], first['policy'])
 
     def reject_poisoned_paused_worker(self, history=False):
         def work(router, task, path, config, log, index):

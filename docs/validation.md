@@ -5,7 +5,7 @@ The runner was exercised with real inference as well as deterministic fixtures.
 
 ## Automated checks
 
-The delivery implementation passed 152 deterministic tests on macOS Python 3.11.
+The delivery implementation passed 169 deterministic tests on macOS Python 3.11.
 The earlier 117-test snapshot also passed in a Linux container; GitHub Actions
 checks the current commit on Linux. These cover tool paths, protected policy, subprocess and
 HTTP deadlines, routing, Git isolation, evaluation binding, restart recovery,
@@ -65,7 +65,7 @@ Commands execute with host permissions; worktrees are isolation for source chang
 not an operating-system sandbox. Cloud operations need idempotent project-level
 logic because Git rollback cannot undo external effects.
 
-## Single-command and RTX validation in progress
+## Single-command and RTX validation
 
 The no-argument executable now has a real subprocess regression test: only
 INTENT.md is supplied, provider responses are deterministic fixtures, and the
@@ -74,9 +74,9 @@ per-model cooldown races have dedicated regression coverage.
 
 The exact Qwen3.8-27B Q4_K_M model answered a live JSON probe on the existing RTX
 Ollama installation. The configured Kimi CLI answered a separate live probe.
-A live expense-ledger assignment is now testing the ordinary no-flags executable
-with that Qwen worker, a smaller installed classifier and Kimi planning/review.
-These probes alone do not prove mixed-model task completion.
+The ordinary no-flags executable subsequently completed the ledger and todo
+assignments with Qwen, a smaller installed classifier and Kimi planning/review,
+as recorded below. The probes alone do not prove mixed-model task completion.
 
 ## Small RTX classifier
 
@@ -161,3 +161,32 @@ The todo trial also retained a real implementation while review waited, resumed
 it after controller restart, reevaluated it and accepted the identical draft
 commit. Final review requested stronger integration tests, so work continued.
 See the [live draft recovery record](evidence/live-draft-resume.json).
+
+## Completed mixed-model todo service
+
+The persistent todo service also completed through `./so-so` after a retained
+draft resumed and final-review feedback requested real integration tests. Accepted
+commit `9ab46607bc8e7715f31dc25d8b086f41bfab3495` passed all 20 external checks:
+CRUD and error behavior, unique IDs, concurrent requests, persistence and restart,
+real generated tests, and documentation. See the
+[completion record](evidence/completed-todos.json) and
+[generated patch](evidence/completed-todos.patch). Minesweeper validation remains
+in progress; two completed applications do not substitute for the third trial.
+
+A live replay also reproduced Qwen returning valid JSON inside a `<tool_call>`
+frame with trailing closing tags. The parser now decodes exactly one object from
+that specific frame; extra prose, requests and incomplete framing are rejected.
+The [recorded reply](evidence/qwen-tool-wrapper.json) parses successfully without
+executing its requested tool.
+
+## Bounded source context and repair
+
+The worker retains up to 12KiB of exact prior source pages, constrained by the
+smallest eligible worker context limit. Changed pages are invalidated, and evicted
+pages can be reread without a false repeat warning. Regression checks cover UTF-8
+limits, symlinks, command edits and retaining the cheap worker route.
+
+A useful but rejected draft can receive up to three repairs with concrete review
+feedback. It remains separate from accepted source and must pass fresh evaluation
+and review. Invalid evaluations, protected-file changes and exhausted repair
+attempts cannot be accepted through this continuation path.

@@ -69,7 +69,10 @@ candidates. In persistent delivery, budget/quota exhaustion and graceful interru
 save valid unfinished changes as a separate draft ref before cleanup. The next
 epoch resumes the draft against its original accepted base and frozen policy.
 Evaluation and independent review still precede acceptance; a saved draft is not
-a completed or accepted result. Explicitly rejected and invalid candidates are
+a completed or accepted result. When review explicitly marks a nonregressing
+candidate useful but rejects it with concrete findings, delivery keeps it for up
+to three repair attempts. Each attempt receives the findings and still requires
+fresh evaluation and review. Useless, invalid or exhausted repair candidates are
 not resumed automatically. Optimization workers retain their existing cleanup
 behavior for uncommitted failed experiments; tool events remain. The JSON report lists base/head commit hashes,
 scores, stop reason, timing, model calls, candidate summaries and review verdicts.

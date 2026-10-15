@@ -1,0 +1,388 @@
+diff --git a/README.md b/README.md
+new file mode 100644
+index 0000000..f29a3d3
+--- /dev/null
++++ b/README.md
+@@ -0,0 +1,44 @@
++# Persistent Todo HTTP Service
++
++A todo JSON API written with only the Python standard library.
++
++## Run
++
++```sh
++python3 server.py --port 8000 --file todos.json
++```
++
++- `--port`: port to listen on (default 8000)
++- `--file`: JSON file used for persistence (created/overwritten atomically on each mutation); existing state is loaded on startup
++
++The server binds to `127.0.0.1` by default and uses a threaded HTTP server, so concurrent requests are handled safely (state is guarded by a lock and persisted atomically via temp-file write + `os.replace`).
++
++## Endpoints
++
++| Method | Path | Description |
++|--------|------|-------------|
++| GET | `/health` | `{"status":"ok"}` |
++| GET | `/todos` | JSON array of todo items |
++| POST | `/todos` | Body `{"title":"text"}` → creates item `{"id":N,"title":"...","completed":false}`, returns 201. 400 on bad JSON or empty/invalid title. |
++| PATCH | `/todos/ID` | Body `{"completed":true}` → updates item, returns it. 400 on bad JSON/invalid payload, 404 on unknown id. |
++| DELETE | `/todos/ID` | Deletes item, returns 204. 404 on unknown id. |
++
++Any other path returns 404.
++
++## Examples
++
++```sh
++curl http://127.0.0.1:8000/health
++curl http://127.0.0.1:8000/todos
++curl -X POST http://127.0.0.1:8000/todos -d '{"title":"buy milk"}' -H 'Content-Type: application/json'
++curl -X PATCH http://127.0.0.1:8000/todos/1 -d '{"completed":true}'
++curl -X DELETE http://127.0.0.1:8000/todos/1
++```
++
++## Tests
++
++Integration tests start the server as a subprocess and exercise it over loopback HTTP:
++
++```sh
++python3 -m unittest discover -s tests -v
++```
+diff --git a/server.py b/server.py
+new file mode 100644
+index 0000000..2baf48e
+--- /dev/null
++++ b/server.py
+@@ -0,0 +1,155 @@
++#!/usr/bin/env python3
++"""Persistent todo HTTP service (Python standard library only).
++
++Usage:
++    python3 server.py --port 8000 --file todos.json
++"""
++
++import argparse
++import json
++import os
++import threading
++from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
++from urllib.parse import urlsplit
++
++_lock = threading.Lock()
++_todos = []
++_next_id = 1
++_file_path = None
++
++
++def load_state(path):
++    global _todos, _next_id
++    if path and os.path.exists(path):
++        try:
++            with open(path, "r", encoding="utf-8") as f:
++                data = json.load(f)
++            if isinstance(data, list):
++                _todos = [t for t in data if isinstance(t, dict) and "id" in t and "title" in t]
++                ids = [t["id"] for t in _todos if isinstance(t["id"], int)]
++                _next_id = (max(ids) + 1) if ids else 1
++        except (OSError, ValueError):
++            _todos = []
++            _next_id = 1
++
++
++def persist():
++    if not _file_path:
++        return
++    tmp = _file_path + ".tmp"
++    with open(tmp, "w", encoding="utf-8") as f:
++        json.dump(_todos, f)
++    os.replace(tmp, _file_path)
++
++
++def send_json(handler, status, payload):
++    body = json.dumps(payload).encode("utf-8")
++    handler.send_response(status)
++    handler.send_header("Content-Type", "application/json")
++    handler.send_header("Content-Length", str(len(body)))
++    handler.end_headers()
++    if body:
++        handler.wfile.write(body)
++
++
++class TodoHandler(BaseHTTPRequestHandler):
++    protocol_version = "HTTP/1.1"
++
++    def log_message(self, *args):
++        pass
++
++    def _read_body(self):
++        length = int(self.headers.get("Content-Length") or 0)
++        raw = self.rfile.read(length) if length else b""
++        try:
++            return json.loads(raw.decode("utf-8"))
++        except (ValueError, UnicodeDecodeError):
++            return None
++
++    def do_GET(self):
++        if self.path == "/health":
++            send_json(self, 200, {"status": "ok"})
++        elif self.path == "/todos":
++            with _lock:
++                items = list(_todos)
++            send_json(self, 200, items)
++        else:
++            send_json(self, 404, {"error": "not found"})
++
++    def do_POST(self):
++        if self.path != "/todos":
++            send_json(self, 404, {"error": "not found"})
++            return
++        data = self._read_body()
++        if not isinstance(data, dict) or not isinstance(data.get("title"), str) or not data["title"].strip():
++            send_json(self, 400, {"error": "title must be a non-empty string"})
++            return
++        global _next_id
++        with _lock:
++            item = {"id": _next_id, "title": data["title"], "completed": False}
++            _next_id += 1
++            _todos.append(item)
++            persist()
++        send_json(self, 201, item)
++
++    def do_PATCH(self):
++        parts = [p for p in urlsplit(self.path).path.split("/") if p]
++        if len(parts) != 2 or parts[0] != "todos":
++            send_json(self, 404, {"error": "not found"})
++            return
++        try:
++            item_id = int(parts[1])
++        except ValueError:
++            send_json(self, 404, {"error": "not found"})
++            return
++        data = self._read_body()
++        if not isinstance(data, dict) or not isinstance(data.get("completed"), bool):
++            send_json(self, 400, {"error": "payload must be {'completed': bool}"})
++            return
++        with _lock:
++            for item in _todos:
++                if item["id"] == item_id:
++                    item["completed"] = data["completed"]
++                    persist()
++                    send_json(self, 200, dict(item))
++                    return
++        send_json(self, 404, {"error": "not found"})
++
++    def do_DELETE(self):
++        parts = [p for p in urlsplit(self.path).path.split("/") if p]
++        if len(parts) != 2 or parts[0] != "todos":
++            send_json(self, 404, {"error": "not found"})
++            return
++        try:
++            item_id = int(parts[1])
++        except ValueError:
++            send_json(self, 404, {"error": "not found"})
++            return
++        with _lock:
++            for i, item in enumerate(_todos):
++                if item["id"] == item_id:
++                    del _todos[i]
++                    persist()
++                    self.send_response(204)
++                    self.send_header("Content-Length", "0")
++                    self.end_headers()
++                    return
++        send_json(self, 404, {"error": "not found"})
++
++
++def main():
++    global _file_path
++    parser = argparse.ArgumentParser(description="Persistent todo HTTP service")
++    parser.add_argument("--port", type=int, default=8000)
++    parser.add_argument("--file", default="todos.json")
++    parser.add_argument("--host", default="127.0.0.1")
++    args = parser.parse_args()
++    _file_path = args.file
++    load_state(args.file)
++    server = ThreadingHTTPServer((args.host, args.port), TodoHandler)
++    print(f"Serving on http://{args.host}:{args.port} (file={args.file})")
++    server.serve_forever()
++
++
++if __name__ == "__main__":
++    main()
+diff --git a/tests/test_server.py b/tests/test_server.py
+new file mode 100644
+index 0000000..1b5ceb0
+--- /dev/null
++++ b/tests/test_server.py
+@@ -0,0 +1,171 @@
++#!/usr/bin/env python3
++"""HTTP integration tests for server.py.
++
++Each test starts the server as a subprocess on a loopback port with a
++temporary persistence file and exercises the real HTTP API via urllib.
++"""
++
++import json
++import os
++import subprocess
++import sys
++import tempfile
++import time
++import unittest
++import urllib.error
++import urllib.request
++
++ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
++SERVER = os.path.join(ROOT, "server.py")
++
++
++class ServerCase(unittest.TestCase):
++    port = 18099
++
++    @classmethod
++    def setUpClass(cls):
++        cls.tmpdir = tempfile.TemporaryDirectory()
++        cls.datafile = os.path.join(cls.tmpdir.name, "todos.json")
++        cls.proc = subprocess.Popen(
++            [sys.executable, SERVER, "--port", str(cls.port), "--file", cls.datafile],
++            stdout=subprocess.DEVNULL,
++            stderr=subprocess.DEVNULL,
++        )
++        # wait for health
++        deadline = time.time() + 10
++        while time.time() < deadline:
++            try:
++                if cls.request("GET", "/health")[0] == 200:
++                    return
++            except OSError:
++                time.sleep(0.05)
++        cls.tearDownClass()
++        raise RuntimeError("server did not start")
++
++    @classmethod
++    def tearDownClass(cls):
++        cls.proc.terminate()
++        try:
++            cls.proc.wait(timeout=5)
++        except subprocess.TimeoutExpired:
++            cls.proc.kill()
++        cls.tmpdir.cleanup()
++
++    @classmethod
++    def request(cls, method, path, body=None, raw=None):
++        url = f"http://127.0.0.1:{cls.port}{path}"
++        data = raw if raw is not None else (
++            json.dumps(body).encode() if body is not None else None)
++        req = urllib.request.Request(url, data=data, method=method,
++                                     headers={"Content-Type": "application/json"})
++        try:
++            with urllib.request.urlopen(req) as resp:
++                payload = resp.read()
++                return resp.status, json.loads(payload) if payload else None
++        except urllib.error.HTTPError as e:
++            payload = e.read()
++            try:
++                parsed = json.loads(payload) if payload else None
++            except json.JSONDecodeError:
++                parsed = None
++            return e.code, parsed
++
++    def setUp(self):
++        # clean slate for each test
++        for _, todos in [self.request("GET", "/todos")]:
++            for item in todos or []:
++                self.request("DELETE", f"/todos/{item['id']}")
++
++    def test_health(self):
++        status, body = self.request("GET", "/health")
++        self.assertEqual(status, 200)
++        self.assertEqual(body, {"status": "ok"})
++
++    def test_create_and_list(self):
++        status, item = self.request("POST", "/todos", {"title": "buy milk"})
++        self.assertEqual(status, 201)
++        self.assertEqual(item["title"], "buy milk")
++        self.assertFalse(item["completed"])
++        self.assertIn("id", item)
++        status, todos = self.request("GET", "/todos")
++        self.assertEqual(status, 200)
++        self.assertIsInstance(todos, list)
++        self.assertEqual(len(todos), 1)
++
++    def test_unique_ids(self):
++        _, a = self.request("POST", "/todos", {"title": "a"})
++        _, b = self.request("POST", "/todos", {"title": "b"})
++        self.assertNotEqual(a["id"], b["id"])
++
++    def test_post_bad_json(self):
++        status, _ = self.request("POST", "/todos", raw=b"{not json")
++        self.assertEqual(status, 400)
++
++    def test_post_empty_title(self):
++        for bad in ({"title": ""}, {"title": 5}, {}):
++            status, _ = self.request("POST", "/todos", bad)
++            self.assertEqual(status, 400, bad)
++
++    def test_patch(self):
++        _, item = self.request("POST", "/todos", {"title": "x"})
++        status, updated = self.request(
++            "PATCH", f"/todos/{item['id']}", {"completed": True})
++        self.assertEqual(status, 200)
++        self.assertTrue(updated["completed"])
++
++    def test_patch_errors(self):
++        status, _ = self.request("PATCH", "/todos/99999", {"completed": True})
++        self.assertEqual(status, 404)
++        _, item = self.request("POST", "/todos", {"title": "x"})
++        status, _ = self.request("PATCH", f"/todos/{item['id']}", {"completed": "yes"})
++        self.assertEqual(status, 400)
++
++    def test_delete(self):
++        _, item = self.request("POST", "/todos", {"title": "x"})
++        status, _ = self.request("DELETE", f"/todos/{item['id']}")
++        self.assertEqual(status, 204)
++        status, todos = self.request("GET", "/todos")
++        self.assertEqual(todos, [])
++        status, _ = self.request("DELETE", f"/todos/{item['id']}")
++        self.assertEqual(status, 404)
++
++    def test_patch_with_query_string(self):
++        _, item = self.request("POST", "/todos", {"title": "qs"})
++        status, updated = self.request(
++            "PATCH", f"/todos/{item['id']}?x=1", {"completed": True})
++        self.assertEqual(status, 200)
++        self.assertTrue(updated["completed"])
++
++    def test_delete_with_query_string(self):
++        _, item = self.request("POST", "/todos", {"title": "qs"})
++        status, _ = self.request("DELETE", f"/todos/{item['id']}?x=1")
++        self.assertEqual(status, 204)
++
++    def test_unknown_path(self):
++        status, _ = self.request("GET", "/nope")
++        self.assertEqual(status, 404)
++        status, _ = self.request("DELETE", "/todos")
++        self.assertEqual(status, 404)
++
++    def test_persistence_across_restart(self):
++        _, item = self.request("POST", "/todos", {"title": "persist me"})
++        self.proc.terminate()
++        self.proc.wait(timeout=5)
++        self.proc = subprocess.Popen(
++            [sys.executable, SERVER, "--port", str(self.port), "--file", self.datafile],
++            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
++        deadline = time.time() + 10
++        while True:
++            try:
++                if self.request("GET", "/health")[0] == 200:
++                    break
++            except OSError:
++                if time.time() > deadline:
++                    self.fail("server did not restart")
++                time.sleep(0.05)
++        status, todos = self.request("GET", "/todos")
++        self.assertEqual(todos, [item])
++
++
++if __name__ == "__main__":
++    unittest.main()

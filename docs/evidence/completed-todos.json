@@ -1,0 +1,136 @@
+{
+  "kind": "external acceptance",
+  "applications": [
+    {
+      "application": "todos",
+      "checks": [
+        {
+          "name": "root server.py exists",
+          "ok": true,
+          "detail": ""
+        },
+        {
+          "name": "service starts on a dynamic localhost port",
+          "ok": true,
+          "detail": ""
+        },
+        {
+          "name": "health payload",
+          "ok": true,
+          "detail": ""
+        },
+        {
+          "name": "new selected file starts empty",
+          "ok": true,
+          "detail": ""
+        },
+        {
+          "name": "duplicate titles receive distinct IDs",
+          "ok": true,
+          "detail": ""
+        },
+        {
+          "name": "PATCH changes selected item only",
+          "ok": true,
+          "detail": ""
+        },
+        {
+          "name": "DELETE returns empty 204 and removes selected item",
+          "ok": true,
+          "detail": ""
+        },
+        {
+          "name": "reject malformed JSON",
+          "ok": true,
+          "detail": ""
+        },
+        {
+          "name": "reject empty title",
+          "ok": true,
+          "detail": ""
+        },
+        {
+          "name": "reject missing title",
+          "ok": true,
+          "detail": ""
+        },
+        {
+          "name": "reject nontext title",
+          "ok": true,
+          "detail": ""
+        },
+        {
+          "name": "PATCH rejects malformed JSON",
+          "ok": true,
+          "detail": ""
+        },
+        {
+          "name": "unknown IDs and paths return 404",
+          "ok": true,
+          "detail": ""
+        },
+        {
+          "name": "rejected requests preserve persisted bytes",
+          "ok": true,
+          "detail": ""
+        },
+        {
+          "name": "read-during-write JSON atomicity smoke check",
+          "ok": true,
+          "detail": "No torn JSON observed; bounded sampling does not prove atomicity for every interleaving."
+        },
+        {
+          "name": "all ten concurrent creates survive with unique IDs",
+          "ok": true,
+          "detail": ""
+        },
+        {
+          "name": "service restarts using the same file",
+          "ok": true,
+          "detail": ""
+        },
+        {
+          "name": "restart preserves every item and completion state",
+          "ok": true,
+          "detail": ""
+        },
+        {
+          "name": "automated tests execute and pass",
+          "ok": true,
+          "detail": "observed unittest count: 12"
+        },
+        {
+          "name": "usage documentation smoke check",
+          "ok": true,
+          "detail": "Documentation contents still merit a human review."
+        }
+      ],
+      "limitations": [],
+      "status": "passed"
+    }
+  ],
+  "scope": "Only listed checks ran. Frozen policies and implementations were not edited by this harness.",
+  "provenance": {
+    "entrypoint": "./so-so with INTENT.md",
+    "status": "complete",
+    "head": "9ab46607bc8e7715f31dc25d8b086f41bfab3495",
+    "base": "068d0173b3cad136e099f31961ab6ac4c5cb21c1",
+    "worker_models": [
+      "RTX Qwen3.8-27B Q4_K_M",
+      "configured Kimi CLI"
+    ],
+    "router": "existing RTX gemma4:e2b on CPU",
+    "files": {
+      "server.py": "9b9ecefabab3875dc2a5e360914c098ce0d4ceaafd764fe7f95c902f0f84e80d",
+      "README.md": "1141185b706111ac0bf7ac12215f018f11751c21f0ee137e6963bad650ce8b07",
+      "tests/test_server.py": "5df493a621a67882e40a872189fc35000ce8de6b8e972f703bd9ccc29dfd7cb1"
+    },
+    "completion_review": {
+      "approve": true,
+      "complete": true,
+      "reason": "All 20 evaluator checks pass (score 100, complete true) against the real server over loopback HTTP. server.py shown in full: stdlib-only ThreadingHTTPServer, --port/--file args, 127.0.0.1 default, /health returns {'status':'ok'}, GET/POST/PATCH/DELETE /todos with correct 201/204/400/404 semantics, non-empty title validation, bad JSON rejection, 404 for unknown paths, atomic persistence via temp file + os.replace, state loaded on startup, and lock-guarded mutations. README.md with usage docs is present and substantive. tests/test_server.py exists (content not shown in excerpts, but the evaluator independently exercised restart persistence and concurrent POSTs, which a stub could not pass), and the provenance review confirmed the evaluator's behavioral checks hit the live server with bounded timeouts and subprocess lifecycle management. Minor defects noted in prior review (one vacuous check, presence-only docs/tests checks) are low-weight and do not undermine the demonstrated goal behaviors. All milestones and assumptions are satisfied.",
+      "head": "9ab46607bc8e7715f31dc25d8b086f41bfab3495"
+    },
+    "limitation": "One small local HTTP service; deployment, authentication and internet exposure were outside this assignment."
+  }
+}

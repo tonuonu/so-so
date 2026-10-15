@@ -320,11 +320,14 @@ def _contract(root, config, intent, router, folder, previous_feedback=''):
 
 class DeliveryEpoch(Run):
     """Reuse isolated candidates and commit guards, with nonregressing acceptance."""
+    MAX_REPAIRS = 3
+
     def __init__(self, root, config, intent, contract, feedback, allow_exec, draft=None):
         super().__init__(root, config, intent, allow_exec)
         self.integration = root
         self.contract = contract
         self.feedback = feedback
+        self._continuation = None
         self.pinned = fingerprint(root, config['protected'])
         self.report = {'status': 'running', 'rounds': [], 'plateau': 0, 'branch': git(root, 'branch', '--show-current'),
                        'deadline_unix': time.time() + config['max_seconds']}
@@ -342,6 +345,11 @@ class DeliveryEpoch(Run):
         base = git(self.integration, 'rev-parse', 'HEAD')
         if (draft.get('base') != base or draft.get('phase') not in ('worker', 'evaluate', 'review')
                 or not isinstance(draft.get('task'), str) or not draft['task'].strip()
+                or type(draft.get('repairs', 0)) is not int
+                or not 0 <= draft.get('repairs', 0) <= self.MAX_REPAIRS
+                or not isinstance(draft.get('repair_feedback', ''), str)
+                or len(draft.get('repair_feedback', '')) > 2000
+                or (draft.get('repairs', 0) and not draft.get('repair_feedback', '').strip())
                 or any(draft.get(k) != v for k, v in self.draft_binding().items())):
             raise ValueError('retained candidate base or policy binding changed')
         ref = draft.get('ref', '')
@@ -353,6 +361,7 @@ class DeliveryEpoch(Run):
 
     def retain_candidate(self, path, result, base, expected, name, phase):
         # This bounded local checkpoint does not consume an expired inference budget.
+        previous = self._continuation or {}
         self.report.pop('draft', None)
         if (git(self.integration, 'rev-parse', 'HEAD') != base
                 or git(path, 'rev-parse', 'HEAD') != expected
@@ -369,9 +378,32 @@ class DeliveryEpoch(Run):
             return
         ref = f'refs/soso/{self.run_id}/{name}'
         git(self.root, 'update-ref', ref, commit)
-        self.report['draft'] = {**self.draft_binding(), 'task': result['task'], 'base': base,
-                                'commit': commit, 'ref': ref, 'phase': phase}
+        self.report['draft'] = {**self.draft_binding(), 'task': previous.get('task', result['task']), 'base': base,
+                                'commit': commit, 'ref': ref, 'phase': phase,
+                                'repairs': previous.get('repairs', 0),
+                                'repair_feedback': previous.get('repair_feedback', '')}
         self.checkpoint()  # ref and descriptor are durable before the worktree is removed
+
+    def repair_candidate(self, candidate):
+        """Keep a useful rejected increment for a bounded repair, never integration."""
+        review = candidate.get('review', {})
+        evaluation = candidate.get('evaluation', {})
+        reason = review.get('reason')
+        if (review.get('approve') is not False or review.get('useful') is not True
+                or review.get('head') != candidate.get('commit')
+                or evaluation.get('valid') is not True or evaluation['score'] < self.report['best']
+                or not isinstance(reason, str) or not reason.strip()):
+            return False
+        draft = self.pending_candidate()
+        if not draft or draft['commit'] != candidate['commit'] or draft.get('repairs', 0) >= self.MAX_REPAIRS:
+            return False
+        if (fingerprint(self.integration, self.config['protected']) != self.pinned
+                or git(self.integration, 'status', '--porcelain')):
+            raise ValueError('review modified accepted source')
+        draft.update(phase='worker', repairs=draft.get('repairs', 0) + 1,
+                     repair_feedback=reason.strip()[:2000])
+        self.checkpoint()
+        return True
 
     def plan(self):
         prompt = ('Plan one small useful next milestone step. Known baseline defects need not all be fixed in one step. '
@@ -450,6 +482,11 @@ class DeliveryEpoch(Run):
                 self.budget.remaining()
                 draft = self.pending_candidate()
                 task = draft['task'] if draft else self.plan()[0]
+                if draft and draft.get('repair_feedback'):
+                    task += ('\nREVIEW REPAIR REQUIRED:\nKeep the useful existing candidate and fix the following '
+                             'review findings before requesting acceptance. This draft has not been accepted.\n'
+                             + draft['repair_feedback'])
+                self._continuation = draft
                 self.report.pop('draft', None)
                 candidate = self.experiment(task, number, 0, draft)
                 round_result = {'round': number, 'experiments': [candidate], 'accepted': None}
@@ -482,7 +519,8 @@ class DeliveryEpoch(Run):
                         self.report['status'] = 'complete'
                         break
                 else:
-                    self.report.pop('draft', None)  # explicit rejection is not a paused review
+                    if not self.repair_candidate(candidate):
+                        self.report.pop('draft', None)
                     self.report['plateau'] += 1
                 self.checkpoint()
                 if self.report['plateau'] >= self.config['patience']:

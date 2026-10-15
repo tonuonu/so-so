@@ -115,6 +115,17 @@ class Budget:
 
 def object_json(text):
     text = text.strip()
+    if text.startswith('<tool_call>'):
+        # Some locally served tool-trained models wrap their JSON even when
+        # JSON mode is requested. Decode exactly one value; never scrape braces.
+        wrapped = text[len('<tool_call>'):].lstrip()
+        result, end = json.JSONDecoder().raw_decode(wrapped)
+        suffix = wrapped[end:].strip()
+        if not re.fullmatch(r'(?:</(?:invoke|parameter|function)>\s*)*</tool_call>', suffix):
+            raise ValueError('unexpected content outside tool request')
+        if not isinstance(result, dict):
+            raise ValueError('expected one JSON object')
+        return result
     if text.startswith("```"):
         text = text.split("\n", 1)[1].rsplit("```", 1)[0].strip()
     result = json.loads(text)
