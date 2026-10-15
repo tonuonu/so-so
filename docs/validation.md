@@ -5,7 +5,7 @@ The runner was exercised with real inference as well as deterministic fixtures.
 
 ## Automated checks
 
-The delivery implementation passed 169 deterministic tests on macOS Python 3.11.
+The delivery implementation passed 172 deterministic tests on macOS Python 3.11.
 The earlier 117-test snapshot also passed in a Linux container; GitHub Actions
 checks the current commit on Linux. These cover tool paths, protected policy, subprocess and
 HTTP deadlines, routing, Git isolation, evaluation binding, restart recovery,
@@ -205,3 +205,13 @@ were verified, and its generated test file has an import mismatch. The controlle
 accepted useful logic, not goal completion; implementation continues. These three
 trials show two completed applications and one useful partial implementation,
 not a guarantee of completing an arbitrary assignment.
+
+## Default self-improvement prerequisites
+
+The normal launcher prepares missing Node and C build tools before the bundled,
+intent-bound self-improvement assignment runs its existing example checks.
+Launcher subprocess tests cover apt, dnf and apk package selection, reuse of
+installed tools, ordinary/changed-goal exclusions and missing sudo permission.
+Package-manager commands are mocked in these regressions; no real dependency
+installation or model download occurred in them. The earlier clean-Linux runtime
+bootstrap proof remains separately recorded above.

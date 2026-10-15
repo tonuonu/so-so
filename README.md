@@ -83,13 +83,14 @@ See the [validation record](docs/validation.md) for deterministic tests, live tr
 rejected candidates and self-improvement evidence. Live single-command trials with RTX Qwen, a small RTX router and Kimi completed
 an expense ledger (19/19 external checks) and a todo service (20/20). A third
 Minesweeper project has accepted logic passing 9/9 core checks, but its UI and
-generated test integration remain unfinished. The runner passes 169 automated
+generated test integration remain unfinished. The runner passes 172 automated
 tests and Linux CI on Python 3.11–3.13. These are small-project results, not proof
 of arbitrary autonomous application delivery.
 
 The runtime itself uses Python's standard library. Bootstrap can provision Python
 locally and install Git through supported Linux package managers when permission
-is available. Models are not downloaded automatically. Commands run with host
+is available. The bundled self-improvement assignment also prepares missing Node
+and C build tools for its existing checks. Models are not downloaded automatically. Commands run with host
 permissions: Git worktrees are not an operating-system sandbox, and rolling back
 source does not undo cloud operations. Model-generated acceptance checks and model
 reviews can miss requirements.

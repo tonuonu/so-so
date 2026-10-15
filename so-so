@@ -1,5 +1,5 @@
 #!/bin/sh
-# One-command entry. All runtime setup stays below .so-so.
+# One-command entry. Managed runtime files stay below .so-so.
 set -eu
 so_so_state="$PWD/.so-so"
 if [ ! -e "$so_so_state" ]; then
@@ -75,6 +75,46 @@ if [ ! -f "$so_so_root/soso/launch.py" ]; then
         else
             GIT_TERMINAL_PROMPT=0 git clone --depth 1 git@github.com:tonuonu/so-so.git "$so_so_root"
         fi
+    fi
+fi
+# Only the bundled, intent-bound assignment needs the fixed C/Node example checks.
+# Ordinary project goals discover their own prerequisites during delivery.
+if "$so_so_python" -I -c '
+import hashlib,json,pathlib,sys
+try:
+    root=pathlib.Path.cwd()
+    intent=(root/"INTENT.md").read_text()
+    config=json.loads((root/"soso.json").read_text())
+    goal=sys.argv[2] if len(sys.argv)>2 else intent
+    if goal.strip().lower()=="read intent.md": goal=intent
+    required=(root.resolve()==pathlib.Path(sys.argv[1]).resolve()
+        and config.get("mode")=="optimize"
+        and config.get("prepared_intent_sha256")==hashlib.sha256(goal.encode()).hexdigest()
+        and any("scripts/check_examples.py" in c for c in config.get("checks",[])))
+except (OSError,ValueError,TypeError,AttributeError):
+    required=False
+raise SystemExit(not required)
+' "$so_so_root" "$@"; then
+    so_so_packages=''
+    if ! command -v node >/dev/null 2>&1; then
+        so_so_packages='nodejs'
+    fi
+    if ! command -v cc >/dev/null 2>&1; then
+        if command -v apt-get >/dev/null 2>&1; then
+            so_so_packages="$so_so_packages build-essential"
+        elif command -v dnf >/dev/null 2>&1; then
+            so_so_packages="$so_so_packages gcc glibc-devel"
+        else
+            so_so_packages="$so_so_packages build-base"
+        fi
+    fi
+    if [ -n "$so_so_packages" ]; then
+        printf '%s\n' 'Preparing tools for the bundled self-improvement checks…'
+        so_so_install $so_so_packages
+    fi
+    if ! command -v node >/dev/null 2>&1 || ! command -v cc >/dev/null 2>&1; then
+        printf '%s\n' 'so-so: bundled self-improvement checks require Node.js and a C compiler.' >&2
+        exit 1
     fi
 fi
 exec "$so_so_python" -I -c 'import runpy,sys; sys.path.insert(0,sys.argv.pop(1)); runpy.run_module("soso.launch",run_name="__main__")' "$so_so_root" "$@"
