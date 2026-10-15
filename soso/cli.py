@@ -37,6 +37,10 @@ def main(argv=None):
         root = Path(args.repo).resolve()
         config = load_config(root / args.config)
         intent = (root / args.intent).read_text()
+        for name in (args.config, args.intent):
+            path = (root / name).resolve()
+            if path.is_relative_to(root):
+                config["protected"].append(str(path.relative_to(root)))
         if not intent.strip() or len(intent.encode()) > 8000:
             raise ValueError("intent must contain 1..8000 bytes; move detail into source files")
         runner = Run(root, config, intent, args.allow_exec, args.resume)

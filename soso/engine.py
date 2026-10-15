@@ -130,6 +130,7 @@ class Run:
         self.intent = intent
         self.budget = Budget(config["max_calls"], config["max_seconds"])
         self.started = time.monotonic()
+        self.created_wall = time.time()
         self.elapsed_before = 0
         common = Path(git(self.root, "rev-parse", "--git-common-dir"))
         if not common.is_absolute():
@@ -187,8 +188,9 @@ class Run:
                         continue  # A torn final journal record is not a completed request.
                     if event.get("event") == "model_request":
                         self.budget.calls = max(self.budget.calls, event["call"])
-            self.elapsed_before = self.report.get("elapsed", 0)
-            self.budget.deadline = self.started + max(0, self.config["max_seconds"] - self.elapsed_before)
+            expiry = self.report["deadline_unix"]
+            self.elapsed_before = max(0, self.created_wall - (expiry - self.config["max_seconds"]))
+            self.budget.deadline = self.started + max(0, expiry - self.created_wall)
             self.report["status"] = "running"
         else:
             if git(self.root, "status", "--porcelain"):
@@ -199,8 +201,14 @@ class Run:
             self.report = {"run_id": self.run_id, "branch": branch, "base": base,
                            "status": "running", "config_sha256": config_digest,
                            "intent_sha256": intent_digest, "rounds": [], "plateau": 0,
-                           "resources": resources(), "elapsed": 0}
+                           "resources": resources(), "elapsed": 0,
+                           "deadline_unix": self.created_wall + self.config["max_seconds"]}
+            before = fingerprint(self.integration, self.config["protected"])
             self.report["baseline"] = evaluate(self.integration, self.config, self.budget)
+            if (git(self.integration, "rev-parse", "HEAD") != base
+                    or git(self.integration, "status", "--porcelain")
+                    or fingerprint(self.integration, self.config["protected"]) != before):
+                self.report["baseline"] = {"valid": False, "reason": "baseline evaluation modified source"}
             if not self.report["baseline"]["valid"]:
                 self.report["status"] = "invalid_baseline"
                 self.checkpoint()
@@ -309,7 +317,9 @@ class Run:
             git(path, "-c", "commit.gpgsign=false", "commit", "-m", f"Experiment {round_number}.{index}")
             result["commit"] = git(path, "rev-parse", "HEAD")
             result["evaluation"] = evaluate(path, self.config, self.budget)
-            if fingerprint(path, self.config["protected"]) != self.pinned or git(path, "status", "--porcelain"):
+            if (git(path, "rev-parse", "HEAD") != result["commit"]
+                    or fingerprint(path, self.config["protected"]) != self.pinned
+                    or git(path, "status", "--porcelain")):
                 raise ValueError("evaluation modified source or protected files")
             # Retain accepted/rejected commits beyond Git's dangling-object grace period.
             git(self.root, "update-ref", f"refs/soso/{self.run_id}/{name}", result["commit"])

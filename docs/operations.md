@@ -53,6 +53,9 @@ work may wait for already-running workers to reach their bounded timeouts.
 
 ## Recovery and storage
 
+A persisted absolute wall deadline survives crashes and includes downtime. Resume
+never replenishes time or already-journaled model calls.
+
 Only one run owns a repository at a time (POSIX file lock in the common Git directory).
 Source must be clean. Worktrees and configuration are pinned to committed source;
 ignored caches are not copied into candidate worktrees. Submodule and large-data

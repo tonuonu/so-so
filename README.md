@@ -49,7 +49,7 @@ git merge --ff-only soso/RUN_ID
 
 Use the actual branch printed by the run. No push or merge into your own branch happens automatically. Internal run records live under the repository's common Git directory in `soso/RUN_ID/`. They include JSONL events, scores, candidate commits, review results and checkpoints. Treat logs as private source material.
 
-`--resume RUN_ID` continues a checkpoint with unchanged configuration, intent and execution permission, within its original budgets. It does not extend a stopped run's round or patience limits. For a new intent or budget, start a new run from the accepted result. Interrupted in-flight candidates may be retried; completed checkpointed rounds are retained.
+`--resume RUN_ID` continues a checkpoint with unchanged configuration, intent and execution permission, within its original budgets. Wall time includes downtime after a crash or interruption; resuming never renews the deadline. It does not extend a stopped run's round or patience limits. For a new intent or budget, start a new run from the accepted result. Interrupted in-flight candidates may be retried; completed checkpointed rounds are retained.
 
 ## The loop
 
