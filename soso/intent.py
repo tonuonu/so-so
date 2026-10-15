@@ -95,7 +95,7 @@ INVENTORY:
                     if source not in models:
                         raise ValueError('alias must name an exact inventory key')
                     tuning = settings.get(alias, {})
-                    allowed = {'context_tokens', 'context_bytes', 'max_tokens', 'timeout', 'parallel', 'options', 'think'}
+                    allowed = {'context_tokens', 'context_bytes', 'max_tokens', 'timeout', 'parallel', 'options', 'think', 'thinking_effort'}
                     if not isinstance(tuning, dict) or set(tuning) - allowed:
                         raise ValueError('unsupported model tuning setting')
                     chosen[alias] = {**models[source], **tuning}
@@ -113,6 +113,8 @@ INVENTORY:
                 for field in ('context_tokens', 'context_bytes', 'max_tokens', 'parallel', 'timeout'):
                     if field in model and (type(model[field]) is not int or model[field] < 1):
                         raise ValueError(field + ' must be a positive integer')
+                if 'thinking_effort' in model and model['thinking_effort'] not in ('low', 'medium', 'high', 'max', 'off'):
+                    raise ValueError('unsupported thinking effort')
                 if 'think' in model and not isinstance(model['think'], (bool, str)):
                     raise ValueError('think must be a boolean or provider thinking level')
                 if 'options' in model and not isinstance(model['options'], dict):

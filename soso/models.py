@@ -49,6 +49,10 @@ def retry_timestamp(value, now=None):
         return None
 
 
+class ModelOutputTruncated(ValueError):
+    """Provider exhausted its output allowance before completing the response."""
+
+
 class ModelUnavailable(RuntimeError):
     def __init__(self, retry_at=None, reason="provider unavailable"):
         super().__init__(reason)
@@ -329,7 +333,7 @@ class Router:
                     'Return exactly the JSON object requested by the user. You are an inference component. '
                     'The host controller owns tools, execution, files, and workflow. Do not call tools, ask for '
                     'interactive approval, or emit commentary outside the requested JSON.\n')
-                env = {**os.environ, 'KIMI_MODEL_THINKING_EFFORT': model.get('thinking_effort', 'max'),
+                env = {**os.environ, 'KIMI_MODEL_THINKING_EFFORT': model.get('thinking_effort', 'low'),
                        'KIMI_MODEL_MAX_COMPLETION_TOKENS': str(model.get('max_tokens', 8192))}
                 result = execute(argv + ['--agent-file', str(profile)] + model.get('args', []), cwd, timeout, limit=256000, env=env)
             if result['returncode'] or result['timed_out'] or result['truncated']:
@@ -339,7 +343,12 @@ class Router:
                 try:
                     event = json.loads(line)
                     if event.get('role') == 'assistant' and isinstance(event.get('content'), str):
+                        finish = event.get('meta', {}).get('finish', {})
+                        if finish.get('finishReason') == 'truncated' or finish.get('rawFinishReason') == 'length':
+                            raise ModelOutputTruncated('provider output token limit reached')
                         answers.append(event['content'])
+                except ModelOutputTruncated:
+                    raise
                 except ValueError:
                     continue
             if not answers:

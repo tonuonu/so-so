@@ -2,7 +2,7 @@ import json
 from pathlib import Path
 import unittest
 from unittest.mock import patch
-from soso.models import Router, Budget, ModelUnavailable
+from soso.models import Router, Budget, ModelUnavailable, ModelOutputTruncated
 
 class KimiAdapterTests(unittest.TestCase):
     def test_profile_disables_tools_and_final_answer_is_separated(self):
@@ -11,7 +11,7 @@ class KimiAdapterTests(unittest.TestCase):
             profile = Path(argv[argv.index('--agent-file') + 1]).read_text()
             self.assertIn('tools: []', profile)
             self.assertIn('subagents: []', profile)
-            self.assertEqual(kwargs['env']['KIMI_MODEL_THINKING_EFFORT'], 'max')
+            self.assertEqual(kwargs['env']['KIMI_MODEL_THINKING_EFFORT'], 'low')
             self.assertEqual(kwargs['env']['KIMI_MODEL_MAX_COMPLETION_TOKENS'], '8192')
             return {'returncode': 0, 'timed_out': False, 'truncated': False,
                     'output': '\n'.join(json.dumps(x) for x in [
@@ -28,3 +28,12 @@ class KimiAdapterTests(unittest.TestCase):
             with self.assertRaises(ModelUnavailable) as caught:
                 router.ask('worker', 'Return JSON', Path.cwd())
         self.assertIsNotNone(caught.exception.retry_at)
+
+    def test_truncated_final_answer_has_specific_error(self):
+        router = Router({'models': {'kimi': {'kind': 'kimi'}}, 'routes': {'worker': ['kimi']}}, Budget(2, 30), lambda *a, **k: None)
+        event = {'role': 'assistant', 'content': '{"unfinished":',
+                 'meta': {'finish': {'finishReason': 'truncated', 'rawFinishReason': 'length'}}}
+        with patch('soso.models.execute', return_value={'returncode': 0, 'timed_out': False, 'truncated': False,
+                                                       'output': json.dumps(event)}):
+            with self.assertRaises(ModelOutputTruncated):
+                router._call({'kind': 'kimi'}, 'Return JSON', Path.cwd(), 10)

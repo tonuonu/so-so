@@ -63,7 +63,7 @@ Example command adapter for Claude Code (verify flags with your installed CLI):
 {"kind":"command", "command":["claude","-p","--output-format","text","--tools",""], "parallel":1}
 ```
 
-The dedicated `kimi` adapter invokes prompt mode with a temporary agent profile that disables tools and subagents, and extracts the final assistant answer from the JSON event stream. Generic command adapters must provide their own permission settings and return protocol JSON. No vendor CLI is automatically installed or authenticated.
+The dedicated `kimi` adapter invokes prompt mode with a temporary agent profile that disables tools and subagents, and extracts the final assistant answer from the JSON event stream. Per-process reasoning and output limits default to low effort and 8192 tokens; model settings can override these without changing global CLI configuration. Provider truncation is reported separately from JSON syntax failure. Generic command adapters must provide their own permission settings and return protocol JSON. No vendor CLI is automatically installed or authenticated.
 
 [Codex non-interactive documentation](https://learn.chatgpt.com/docs/non-interactive-mode) describes its final-message output support. Local CLI help was also checked during implementation.
 
