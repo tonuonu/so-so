@@ -43,6 +43,29 @@ class RoutingPolicyTests(unittest.TestCase):
             router.ask('worker', 'packet', Path.cwd(), task='unclear')
         self.assertEqual(mocked.call_args_list[-1].args[0]['command'], ['x'])
 
+    def test_ollama_classifier_constrains_labels_without_mutating_worker(self):
+        cfg = config()
+        cfg['models']['triage'] = {'kind': 'ollama', 'model': 'small', 'url': 'http://localhost:11434'}
+        cfg['routing'] = {'selector': {'model': 'triage', 'routes': {'code': ['qwen'], 'hard': ['x']}}, 'default': ['x']}
+        router = Router(cfg, Budget(10, 30), lambda *a, **k: None)
+        with patch.object(router, '_call', return_value='{"route":"code"}') as call:
+            self.assertEqual(router._select('worker', 'Implement parser', Path.cwd()), ['qwen'])
+        schema = call.call_args.args[0]['response_schema']
+        self.assertEqual(schema['properties']['route']['enum'], ['code', 'hard'])
+        self.assertNotIn('response_schema', router.models['triage'])
+
+    def test_ollama_transmits_schema_and_thinking_preference(self):
+        router = Router(config(), Budget(10, 30), lambda *a, **k: None)
+        schema = {'type': 'object', 'properties': {'route': {'enum': ['code']}}}
+        response = {'returncode': 0, 'timed_out': False, 'truncated': False,
+                    'output': json.dumps({'status': 200, 'data': {'message': {'content': '{"route":"code"}'}}})}
+        with patch('soso.models.execute', return_value=response) as execute:
+            router._call({'kind': 'ollama', 'url': 'http://localhost:11434', 'model': 'small',
+                          'think': False, 'response_schema': schema}, 'classify', Path.cwd(), 10)
+        body = json.loads(execute.call_args.kwargs['stdin'])['body']
+        self.assertEqual(body['format'], schema)
+        self.assertIs(body['think'], False)
+
     def test_quota_cooldown_persists_and_other_model_keeps_working(self):
         with tempfile.TemporaryDirectory() as tmp:
             cfg = config(); cfg['routing'] = {'default': ['qwen', 'x']}
@@ -76,3 +99,10 @@ class RoutingPolicyTests(unittest.TestCase):
     def test_unknown_destination_is_rejected(self):
         cfg = config(); cfg['routing']['default'] = ['missing']
         with self.assertRaises(ValueError): Router(cfg, Budget(10, 30), lambda *a, **k: None)
+
+    def test_classifier_cannot_be_hidden_by_catch_all_rules(self):
+        cfg = config()
+        cfg['routing'] = {'rules': [{'role': role, 'models': ['x']} for role in ('planner', 'worker', 'reviewer')],
+                          'selector': {'model': 'triage', 'routes': {'code': ['qwen']}}}
+        with self.assertRaisesRegex(ValueError, 'unreachable'):
+            Router(cfg, Budget(10, 30), lambda *a, **k: None)

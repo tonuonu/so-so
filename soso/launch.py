@@ -15,6 +15,7 @@ import uuid
 from .delivery import _identity, start_goal
 from .engine import atomic_json
 from .models import ModelUnavailable, redact
+from .optimize import optimize_project, optimization_requested, prepared_optimization
 from .process import execute, git
 
 
@@ -185,11 +186,13 @@ def launch(cwd: Path, goal: str | None = None):
         entry = json.loads(path.read_text()) if path.exists() else {
             'fingerprint': fingerprint, 'project': str(project), 'source': str(cwd),
             'goal_id': None, 'status': 'starting', 'next_retry_at': None, 'phase': 'model_setup'}
-        entry['goal_id'] = entry.get('goal_id') or _goal_id(project)
+        entry['mode'] = 'optimize' if prepared_optimization(project, goal) else 'delivery'
+        if entry['mode'] == 'delivery':
+            entry['goal_id'] = entry.get('goal_id') or _goal_id(project)
         _save(managed, folder, entry)
         failures = entry.get('setup_failures', 0)
         try:
-            if not entry['goal_id']:
+            if not entry['goal_id'] and not (entry['mode'] == 'optimize' and (folder / 'optimization.json').exists()):
                 while True:
                     if entry.get('next_retry_at') and entry['next_retry_at'] > time.time():
                         _wait(entry['next_retry_at'])
@@ -210,8 +213,16 @@ def launch(cwd: Path, goal: str | None = None):
                                      max(time.time() + 1, exc.retry_at) if exc.retry_at is not None else
                                      time.time() + min(900, 30 * 2 ** min(failures - 1, 5)))
                         _save(managed, folder, entry)
-            result = start_goal(project, goal, models_path=entry.get('models_path'), resume_goal=entry['goal_id'])
-            entry.update(goal_id=result['goal_id'], status=result['status'], phase='delivery',
+            if entry['mode'] == 'optimize':
+                def save_optimization(state):
+                    entry.update({key: state.get(key) for key in ('run_id', 'status', 'next_retry_at', 'report', 'worktree')})
+                    entry['phase'] = 'optimize'
+                    _save(managed, folder, entry)
+                result = optimize_project(project, goal, folder, models_path=entry.get('models_path'), save=save_optimization)
+            else:
+                options = {'ignore_project_config': True} if optimization_requested(project) else {}
+                result = start_goal(project, goal, models_path=entry.get('models_path'), resume_goal=entry['goal_id'], **options)
+            entry.update(goal_id=result.get('goal_id'), status=result['status'], phase=entry['mode'],
                          next_retry_at=result.get('next_retry_at'), report=result.get('report'))
             _save(managed, folder, entry)
             return {**result, 'source': str(cwd), 'snapshot': str(project), 'excluded': excluded[:100]}
@@ -227,12 +238,12 @@ def main(argv=None):
     args = parser.parse_args(argv)
     try:
         result = launch(Path.cwd(), args.goal)
-        print('Goal ' + result['status'] + '.')
+        print('Optimization reached a plateau.' if result['status'] == 'optimized' else 'Goal ' + result['status'] + '.')
         if result.get('worktree'):
             print('Result: ' + result['worktree'])
         if result.get('report'):
             print('Evidence: ' + result['report'])
-        return 0 if result['status'] == 'complete' else 2
+        return 0 if result['status'] in ('complete', 'optimized') else 1 if result['status'] == 'blocked' else 2
     except (OSError, ValueError, RuntimeError, KeyError) as exc:
         print('so-so: ' + redact(str(exc)), file=sys.stderr)
         return 1

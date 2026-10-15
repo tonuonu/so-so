@@ -64,5 +64,9 @@
     "README.md",
     "LICENSE",
     "Dockerfile"
-  ]
+  ],
+  "mode": "optimize",
+  "prepared_intent_sha256": "b3d9a1c65917070e5a9275046255b5e10c3c9b70dbc0f80c488cbe1f4a00c7c9",
+  "evaluation_timeout": 300,
+  "command_timeout": 300
 }

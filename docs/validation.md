@@ -5,8 +5,8 @@ The runner was exercised with real inference as well as deterministic fixtures.
 
 ## Automated checks
 
-The delivery implementation passed 98 deterministic tests on macOS Python 3.11
-(the earlier 69-test snapshot also passed in a Linux container). These cover tool paths, protected policy, subprocess and
+The delivery implementation passed 117 deterministic tests on macOS Python 3.11
+and in a Linux container. These cover tool paths, protected policy, subprocess and
 HTTP deadlines, routing, Git isolation, evaluation binding, restart recovery,
 quota waiting, intermediate acceptance, and independent completion review.
 Further entry-point regression checks are recorded in the final CI run.
@@ -37,9 +37,9 @@ candidate when the highest-scoring candidate is rejected.
 An installed Ollama `granite4:latest` model returned valid JSON in a live probe.
 A full local-worker trial with Codex planning/review made no accepted improvement:
 small-model tool protocol failures exhausted the attempt. This is a real limitation,
-not a successful local-model demonstration. The user's Qwen model was not installed
-on this host and has not been validated. Ordered fallback routes and deterministic
-routing tests exist, but each model still needs task-level evaluation.
+not a successful local-model demonstration. Later tests use the user's existing
+Qwen installation on RTX through its Ollama API, rather than installing models on
+the controller host. Each model still needs task-level evaluation.
 
 ## Self-improvement
 
@@ -76,3 +76,13 @@ Ollama installation. The configured Kimi CLI answered a separate live probe.
 A live expense-ledger assignment is now testing the ordinary no-flags executable
 with that Qwen worker, a smaller installed classifier and Kimi planning/review.
 These probes alone do not prove mixed-model task completion.
+
+## Small RTX classifier
+
+The existing `gemma4:e2b` model, run on CPU, correctly classified three live jobs:
+ordinary Python implementation and CSV parsing went to Qwen; security architecture
+review went to Kimi. All three decisions came from the classifier, not the default.
+See [recorded routing evidence](evidence/rtx-small-router.json). These are smoke
+checks, not an accuracy benchmark. Ollama classification uses an enum-constrained
+JSON schema; malformed or unavailable classification falls back to the user's
+explicit default. No model weights were downloaded for this test.

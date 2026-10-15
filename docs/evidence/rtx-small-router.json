@@ -1,0 +1,73 @@
+{
+  "results": [
+    {
+      "task": "Write a Python function that sums a list of numbers.",
+      "selected": [
+        "qwen"
+      ]
+    },
+    {
+      "task": "Review the security architecture of a multi-tenant authentication service.",
+      "selected": [
+        "kimi"
+      ]
+    },
+    {
+      "task": "Implement a CSV parser and unit tests.",
+      "selected": [
+        "qwen"
+      ]
+    }
+  ],
+  "events": [
+    {
+      "event": "model_request",
+      "role": "router",
+      "model": "triage",
+      "call": 1
+    },
+    {
+      "event": "route_selected",
+      "role": "worker",
+      "policy": "classifier",
+      "label": "code",
+      "models": [
+        "qwen"
+      ]
+    },
+    {
+      "event": "model_request",
+      "role": "router",
+      "model": "triage",
+      "call": 2
+    },
+    {
+      "event": "route_selected",
+      "role": "worker",
+      "policy": "classifier",
+      "label": "hard",
+      "models": [
+        "kimi"
+      ]
+    },
+    {
+      "event": "model_request",
+      "role": "router",
+      "model": "triage",
+      "call": 3
+    },
+    {
+      "event": "route_selected",
+      "role": "worker",
+      "policy": "classifier",
+      "label": "code",
+      "models": [
+        "qwen"
+      ]
+    }
+  ],
+  "model": "gemma4:e2b",
+  "host": "RTX",
+  "execution": "CPU inference using existing model; no download",
+  "limitations": "Three classification smoke checks, not an accuracy benchmark."
+}

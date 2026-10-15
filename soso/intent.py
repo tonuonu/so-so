@@ -4,9 +4,11 @@ import json
 from pathlib import Path
 import re
 import shutil
+import shlex
+import time
 
 from .delivery import configure_models, load_model_pool, ollama_models
-from .models import Budget, Router, ModelUnavailable
+from .models import Budget, BudgetExceeded, Router, ModelUnavailable
 
 
 def resolve_pool(text, cwd):
@@ -21,9 +23,12 @@ def resolve_pool(text, cwd):
     key = hashlib.sha256(text.encode()).hexdigest()
     cache = folder / (key + '.json')
     if cache.exists():
-        pool = load_model_pool(cache)
-        Router(pool, Budget(1, 1), lambda *a, **k: None)
-        return pool
+        try:
+            pool = load_model_pool(cache)
+            Router(pool, Budget(1, 1), lambda *a, **k: None)
+            return pool
+        except (ValueError, KeyError, TypeError):
+            cache.rename(cache.with_suffix('.invalid'))
     try:
         discovered = configure_models({})
     except ModelUnavailable:
@@ -41,42 +46,94 @@ def resolve_pool(text, cwd):
                              'context_tokens': 32768, 'context_bytes': 60000, 'timeout': 180}
     if not models:
         raise ModelUnavailable(reason='no inference endpoint available yet')
-    # Use explicitly named installed models first to interpret their own settings.
-    preferred = [n for n, m in models.items() if m.get('model') and m['model'] in text]
-    preferred += [n for n in ('kimi', 'codex', 'claude') if n in models and n not in preferred]
-    preferred += [n for n in models if n not in preferred]
-    compiler_config = {'models': models, 'routes': {'worker': preferred},
+    # Bootstrap policy interpretation uses a mentioned adapter when possible;
+    # it must not send intent to an unrelated installed service as a fallback.
+    mentioned = [n for n, m in models.items() if
+                 (m.get('model') and m['model'] in text) or
+                 re.search(r'\b' + re.escape(n) + r'\b', text, re.I)]
+    candidates = mentioned or list(models)
+    preferred = [n for n in ('kimi', 'codex', 'claude') if n in candidates]
+    preferred += [n for n in candidates if n not in preferred]
+    compiler_config = {'delivery': True, 'models': models, 'routes': {'worker': preferred},
                        '_router_state': str(folder / 'compiler-cooldowns.json')}
-    router = Router(compiler_config, Budget(6, 600), lambda *a, **k: None)
-    prompt = '''Translate user intent and model preferences into an internal inference routing policy.
-Return only JSON with models, routes, and optional routing. No tools or shell actions.
-Models is a dictionary of aliases to adapter objects. Inventory below contains verified
-available adapters. Preserve their exact endpoint/model/executable details; rename aliases
-for clarity. Select the models requested by the user. If no preferences, choose sensible
-available models, preferring local workers and capable planning/review. Never download.
-User may specify additional real endpoints/commands explicitly; don't invent them.
-Kinds: ollama {url,model,options?} (options.num_gpu=0 requests CPU inference for a small classifier), openai {url,model,api_key_env?}, kimi {}, codex {},
-command {command:[argv...]}. Credentials are ENVIRONMENT VARIABLE NAMES only.
-Routes maps planner,worker,reviewer to ordered nonempty lists of model aliases.
-Routing rules are ordered first-match dictionaries with optional role, contains:[strings]
-(any substring), not_contains:[strings] (none), regex:string, and required models:[aliases].
-Routing default:[aliases] is authoritative when no rule matches. A cheap classifier is
-optional: selector:{model:alias,prompt:string,routes:{label:[aliases]}}. Classifier output
-selects a named route. Use rules/default when the user asks for them; do not replace their
-policy with your opinion. Design can go to a design specialist, routine coding to local
-Qwen, and unmatched tasks to the user's default. Do not put task implementation into policy.
-Do not invent a restriction to one backend. Every destination must exist in models.
-INVENTORY:\n'''
+    def log(event, **data):
+        with (folder / 'setup-events.jsonl').open('a') as stream:
+            stream.write(json.dumps({'time': time.time(), 'event': event, **data}) + '\n')
+    router = Router(compiler_config, Budget(6, 600), log)
+    prompt = """Interpret user Markdown as a model routing policy. Return ONLY JSON with:
+"aliases": {"friendly-name":"exact-inventory-key", ...},
+"routes": {"planner":["friendly-name"],"worker":["friendly-name"],"reviewer":["friendly-name"]},
+optional "settings": {"friendly-name":{"context_tokens":8192,"max_tokens":128,"options":{"num_gpu":0}}},
+optional "routing": {"rules":[...],"selector":{...},"default":["friendly-name"]}.
+Select only the requested available models. Do NOT reproduce endpoint/command definitions;
+the host copies them from inventory. Every alias must refer to an exact inventory key.
+Rules are first-match with optional role, contains:[strings] (any), not_contains:[strings]
+(none), regex:string and required models:[aliases]. The user's default is authoritative.
+If asked for a small classifier, selector is {"model":"small-alias","prompt":"classify instructions",
+"routes":{"code":["qwen-alias","kimi-alias"],"hard":["kimi-alias"],"other":["kimi-alias"]}}.
+Classifier returns {"route":"code"}. Send planner/reviewer directly to their requested model
+using role-only rules, and classify worker jobs. When worker classification is requested,
+DO NOT add worker keyword rules or a worker catch-all: those bypass the classifier. options.num_gpu=0 means CPU inference. For an Ollama classifier that supports thinking, settings think=false avoids spending its small output budget on reasoning.
+Respect user preferences; no downloads, no commands, no task implementation here.
+INVENTORY:
+"""
     feedback = ''
-    for _ in range(3):
-        result = router.ask('configuration', prompt + json.dumps(models) + '\nUSER MARKDOWN:\n' + text + feedback,
-                            cwd, task='Interpret model pool and routing preferences')
+    for attempt in range(3):
+        try:
+            result = router.ask('configuration', prompt + json.dumps(models) + '\nUSER MARKDOWN:\n' + text + feedback,
+                                cwd, attempt=attempt, task='Interpret model pool and routing preferences')
+        except BudgetExceeded:
+            raise ModelUnavailable(reason='model setup epoch exhausted; retry after a pause') from None
+        if isinstance(result.get('aliases'), dict):
+            aliases = result['aliases']
+            settings = result.get('settings', {})
+            try:
+                if not isinstance(settings, dict):
+                    raise ValueError('settings must be an object')
+                chosen = {}
+                for alias, source in aliases.items():
+                    if source not in models:
+                        raise ValueError('alias must name an exact inventory key')
+                    tuning = settings.get(alias, {})
+                    allowed = {'context_tokens', 'context_bytes', 'max_tokens', 'timeout', 'parallel', 'options', 'think'}
+                    if not isinstance(tuning, dict) or set(tuning) - allowed:
+                        raise ValueError('unsupported model tuning setting')
+                    chosen[alias] = {**models[source], **tuning}
+                result = {**result, 'models': chosen}
+            except (ValueError, KeyError, TypeError) as exc:
+                log('policy_invalid', attempt=attempt, error=str(exc)[:300])
+                feedback = '\nREPAIR POLICY: ' + str(exc)[:300]
+                continue
         temporary = cache.with_suffix('.pending')
         temporary.write_text(json.dumps(result))
         try:
             pool = load_model_pool(temporary)
+            adapter_keys = ('kind', 'url', 'model', 'command', 'executable', 'args', 'api_key_env')
+            for model in pool['models'].values():
+                for field in ('context_tokens', 'context_bytes', 'max_tokens', 'parallel', 'timeout'):
+                    if field in model and (type(model[field]) is not int or model[field] < 1):
+                        raise ValueError(field + ' must be a positive integer')
+                if 'think' in model and not isinstance(model['think'], (bool, str)):
+                    raise ValueError('think must be a boolean or provider thinking level')
+                if 'options' in model and not isinstance(model['options'], dict):
+                    raise ValueError('model options must be an object')
+                identity = {k: model[k] for k in adapter_keys if k in model}
+                verified = any(identity == {k: item[k] for k in adapter_keys if k in item}
+                               for item in models.values())
+                if not verified:
+                    # Explicit custom adapters may be described in user Markdown.
+                    command = model.get('command', [])
+                    explicit_command = (model.get('kind') == 'command' and isinstance(command, list)
+                        and command and shlex.join(command) in text and shutil.which(command[0]))
+                    explicit_api = (model.get('kind') in ('ollama', 'openai')
+                        and isinstance(model.get('url'), str) and model['url'] in text
+                        and isinstance(model.get('model'), str) and model['model'] in text
+                        and not any(k in model for k in ('command', 'args', 'executable')))
+                    if not (explicit_command or explicit_api):
+                        raise ValueError('adapter must preserve discovered connection details or be explicitly provided in Markdown')
             Router(pool, Budget(1, 1), lambda *a, **k: None)
         except (ValueError, KeyError, TypeError) as exc:
+            log('policy_invalid', attempt=attempt, error=str(exc)[:300])
             feedback = '\nREPAIR POLICY: ' + str(exc)[:300]
             temporary.unlink(missing_ok=True)
             continue

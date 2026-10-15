@@ -160,6 +160,12 @@ class Router:
                 re.compile(rule['regex'])
         selector = self.routing.get('selector')
         if selector:
+            covered = set()
+            for rule in self.routing.get('rules', []):
+                if not any(rule.get(k) for k in ('contains', 'not_contains', 'regex')):
+                    covered.update([rule['role']] if 'role' in rule else ['worker', 'planner', 'reviewer'])
+            if {'worker', 'planner', 'reviewer'} <= covered:
+                raise ValueError('classifier is unreachable: unconditional rules cover every job role')
             if selector.get('model') not in self.models or not selector.get('routes'):
                 raise ValueError('selector requires a configured model and named routes')
             for names in selector['routes'].values():
@@ -212,7 +218,13 @@ class Router:
                         raise ModelUnavailable(self.cooldowns[name])
                     self.budget.claim()
                     self.log('model_request', role='router', model=name, call=self.budget.calls)
-                    answer = object_json(self._call(model, packet, cwd, min(model.get('timeout', 30), self.budget.remaining())))
+                    classifier = model
+                    if model.get('kind') == 'ollama':
+                        classifier = dict(model)
+                        classifier['response_schema'] = {'type': 'object', 'properties': {
+                            'route': {'type': 'string', 'enum': list(selector['routes'])}},
+                            'required': ['route'], 'additionalProperties': False}
+                    answer = object_json(self._call(classifier, packet, cwd, min(model.get('timeout', 30), self.budget.remaining())))
                     self.budget.remaining()
                     names = selector['routes'].get(answer.get('route'))
                     if names:
@@ -310,7 +322,16 @@ class Router:
             argv = [model.get('executable', 'kimi'), '--prompt', prompt, '--output-format', 'stream-json']
             if model.get('model'):
                 argv += ['--model', model['model']]
-            result = execute(argv + model.get('args', []), cwd, timeout, limit=256000)
+            import tempfile
+            with tempfile.TemporaryDirectory(prefix='soso-kimi-') as folder:
+                profile = Path(folder) / 'protocol.md'
+                profile.write_text('---\nname: soso-protocol\ndescription: Structured inference for the host controller\ntools: []\nsubagents: []\n---\n'
+                    'Return exactly the JSON object requested by the user. You are an inference component. '
+                    'The host controller owns tools, execution, files, and workflow. Do not call tools, ask for '
+                    'interactive approval, or emit commentary outside the requested JSON.\n')
+                env = {**os.environ, 'KIMI_MODEL_THINKING_EFFORT': model.get('thinking_effort', 'max'),
+                       'KIMI_MODEL_MAX_COMPLETION_TOKENS': str(model.get('max_tokens', 8192))}
+                result = execute(argv + ['--agent-file', str(profile)] + model.get('args', []), cwd, timeout, limit=256000, env=env)
             if result['returncode'] or result['timed_out'] or result['truncated']:
                 raise cli_unavailable(result['output']) or RuntimeError('kimi model failed')
             answers = []
@@ -356,11 +377,13 @@ class Router:
                 "temperature": model.get("temperature", 0.2)}
         if kind == "ollama":
             endpoint += "/api/chat"
-            body.update(stream=False, format="json", options={
+            body.update(stream=False, format=model.get("response_schema", "json"), options={
                 **model.get("options", {}),
                 "temperature": body.pop("temperature"),
                 "num_predict": model.get("max_tokens", 2048),
                 "num_ctx": model.get("context_tokens", 8192)})
+            if "think" in model:
+                body["think"] = model["think"]
         else:
             endpoint += "/chat/completions"
             body["max_tokens"] = model.get("max_tokens", 2048)

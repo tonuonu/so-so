@@ -1,20 +1,13 @@
-# Routing jobs across your model pool
+# Routing internals
 
-The normal setup is **one pool with any number of models**, not a choice between
-local and hosted inference. Supply it once:
+This is a developer reference for the internal policy generated from user Markdown.
+The user writes preferences in INTENT.md and runs `./so-so`; no JSON file or routing
+flags are required. `soso.intent` discovers available adapters, translates prose
+into aliases/rules, validates destinations, and stores the resulting policy.
 
-```sh
-soso "Build my application" --models /path/to/models.json
-# Or set it for subsequent invocations:
-export SOSO_MODELS_FILE=/path/to/models.json
-soso
-```
-
-Copy [the example pool](../configs/models.example.json), replace endpoint/model/
-command placeholders, and choose your own policy. `fable` is an illustrative user
-alias; provide the API or CLI wrapper you actually use. No provider ranking is
-hard-coded. A command wrapper receives the prompt on stdin and returns one JSON
-object. OpenAI-compatible servers, Ollama servers and Codex CLI are also adapters.
+The examples below describe that internal representation for development and
+troubleshooting. They are not normal setup instructions. Model aliases and rankings
+are chosen by the user's preferences, not hard-coded provider claims.
 
 ## Rules and the default
 
@@ -53,7 +46,7 @@ To classify unmatched jobs semantically, add a selector inside `routing`:
 
 The selector returns `{"route":"design"}` (or another configured label). `triage`
 can be a cheap local model **or a command adapter implementing your own algorithm**.
-It is called directly once, never recursively through itself. Rules run first;
+It is called directly once, never recursively through itself. Ollama classifiers receive a JSON schema restricting output to the configured labels. A thinking-capable model can use `think: false` internally to reserve its small output budget for the route choice. Rules run first;
 the optional selector handles unmatched jobs; a failed/invalid/unavailable selector
 falls through to the explicit default. Selector calls consume the same call/time
 budget and respect their own context/concurrency limits. Logs record the selected

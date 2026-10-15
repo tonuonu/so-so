@@ -1,10 +1,12 @@
-# Configuration
+# Internal configuration reference
 
-For normal goal delivery, supply any number of models and routing rules via
-`--models FILE` or `SOSO_MODELS_FILE`; see [routing](routing.md). This separates
-your machine-wide inference pool from a project's acceptance evaluator.
+The user-facing interface is `./so-so` with INTENT.md. The launcher generates and
+stores these settings internally. This document is for developers inspecting
+state or exercising the older diagnostic/optimization interfaces; users do not
+need to author this JSON or manage Python environments.
 
-The default config filename is `soso.json`; use `--config FILE` to choose another. All commands are argv arrays, not shell strings. To run a pipeline, explicitly configure `['sh', '-c', '...']` and treat that as trusted code.
+Commands are argv arrays, not shell strings. The following illustrates the
+internal representation of models, routes, acceptance checks and epoch limits.
 
 ```json
 {
@@ -61,7 +63,7 @@ Example command adapter for Claude Code (verify flags with your installed CLI):
 {"kind":"command", "command":["claude","-p","--output-format","text","--tools",""], "parallel":1}
 ```
 
-Kimi supports a prompt argument, so an adapter can use `"--prompt", "{prompt}"`; its output must still be exactly the protocol JSON. Configure a profile that disables independent editing/tools, or use a wrapper. Unlike the dedicated Codex adapter, generic command adapters cannot enforce a CLI's permission settings. No vendor CLI is automatically installed or authenticated.
+The dedicated `kimi` adapter invokes prompt mode with a temporary agent profile that disables tools and subagents, and extracts the final assistant answer from the JSON event stream. Generic command adapters must provide their own permission settings and return protocol JSON. No vendor CLI is automatically installed or authenticated.
 
 [Codex non-interactive documentation](https://learn.chatgpt.com/docs/non-interactive-mode) describes its final-message output support. Local CLI help was also checked during implementation.
 

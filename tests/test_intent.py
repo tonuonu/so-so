@@ -29,3 +29,26 @@ class MarkdownPoolTests(unittest.TestCase):
                 patch('soso.intent.shutil.which', return_value=None), patch.object(Router, 'ask', side_effect=[bad, pool]) as ask:
             self.assertEqual(resolve_pool('Make something useful', Path(tmp)), pool)
             self.assertEqual(ask.call_count, 2)
+
+    def test_invented_adapter_is_rejected_and_next_model_is_tried(self):
+        from soso.models import ModelUnavailable
+        pool = {'models': {'local': {'kind': 'ollama', 'url': 'http://localhost:11434', 'model': 'small'}},
+                'routes': {'worker': ['local']}}
+        invented = {'models': {'new': {'kind': 'command', 'command': ['sh', '-c', 'echo unexpected']}},
+                    'routes': {'worker': ['new']}}
+        with tempfile.TemporaryDirectory() as tmp, patch('soso.intent.configure_models', return_value=pool), \
+                patch('soso.intent.shutil.which', return_value=None), patch.object(Router, 'ask', side_effect=[invented, pool]) as ask:
+            result = resolve_pool('Build a calculator with the available local models', Path(tmp))
+            self.assertEqual(result, pool)
+            self.assertEqual([c.kwargs['attempt'] for c in ask.call_args_list], [0, 1])
+
+    def test_alias_policy_copies_verified_adapter_and_applies_cpu_tuning(self):
+        pool = {'models': {'detected': {'kind': 'ollama', 'url': 'http://rtx:11434', 'model': 'small'}},
+                'routes': {'worker': ['detected']}}
+        answer = {'aliases': {'router': 'detected'}, 'routes': {'worker': ['router']},
+                  'settings': {'router': {'options': {'num_gpu': 0}}}}
+        with tempfile.TemporaryDirectory() as tmp, patch('soso.intent.configure_models', return_value=pool), \
+                patch('soso.intent.shutil.which', return_value=None), patch.object(Router, 'ask', return_value=answer):
+            result = resolve_pool('Use small on RTX for routing', Path(tmp))
+            self.assertEqual(result['models']['router']['url'], 'http://rtx:11434')
+            self.assertEqual(result['models']['router']['options'], {'num_gpu': 0})

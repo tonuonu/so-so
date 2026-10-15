@@ -167,9 +167,9 @@ def _storage(repo):
     return storage
 
 
-def _config(repo, config_path):
+def _config(repo, config_path, ignore_project_config=False):
     path = repo / config_path
-    if path.exists():
+    if path.exists() and not ignore_project_config:
         return load_config(path)
     # Preserve pre-existing tests/CI, while letting a new goal add its own tests.
     baseline = Workspace(repo, ['tests/*', '.github/*'])
@@ -222,6 +222,7 @@ def _contract(root, config, intent, router, folder):
                'The evaluator must print JSON {"score":0..100,"complete":boolean,"checks":...}. '
                'Missing implementation is score 0 and complete false, never an exception. '
                'Complete means every required acceptance check passes. Test observable behavior, not file presence alone. '
+               'Resource inventories and model-routing preferences describe the controller environment, not application features to test. '
                'No network, install, mutations, credential access or deployment in the evaluator. '
                'Use bounded subprocess timeouts where required. This contract will be frozen before implementation. '
                'Never read, print or export credentials. Honor existing instructions; do not lower requirements for convenience.\nGOAL:\n' + intent +
@@ -393,7 +394,7 @@ def _wait(until):
 
 
 def start_goal(repo: Path, intent: str | None = None, *, backend='auto', model=None, once=False,
-               resume_goal=None, allow_exec=True, config_path='soso.json', state_dir=None, models_path=None):
+               resume_goal=None, allow_exec=True, config_path='soso.json', state_dir=None, models_path=None, ignore_project_config=False):
     """Deliver persistently; --once returns after one bounded epoch or provider wait.
 
     Source must be clean. State lives in Git common-dir/soso/goals unless supplied.
@@ -430,7 +431,8 @@ def start_goal(repo: Path, intent: str | None = None, *, backend='auto', model=N
                  'branch': 'soso/goal-' + goal_id, 'worktree': str(folder / 'worktree'), 'epochs': [],
                  'next_retry_at': None, 'failures': 0, 'backend': backend, 'model': model,
                  'allow_exec': allow_exec, 'config_path': config_path,
-                 'models_path': str(Path(requested_pool).resolve()) if requested_pool else None}
+                 'models_path': str(Path(requested_pool).resolve()) if requested_pool else None,
+                 'ignore_project_config': ignore_project_config}
         git(repo, 'worktree', 'add', '-b', state['branch'], state['worktree'], 'HEAD')
         state['head'] = git(Path(state['worktree']), 'rev-parse', 'HEAD')
         _save(folder, state)
@@ -491,7 +493,7 @@ def start_goal(repo: Path, intent: str | None = None, *, backend='auto', model=N
                 _save(folder, state)
                 if state.get('policy') and hashlib.sha256((folder / 'config.json').read_bytes()).hexdigest() != state.get('config_sha256'):
                     raise ValueError('frozen epoch configuration changed')
-                config = json.loads((folder / 'config.json').read_text()) if state.get('policy') else _config(repo, state['config_path'])
+                config = json.loads((folder / 'config.json').read_text()) if state.get('policy') else _config(repo, state['config_path'], state.get('ignore_project_config', False))
                 if not state.get('policy') and (folder / 'model-pool.json').exists():
                     config.update(json.loads((folder / 'model-pool.json').read_text()))
                 # Resume preserves the original route unless explicitly overridden.
@@ -505,7 +507,10 @@ def start_goal(repo: Path, intent: str | None = None, *, backend='auto', model=N
                 config['delivery'] = True
                 config['direction'] = 'max'
                 if not state.get('policy'):
-                    router = Router(config, Budget(min(config['max_calls'], 6), min(config['max_seconds'], 240)), lambda *a, **k: None)
+                    def setup_log(event, **data):
+                        with (folder / 'setup-events.jsonl').open('a') as stream:
+                            stream.write(json.dumps({'time': time.time(), 'event': event, **data}) + '\n')
+                    router = Router(config, Budget(min(config['max_calls'], 6), min(config['max_seconds'], 240)), setup_log)
                     contract = _contract(root, config, state['intent'], router, folder)
                     state.update(contract=contract, protected=config['protected'], policy=fingerprint(root, config['protected']),
                                  head=git(root, 'rev-parse', 'HEAD'),

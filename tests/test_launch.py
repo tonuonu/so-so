@@ -3,6 +3,7 @@ import io
 import json
 import os
 from pathlib import Path
+import shutil
 import subprocess
 import tempfile
 import time
@@ -74,19 +75,25 @@ class LauncherTests(unittest.TestCase):
         self.assertEqual((Path(first['snapshot']) / 'app.py').read_text(), 'value = 1\n')
         self.assertEqual((Path(second['snapshot']) / 'app.py').read_text(), 'value = 2\n')
 
-    def test_actual_executable_with_no_arguments_uses_intent(self):
+    def trusted_runtime(self):
         checkout = Path(__file__).resolve().parents[1]
-        hooks = Path(self.tmp.name) / 'test-runtime'
-        hooks.mkdir()
-        (hooks / 'sitecustomize.py').write_text(
-            "import sys,types\nfrom pathlib import Path\nimport soso.delivery\n"
-            "def done(project,intent,**kwargs):\n"
-            "    Path(project,'.git','test-intent').write_text(intent)\n"
-            "    return {'goal_id':'subprocess-goal','status':'complete','worktree':str(project)}\n"
-            "soso.delivery.start_goal=done\n"
-            "sys.modules['soso.intent']=types.SimpleNamespace(resolve_pool=lambda text,cwd:None)\n")
-        env = dict(os.environ, PYTHONPATH=str(hooks) + os.pathsep + str(checkout))
-        result = subprocess.run([str(checkout / 'so-so')], cwd=self.root, env=env,
+        runtime = Path(self.tmp.name) / 'trusted-runtime'
+        shutil.copytree(checkout / 'soso', runtime / 'soso', ignore=shutil.ignore_patterns('__pycache__'))
+        shutil.copy2(checkout / 'so-so', runtime / 'so-so')
+        # Providers are deterministic fixtures adjacent to the trusted runtime.
+        # Source cwd and Python environment injection remain isolated by -I.
+        delivery = runtime / 'soso/delivery.py'
+        with delivery.open('a') as stream:
+            stream.write(
+                "\ndef start_goal(project,intent,**kwargs):\n"
+                "    Path(project,'.git','test-intent').write_text(intent)\n"
+                "    return {'goal_id':'subprocess-goal','status':'complete','worktree':str(project)}\n")
+        (runtime / 'soso/intent.py').write_text('def resolve_pool(text,cwd):\n    return None\n')
+        return runtime
+
+    def test_actual_executable_with_no_arguments_uses_intent(self):
+        runtime = self.trusted_runtime()
+        result = subprocess.run([str(runtime / 'so-so')], cwd=self.root,
                                 capture_output=True, text=True, timeout=15)
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn('Goal complete.', result.stdout)
@@ -94,6 +101,19 @@ class LauncherTests(unittest.TestCase):
         snapshot = Path(entry['project'])
         self.assertEqual((snapshot / '.git/test-intent').read_text(), (self.root / 'INTENT.md').read_text())
         self.assertFalse((self.root / '.git').exists())
+
+    def test_project_stdlib_shadow_is_not_executed_on_startup(self):
+        runtime = self.trusted_runtime()
+        (self.root / 'json.py').write_text("raise RuntimeError('PROJECT_JSON_EXECUTED')\n")
+        (self.root / 'sitecustomize.py').write_text("raise RuntimeError('PROJECT_SITE_EXECUTED')\n")
+        env = dict(os.environ, PYTHONPATH=str(self.root))
+        result = subprocess.run([str(runtime / 'so-so')], cwd=self.root, env=env,
+                                capture_output=True, text=True, timeout=15)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn('Goal complete.', result.stdout)
+        self.assertNotIn('PROJECT_JSON_EXECUTED', result.stdout + result.stderr)
+        self.assertNotIn('PROJECT_SITE_EXECUTED', result.stdout + result.stderr)
+        self.assertEqual((self.root / 'json.py').read_text(), "raise RuntimeError('PROJECT_JSON_EXECUTED')\n")
 
     def test_dirty_git_files_preserved_untracked_included_secrets_ignored(self):
         git(self.root, 'init', '-b', 'main')

@@ -13,7 +13,7 @@ fi
 mkdir -p "$so_so_state/tools"
 so_so_python=''
 for so_so_candidate in python3 python3.14 python3.13 python3.12 python3.11; do
-    if command -v "$so_so_candidate" >/dev/null 2>&1 && "$so_so_candidate" -c 'import sys; raise SystemExit(sys.version_info < (3, 11))' >/dev/null 2>&1; then
+    if command -v "$so_so_candidate" >/dev/null 2>&1 && "$so_so_candidate" -I -c 'import sys; raise SystemExit(sys.version_info < (3, 11))' >/dev/null 2>&1; then
         so_so_python="$so_so_candidate"
         break
     fi
@@ -57,7 +57,7 @@ if ! command -v git >/dev/null 2>&1; then
         exit 1
     fi
 fi
-so_so_root=$("$so_so_python" -c 'import pathlib,sys; print(pathlib.Path(sys.argv[1]).resolve().parent)' "$0")
+so_so_root=$("$so_so_python" -I -c 'import pathlib,sys; print(pathlib.Path(sys.argv[1]).resolve().parent)' "$0")
 if [ ! -f "$so_so_root/soso/launch.py" ]; then
     so_so_root="$so_so_state/runtime"
     if [ ! -f "$so_so_root/soso/launch.py" ]; then
@@ -69,4 +69,4 @@ if [ ! -f "$so_so_root/soso/launch.py" ]; then
         fi
     fi
 fi
-exec "$so_so_python" -c 'import runpy,sys; sys.path.insert(0,sys.argv.pop(1)); runpy.run_module("soso.launch",run_name="__main__")' "$so_so_root" "$@"
+exec "$so_so_python" -I -c 'import runpy,sys; sys.path.insert(0,sys.argv.pop(1)); runpy.run_module("soso.launch",run_name="__main__")' "$so_so_root" "$@"
