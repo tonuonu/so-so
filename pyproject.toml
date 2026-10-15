@@ -1,0 +1,21 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "soso"
+version = "0.1.0"
+description = "Bounded, model-agnostic agent loops with measured Git experiments"
+requires-python = ">=3.11"
+license = {text = "MIT"}
+authors = [{name = "Tonu Samuel"}]
+dependencies = []
+
+[project.scripts]
+soso = "soso.cli:main"
+
+[tool.setuptools.packages.find]
+include = ["soso*"]
+
+[tool.setuptools.package-data]
+soso = ["skillpacks/superpowers/LICENSE", "skillpacks/superpowers/manifest.json", "skillpacks/superpowers/**/*.md"]

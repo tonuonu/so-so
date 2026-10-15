@@ -1,0 +1,44 @@
+{
+  "models": {
+    "local": {
+      "kind": "ollama",
+      "url": "http://127.0.0.1:11434",
+      "model": "YOUR_INSTALLED_MODEL",
+      "context_tokens": 8192,
+      "context_bytes": 20000,
+      "parallel": 1
+    },
+    "codex": {
+      "kind": "codex",
+      "args": [
+        "--ignore-user-config"
+      ],
+      "parallel": 2,
+      "timeout": 180,
+      "context_bytes": 24000
+    }
+  },
+  "routes": {
+    "planner": [
+      "local",
+      "codex"
+    ],
+    "worker": [
+      "local",
+      "codex"
+    ],
+    "reviewer": [
+      "codex"
+    ]
+  },
+  "evaluate": [
+    "python3",
+    "evaluate.py"
+  ],
+  "parallel": 2,
+  "rounds": 4,
+  "patience": 2,
+  "max_steps": 12,
+  "max_calls": 100,
+  "max_seconds": 1800
+}

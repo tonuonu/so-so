@@ -1,0 +1,68 @@
+{
+  "models": {
+    "local": {
+      "kind": "ollama",
+      "url": "http://127.0.0.1:11434",
+      "model": "YOUR_INSTALLED_MODEL",
+      "context_tokens": 8192,
+      "context_bytes": 20000,
+      "parallel": 1
+    },
+    "codex": {
+      "kind": "codex",
+      "args": [
+        "--ignore-user-config"
+      ],
+      "parallel": 2,
+      "timeout": 180,
+      "context_bytes": 24000
+    }
+  },
+  "routes": {
+    "planner": [
+      "codex"
+    ],
+    "worker": [
+      "codex"
+    ],
+    "reviewer": [
+      "codex"
+    ]
+  },
+  "evaluate": [
+    "python3",
+    "scripts/evaluate_self.py"
+  ],
+  "parallel": 2,
+  "rounds": 3,
+  "patience": 2,
+  "max_steps": 16,
+  "max_calls": 120,
+  "max_seconds": 2400,
+  "checks": [
+    [
+      "python3",
+      "-m",
+      "unittest",
+      "discover",
+      "-s",
+      "tests",
+      "-q"
+    ],
+    [
+      "python3",
+      "scripts/check_examples.py"
+    ]
+  ],
+  "direction": "min",
+  "protected": [
+    "scripts/*",
+    "examples/*",
+    "soso/skillpacks/*",
+    "pyproject.toml",
+    "docs/*",
+    "README.md",
+    "LICENSE",
+    "Dockerfile"
+  ]
+}
