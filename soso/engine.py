@@ -8,10 +8,11 @@ import math
 import os
 from pathlib import Path
 import statistics
+import shutil
 import threading
 import time
 import uuid
-from .models import Budget, BudgetExceeded, Router
+from .models import Budget, BudgetExceeded, ModelUnavailable, Router, redact
 from .process import execute, git
 from .workspace import Workspace, worker
 from .skills import prelude
@@ -45,7 +46,7 @@ def load_config(path):
     if not models:
         raise ValueError("at least one model required")
     for name, model in models.items():
-        if model.get("kind") not in ("openai", "ollama", "command", "codex"):
+        if model.get("kind") not in ("openai", "ollama", "command", "codex", "kimi"):
             raise ValueError("invalid model kind: " + name)
         if type(model.get("parallel", 1)) is not int or model.get("parallel", 1) < 1:
             raise ValueError("model parallel must be a positive integer")
@@ -73,7 +74,11 @@ def resources():
             gpus = result["output"].strip().splitlines()
     except OSError:
         pass
-    return {"cpus": cpus, "nvidia_gpus": gpus}
+    return {"cpus": cpus, "nvidia_gpus": gpus,
+            "credential_sources": [name for name in ("AWS_PROFILE", "AWS_ACCESS_KEY_ID", "AWS_SESSION_TOKEN",
+                "OPENAI_API_KEY", "ANTHROPIC_API_KEY", "GOOGLE_APPLICATION_CREDENTIALS") if os.environ.get(name)],
+            "tools": {name: bool(shutil.which(name)) for name in
+                      ("git", "python3", "node", "npm", "cc", "xcodebuild", "xcrun", "aws", "codex", "claude", "ollama")}}
 
 
 def fingerprint(root, patterns):
@@ -92,24 +97,30 @@ def evaluate(root, config, budget):
     results = []
     for command in config.get("checks", []):
         result = execute(command, root, min(config["evaluation_timeout"], budget.remaining()))
+        budget.remaining()
         results.append(result)
         if result["returncode"] or result["timed_out"]:
             return {"valid": False, "reason": "check failed", "checks": results}
     scores, samples = [], []
     for _ in range(config["repeats"]):
         result = execute(config["evaluate"], root, min(config["evaluation_timeout"], budget.remaining()))
+        budget.remaining()
         samples.append(result)
         if result["returncode"] or result["timed_out"]:
             return {"valid": False, "reason": "evaluator failed", "samples": samples}
         try:
             # Evaluators may print diagnostic lines, followed by the score object.
-            metric = json.loads(result["output"].strip().splitlines()[-1])["score"]
+            payload = json.loads(result["output"].strip().splitlines()[-1])
+            metric = payload["score"]
             if isinstance(metric, bool) or not isinstance(metric, (float, int)) or not math.isfinite(metric):
                 raise ValueError("score must be finite numeric")
+            if config.get("delivery") and (not 0 <= metric <= 100 or type(payload.get("complete")) is not bool):
+                raise ValueError("delivery evaluator requires score 0..100 and boolean complete")
             scores.append(float(metric))
         except (ValueError, KeyError, IndexError, TypeError):
             return {"valid": False, "reason": "invalid metric", "samples": samples}
     return {"valid": True, "score": statistics.median(scores), "scores": scores,
+            "complete": all(json.loads(s["output"].strip().splitlines()[-1]).get("complete") is True for s in samples),
             "checks": results, "samples": samples}
 
 
@@ -151,13 +162,13 @@ class Run:
     def log(self, event, **data):
         with self.lock:
             with (self.folder / "events.jsonl").open("a") as stream:
-                stream.write(json.dumps({"time": time.time(), "event": event, **data}, default=str) + "\n")
+                stream.write(redact(json.dumps({"time": time.time(), "event": event, **data}, default=str)) + "\n")
 
     def checkpoint(self):
         self.report["elapsed"] = self.elapsed_before + time.monotonic() - self.started
         self.report["calls"] = self.budget.calls
         self.report["head"] = git(self.integration, "rev-parse", "HEAD")
-        atomic_json(self.report_path, self.report)
+        atomic_json(self.report_path, json.loads(redact(json.dumps(self.report))))
 
     def run(self):
         with (self.storage / "lock").open("w") as lock:
@@ -217,6 +228,9 @@ class Run:
         self.pinned = fingerprint(self.integration, self.config["protected"])
         self.checkpoint()
         try:
+            if self.report.get("next_retry_at", 0) > time.time():
+                self.report["status"] = "waiting"
+                return self.report
             while len(self.report["rounds"]) < self.config["rounds"]:
                 self.budget.remaining()
                 if self.report["plateau"] >= self.config["patience"]:
@@ -233,17 +247,21 @@ class Run:
                 if exhausted:
                     self.report["rounds"].append(round_result)
                     raise BudgetExceeded(exhausted[0]["error"])
+                unavailable = [e["unavailable"] for e in round_result["experiments"] if e.get("unavailable")]
+                if unavailable:
+                    self.report["rounds"].append(round_result)
+                    resets = [e["retry_at"] for e in unavailable if e["retry_at"] is not None]
+                    raise ModelUnavailable(min(resets) if resets else None)
                 valid = [x for x in round_result["experiments"] if x.get("evaluation", {}).get("valid")]
                 valid.sort(key=lambda x: (self.utility(x["evaluation"]["score"]), -x["candidate"]), reverse=True)
-                if valid and self.utility(valid[0]["evaluation"]["score"]) > self.utility(self.report["best"]) + self.config["min_delta"]:
-                    for best in valid:
-                        if self.utility(best["evaluation"]["score"]) <= self.utility(self.report["best"]) + self.config["min_delta"]:
-                            break
-                        if self.review(best):
-                            git(self.integration, "merge", "--ff-only", best["commit"])
-                            self.report["best"] = best["evaluation"]["score"]
-                            round_result["accepted"] = best["commit"]
-                            break
+                for best in valid:
+                    if self.utility(best["evaluation"]["score"]) <= self.utility(self.report["best"]) + self.config["min_delta"]:
+                        break
+                    if self.review(best):
+                        git(self.integration, "merge", "--ff-only", best["commit"])
+                        self.report["best"] = best["evaluation"]["score"]
+                        round_result["accepted"] = best["commit"]
+                        break
                 self.report["plateau"] = 0 if round_result["accepted"] else self.report["plateau"] + 1
                 self.report["rounds"].append(round_result)
                 self.log("round", round=number, best=self.report["best"], accepted=round_result["accepted"])
@@ -251,6 +269,9 @@ class Run:
                 print(json.dumps({"round": number, "best": self.report["best"], "accepted": round_result["accepted"]}), flush=True)
             else:
                 self.report["status"] = "round_limit"
+        except ModelUnavailable as exc:
+            self.report["status"] = "waiting"
+            self.report["next_retry_at"] = max(time.time() + 1, exc.retry_at) if exc.retry_at is not None else time.time() + 30
         except BudgetExceeded as exc:
             self.report["status"] = "budget_exhausted"
             self.report["reason"] = str(exc)
@@ -280,7 +301,7 @@ class Run:
                   + "INTENT:\n" + self.intent + "\nFILES:\n"
                   + json.dumps(Workspace(self.integration, []).files()[:100])
                   + "\nRECENT FEEDBACK:\n" + json.dumps(feedback)[-6500:])
-        reply = self.router.ask("planner", prompt, self.integration)
+        reply = self.router.ask("planner", prompt, self.integration, task=self.intent)
         tasks = reply.get("experiments", [])[:self.config["parallel"]]
         if not tasks or any(not isinstance(t, dict) or not isinstance(t.get("task"), str) or not t["task"] for t in tasks):
             raise ValueError("planner returned invalid experiments")
@@ -294,7 +315,7 @@ class Run:
         prompt = (prelude('reviewer') + 'Review this measured candidate for correctness, evaluator gaming and scope. '
                   'Return JSON {"approve":true,"reason":"..."}.\nINTENT:\n' + self.intent
                   + "\nDIFF:\n" + diff + "\nEVALUATION:\n" + json.dumps(candidate["evaluation"]))
-        reply = self.router.ask("reviewer", prompt, self.integration)
+        reply = self.router.ask("reviewer", prompt, self.integration, task=candidate["task"])
         candidate["review"] = reply
         return reply.get("approve") is True
 
@@ -323,6 +344,9 @@ class Run:
                 raise ValueError("evaluation modified source or protected files")
             # Retain accepted/rejected commits beyond Git's dangling-object grace period.
             git(self.root, "update-ref", f"refs/soso/{self.run_id}/{name}", result["commit"])
+        except ModelUnavailable as exc:
+            result["unavailable"] = {"retry_at": exc.retry_at}
+            result["evaluation"] = {"valid": False, "reason": "provider unavailable"}
         except BudgetExceeded as exc:
             result["budget_exhausted"] = True
             result["error"] = str(exc)

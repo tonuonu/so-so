@@ -18,7 +18,10 @@ def main():
     parser.add_argument('--model', help='Ollama model name; required for ollama/mixed')
     parser.add_argument('--output', required=True, type=Path, help='new directory for isolated example repos')
     parser.add_argument('--jobs', type=int, default=1)
+    parser.add_argument('--rounds', type=int, help='override rounds for a short smoke trial')
     args = parser.parse_args()
+    if args.jobs < 1 or (args.rounds is not None and args.rounds < 1):
+        parser.error('jobs and rounds must be positive')
     if args.backend != 'codex' and not args.model:
         parser.error('--model required for Ollama')
     args.output.mkdir(parents=True, exist_ok=False)
@@ -29,6 +32,8 @@ def main():
         shutil.copytree(source / name, repo, ignore=shutil.ignore_patterns('__pycache__'))
         config_path = repo / 'soso.json'
         config = json.loads(config_path.read_text())
+        if args.rounds is not None:
+            config['rounds'] = args.rounds
         if args.backend == 'codex':
             config['routes'] = {role:['codex'] for role in ('planner','worker','reviewer')}
         elif args.backend == 'ollama':

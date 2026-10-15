@@ -8,6 +8,27 @@ from .models import Budget, Router
 
 
 def main(argv=None):
+    argv = list(sys.argv[1:] if argv is None else argv)
+    if not argv or argv[0] not in ('run', 'doctor', 'probe'):
+        from .delivery import start_goal
+        parser = argparse.ArgumentParser(description="Persistently deliver a goal in an isolated Git worktree")
+        parser.add_argument('goal', nargs='?', help='goal text; omitted or read INTENT.md reads INTENT.md')
+        parser.add_argument('--repo', default='.')
+        parser.add_argument('--backend', default='auto', choices=('auto', 'ollama', 'codex', 'claude'))
+        parser.add_argument('--model')
+        parser.add_argument('--models', help='model pool JSON; defaults to SOSO_MODELS_FILE')
+        parser.add_argument('--once', action='store_true', help='run one bounded epoch without waiting')
+        parser.add_argument('--resume-goal', metavar='GOAL_ID')
+        parser.add_argument('--no-exec', action='store_true', help='disable model-requested host commands (trusted local execution is enabled by default)')
+        args = parser.parse_args(argv)
+        try:
+            result = start_goal(Path(args.repo), args.goal, backend=args.backend, model=args.model,
+                                once=args.once, resume_goal=args.resume_goal, allow_exec=not args.no_exec, models_path=args.models)
+            print(json.dumps(result, indent=2))
+            return 0 if result['status'] == 'complete' else 2
+        except (ValueError, OSError, RuntimeError, KeyError) as exc:
+            print('soso: ' + str(exc), file=sys.stderr)
+            return 1
     parser = argparse.ArgumentParser(description="Run measured, parallel coding experiments from INTENT.md")
     sub = parser.add_subparsers(dest="command", required=True)
     run = sub.add_parser("run", help="create a result branch without changing your checkout")

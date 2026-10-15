@@ -1,0 +1,111 @@
+{
+  "trial": "live-examples-csv-reader",
+  "base": "d6bb3c2959e62f9d93060c570f98cbef5cf46690",
+  "head": "f7a03622b3369e431f8009dba5f74718b94db172",
+  "baseline": 4.0,
+  "best": 12.0,
+  "status": "plateau",
+  "calls": 66,
+  "elapsed_seconds": 363.3002531050006,
+  "rounds": [
+    {
+      "round": 1,
+      "accepted": "f7a03622b3369e431f8009dba5f74718b94db172",
+      "candidates": [
+        {
+          "candidate": 1,
+          "commit": "a9f417e0ced37631fa66dcb3549d800734cd16cc",
+          "valid": true,
+          "score": 12.0,
+          "reason": null,
+          "review": null,
+          "worker": {
+            "finished": true,
+            "steps": 7,
+            "summary": "Replaced parseCSV with an index-based scanner supporting quoted commas, doubled quotes, LF/CRLF separators, quoted newlines, empty fields, Unicode, empty input, and trailing separators. Unterminated quoted fields throw. Only csv.js changed; evaluate.py was preserved. Automated evaluation could not run because execution requires --allow-exec."
+          }
+        },
+        {
+          "candidate": 0,
+          "commit": "f7a03622b3369e431f8009dba5f74718b94db172",
+          "valid": true,
+          "score": 12.0,
+          "reason": null,
+          "review": {
+            "approve": true,
+            "reason": "The candidate satisfies the requested CSV behavior, including quoted newlines, escaped quotes, empty fields, Unicode, trailing separators, and unterminated-quote errors. Changes are limited to csv.js, add no dependencies, preserve evaluate.py, and show no evaluator gaming."
+          },
+          "worker": {
+            "finished": true,
+            "steps": 7,
+            "summary": "Replaced split-based parseCSV with a single-pass state machine supporting quoted commas, doubled quotes, embedded newlines, LF/CRLF records, empty fields, Unicode, empty input, trailing separators, and unterminated-quote errors. No dependencies added; evaluate.py preserved. Validation could not run because runner execution requires --allow-exec."
+          }
+        }
+      ]
+    },
+    {
+      "round": 2,
+      "accepted": null,
+      "candidates": [
+        {
+          "candidate": 0,
+          "commit": "f00c8ff0177335e50e1416f76710063d8b86d8c5",
+          "valid": true,
+          "score": 12.0,
+          "reason": null,
+          "review": null,
+          "worker": {
+            "finished": false,
+            "steps": 12,
+            "summary": "step budget exhausted"
+          }
+        },
+        {
+          "candidate": 1,
+          "commit": "510cdf8101e3fe2697c76e2ee669ced6da3e1fe3",
+          "valid": true,
+          "score": 12.0,
+          "reason": null,
+          "review": null,
+          "worker": {
+            "finished": true,
+            "steps": 12,
+            "summary": "Added an unquoted-input fast path using record and field splitting, preserving empty input, blank records, empty fields, Unicode, CRLF handling, and suppression of the final phantom record. Retained the quoted-input scanner and preserved evaluate.py. Execution required --allow-exec, so evaluator results and performance comparisons remain unverified."
+          }
+        }
+      ]
+    },
+    {
+      "round": 3,
+      "accepted": null,
+      "candidates": [
+        {
+          "candidate": 1,
+          "commit": "8f9e0b1e529346718a6b27bc299243676dbf5a89",
+          "valid": true,
+          "score": 12.0,
+          "reason": null,
+          "review": null,
+          "worker": {
+            "finished": false,
+            "steps": 12,
+            "summary": "step budget exhausted"
+          }
+        },
+        {
+          "candidate": 0,
+          "commit": "5d6ad2a1526f79dedae4017ed05d15380d8ae4e0",
+          "valid": true,
+          "score": 12.0,
+          "reason": null,
+          "review": null,
+          "worker": {
+            "finished": false,
+            "steps": 12,
+            "summary": "step budget exhausted"
+          }
+        }
+      ]
+    }
+  ]
+}

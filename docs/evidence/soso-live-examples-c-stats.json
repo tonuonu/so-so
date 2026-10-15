@@ -1,0 +1,82 @@
+{
+  "trial": "soso-live-examples-c-stats",
+  "base": "e740659e77ac513f442ea66cd355598a063deb6c",
+  "head": "e740659e77ac513f442ea66cd355598a063deb6c",
+  "baseline": 2.0,
+  "best": 2.0,
+  "status": "plateau",
+  "calls": 52,
+  "elapsed_seconds": 461.609509781003,
+  "rounds": [
+    {
+      "round": 1,
+      "accepted": null,
+      "candidates": [
+        {
+          "candidate": 0,
+          "commit": "f4f84634dff64f08602bf6e589973f36ad50aa0b",
+          "valid": true,
+          "score": 12.0,
+          "reason": null,
+          "review": {
+            "approve": false,
+            "reason": "Scaling each operand before summation loses significant cancellation information. On C11 platforms with 64-bit long-double precision, inputs 100000000000000000000 and -99999999999999999992 have mean 4.000000, but normalization rounds their difference and yields approximately 2.710505. Compensated summation cannot recover precision lost during division. The evaluator misses this case. Changes are implementation-only with no apparent evaluator gaming; this finding is analytical, not an executed test."
+          },
+          "worker": {
+            "finished": false,
+            "steps": 12,
+            "summary": "step budget exhausted"
+          }
+        },
+        {
+          "candidate": 1,
+          "commit": "c1ddcadcdcf2d9734d226ebb748913ad75d6f81d",
+          "valid": true,
+          "score": 12.0,
+          "reason": null,
+          "review": {
+            "approve": false,
+            "reason": "The running mean loses small contributions during cancellation. For example, arguments 1e100, 1, -1e100 have mean 0.333333, but the contribution of 1 is rounded away, producing zero or a large rounding residual. The evaluator does not cover this case. The change stays within implementation scope and shows no evaluator gaming, but needs more robust accumulation."
+          },
+          "worker": {
+            "finished": false,
+            "steps": 12,
+            "summary": "step budget exhausted"
+          }
+        }
+      ]
+    },
+    {
+      "round": 2,
+      "accepted": null,
+      "candidates": [
+        {
+          "candidate": 1,
+          "commit": null,
+          "valid": false,
+          "score": null,
+          "reason": "no changes",
+          "review": null,
+          "worker": {
+            "finished": false,
+            "steps": 12,
+            "summary": "step budget exhausted"
+          }
+        },
+        {
+          "candidate": 0,
+          "commit": "42a4a9131008507924e60e8acb7c13d70d8b47cc",
+          "valid": false,
+          "score": null,
+          "reason": "evaluator failed",
+          "review": null,
+          "worker": {
+            "finished": false,
+            "steps": 12,
+            "summary": "step budget exhausted"
+          }
+        }
+      ]
+    }
+  ]
+}

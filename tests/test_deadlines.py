@@ -97,3 +97,20 @@ class HTTPDeadlineTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+class ObservedDeadlineTests(unittest.TestCase):
+    def test_success_after_scheduling_delay_is_timeout(self):
+        from unittest.mock import patch
+        from soso import process
+        real = process.selectors.DefaultSelector
+        class DelayedSelector:
+            def __init__(self): self.selector=real()
+            def register(self,*args): return self.selector.register(*args)
+            def unregister(self,*args): return self.selector.unregister(*args)
+            def close(self): self.selector.close()
+            def select(self,timeout):
+                time.sleep(.2)
+                return self.selector.select(0)
+        with patch.object(process.selectors,'DefaultSelector',DelayedSelector):
+            result=process.execute([sys.executable,'-c','print("done")'],'.',timeout=.1)
+        self.assertTrue(result['timed_out'])

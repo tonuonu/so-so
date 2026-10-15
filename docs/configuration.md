@@ -1,5 +1,9 @@
 # Configuration
 
+For normal goal delivery, supply any number of models and routing rules via
+`--models FILE` or `SOSO_MODELS_FILE`; see [routing](routing.md). This separates
+your machine-wide inference pool from a project's acceptance evaluator.
+
 The default config filename is `soso.json`; use `--config FILE` to choose another. All commands are argv arrays, not shell strings. To run a pipeline, explicitly configure `['sh', '-c', '...']` and treat that as trusted code.
 
 ```json
@@ -68,3 +72,21 @@ A call is counted before dispatch, including failed calls. Endpoint waiting and 
 Default protection covers root/nested `AGENTS.md`, `INTENT.md`, the default config, evaluator, existing tests, CI and `.gitignore`; custom patterns are added, not substituted. Pin every evaluator dependency and data file you want immutable. Protection is checked again after worker completion and after evaluation. It is a correctness guard for cooperative workers, not a security boundary against arbitrary shell access.
 
 Use `check` for the fixed verification commands without granting arbitrary command execution. Use `--allow-exec` only when your surrounding environment is suitable for arbitrary project commands.
+
+## Automatic goal setup
+
+`soso "goal text"` and bare `soso` use delivery setup rather than requiring this
+file. Bare invocation reads `INTENT.md`. If no policy exists, a planning call
+produces a milestone/acceptance contract and a Python evaluator; the runner freezes
+it before implementation. This generated contract is inspectable source in the
+goal worktree. Existing policy can be used when you want externally defined checks.
+
+`--backend ollama --model NAME` uses the exact local model name. `--backend codex`
+or `--backend claude` selects that adapter. Auto discovery prefers local inference
+for worker steps and can use installed stronger CLI adapters for planning, review
+and fallback. `SOSO_OLLAMA_URL` chooses the Ollama server, and `SOSO_LOCAL_ONLY`
+restricts automatic selection to local inference.
+
+Delivery supports `--once`, `--resume-goal ID`, and `--no-exec`. Provider waiting
+and configured epoch limits are separate from optimization `run --resume`, whose
+original absolute deadline remains unchanged.

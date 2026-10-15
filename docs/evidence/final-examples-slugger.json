@@ -1,0 +1,50 @@
+{
+  "trial": "final-examples-slugger",
+  "base": "090a27aa0e6cc56121d051e5ef36fda90b673b5b",
+  "head": "090a27aa0e6cc56121d051e5ef36fda90b673b5b",
+  "baseline": 3.0,
+  "best": 3.0,
+  "status": "round_limit",
+  "calls": 27,
+  "elapsed_seconds": 165.7066468190169,
+  "rounds": [
+    {
+      "round": 1,
+      "accepted": null,
+      "candidates": [
+        {
+          "candidate": 0,
+          "commit": "87270af4fa8cf084ee07992c18717e3e2fd646af",
+          "valid": true,
+          "score": 12.0,
+          "reason": null,
+          "review": {
+            "approve": false,
+            "reason": "The candidate removes only Mn marks, leaving Mc (spacing combining marks) and Me (enclosing marks) to become dashes. Verified that 'a\\u0903b' and 'a\\u20ddb' produce 'a-b' instead of 'ab'. Remove all Unicode mark categories before replacing other characters. The evaluator misses these cases; no evaluator gaming or scope violations are apparent."
+          },
+          "worker": {
+            "finished": true,
+            "steps": 12,
+            "summary": "Updated slugger.py with standard-library NFKD normalization, Mn combining-mark removal, ASCII alphanumeric filtering, dash collapsing and trimming, and lowercasing. Check passed: 12/12. Evaluator and protected files preserved."
+          }
+        },
+        {
+          "candidate": 1,
+          "commit": "c3db9450f90b2b4539cf5bc431b6a4639890a48e",
+          "valid": true,
+          "score": 12.0,
+          "reason": null,
+          "review": {
+            "approve": false,
+            "reason": "The candidate passes all 12 evaluator cases but removes only Mn marks. Combining marks also include Mc and Me: 'a\\u20ddb' produces 'a-b' instead of 'ab'. Remove all Unicode mark categories after NFKD normalization. The change stays within scope and shows no evaluator gaming, but the evaluator misses this requirement."
+          },
+          "worker": {
+            "finished": true,
+            "steps": 12,
+            "summary": "Implemented NFKD normalization and a single-pass ASCII scanner in slugger.py, skipping Mn combining marks and collapsing separators. Evaluator and protected tests preserved. Final check passed 12/12. Additional focused execution was unavailable because it requires --allow-exec."
+          }
+        }
+      ]
+    }
+  ]
+}

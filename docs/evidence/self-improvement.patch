@@ -1,0 +1,59 @@
+diff --git a/soso/engine.py b/soso/engine.py
+index b016f1c..051a4a5 100644
+--- a/soso/engine.py
++++ b/soso/engine.py
+@@ -235,15 +235,14 @@ class Run:
+                     raise BudgetExceeded(exhausted[0]["error"])
+                 valid = [x for x in round_result["experiments"] if x.get("evaluation", {}).get("valid")]
+                 valid.sort(key=lambda x: (self.utility(x["evaluation"]["score"]), -x["candidate"]), reverse=True)
+-                if valid and self.utility(valid[0]["evaluation"]["score"]) > self.utility(self.report["best"]) + self.config["min_delta"]:
+-                    for best in valid:
+-                        if self.utility(best["evaluation"]["score"]) <= self.utility(self.report["best"]) + self.config["min_delta"]:
+-                            break
+-                        if self.review(best):
+-                            git(self.integration, "merge", "--ff-only", best["commit"])
+-                            self.report["best"] = best["evaluation"]["score"]
+-                            round_result["accepted"] = best["commit"]
+-                            break
++                for best in valid:
++                    if self.utility(best["evaluation"]["score"]) <= self.utility(self.report["best"]) + self.config["min_delta"]:
++                        break
++                    if self.review(best):
++                        git(self.integration, "merge", "--ff-only", best["commit"])
++                        self.report["best"] = best["evaluation"]["score"]
++                        round_result["accepted"] = best["commit"]
++                        break
+                 self.report["plateau"] = 0 if round_result["accepted"] else self.report["plateau"] + 1
+                 self.report["rounds"].append(round_result)
+                 self.log("round", round=number, best=self.report["best"], accepted=round_result["accepted"])
+diff --git a/soso/models.py b/soso/models.py
+index 93ba167..49c83cf 100644
+--- a/soso/models.py
++++ b/soso/models.py
+@@ -128,18 +128,18 @@ class Router:
+         if kind not in ("openai", "ollama"):
+             raise ValueError("unknown model kind")
+         endpoint = model["url"].rstrip("/")
+-        messages = [{"role": "user", "content": prompt}]
++        body = {"model": model["model"],
++                "messages": [{"role": "user", "content": prompt}],
++                "temperature": model.get("temperature", 0.2)}
+         if kind == "ollama":
+             endpoint += "/api/chat"
+-            body = {"model": model["model"], "messages": messages, "stream": False,
+-                    "format": "json", "options": {"temperature": model.get("temperature", 0.2),
+-                    "num_predict": model.get("max_tokens", 2048),
+-                    "num_ctx": model.get("context_tokens", 8192)}}
++            body.update(stream=False, format="json", options={
++                "temperature": body.pop("temperature"),
++                "num_predict": model.get("max_tokens", 2048),
++                "num_ctx": model.get("context_tokens", 8192)})
+         else:
+             endpoint += "/chat/completions"
+-            body = {"model": model["model"], "messages": messages,
+-                    "max_tokens": model.get("max_tokens", 2048),
+-                    "temperature": model.get("temperature", 0.2)}
++            body["max_tokens"] = model.get("max_tokens", 2048)
+             if model.get("json_mode", True):
+                 body["response_format"] = {"type": "json_object"}
+         headers = {"Content-Type": "application/json"}

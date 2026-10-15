@@ -38,7 +38,7 @@ def execute(argv, cwd, timeout=60, stdin=None, limit=16000, env=None):
         while True:
             remaining = deadline - time.monotonic()
             if remaining <= 0:
-                timed_out = proc.poll() is None
+                timed_out = True
                 break
             for key, _ in selector.select(min(remaining, 0.05)):
                 if key.fileobj is proc.stdout:
@@ -55,6 +55,9 @@ def execute(argv, cwd, timeout=60, stdin=None, limit=16000, env=None):
                     if not pending:
                         selector.unregister(proc.stdin)
                         proc.stdin.close()
+            if time.monotonic() >= deadline:
+                timed_out = True
+                break
             if proc.poll() is not None:
                 break
     finally:
@@ -63,6 +66,10 @@ def execute(argv, cwd, timeout=60, stdin=None, limit=16000, env=None):
             os.killpg(proc.pid, signal.SIGKILL)
         except ProcessLookupError:
             pass
+        except PermissionError:
+            # macOS may refuse killpg after the session leader already exited.
+            if proc.poll() is None:
+                proc.kill()
         proc.wait()
         # Read only bytes already available. A daemon may have detached from the
         # group and retained its pipe, so waiting for EOF would be unbounded.

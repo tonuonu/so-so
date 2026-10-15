@@ -1,0 +1,47 @@
+{
+  "trial": "final-examples-csv-reader",
+  "base": "72c93051ddc11eef620deed99419f1eae2a9eaca",
+  "head": "e4724f4890914cd0d32a461cf201d921e93f2f0c",
+  "baseline": 4.0,
+  "best": 12.0,
+  "status": "round_limit",
+  "calls": 26,
+  "elapsed_seconds": 131.37276300200028,
+  "rounds": [
+    {
+      "round": 1,
+      "accepted": "e4724f4890914cd0d32a461cf201d921e93f2f0c",
+      "candidates": [
+        {
+          "candidate": 0,
+          "commit": "e4724f4890914cd0d32a461cf201d921e93f2f0c",
+          "valid": true,
+          "score": 12.0,
+          "reason": null,
+          "review": {
+            "approve": true,
+            "reason": "The candidate satisfies the stated CSV requirements, including quoted newlines, escaped quotes, empty fields, trailing record separators, and unterminated quote errors. Changes are limited to csv.js, with no evaluator gaming or scope expansion. The supplied evaluation reports 12/12 cases passing."
+          },
+          "worker": {
+            "finished": true,
+            "steps": 12,
+            "summary": "Implemented a single-pass CSV parser supporting quoted commas, escaped quotes, LF/CRLF separators, embedded newlines, empty fields, Unicode, and unterminated-quote errors. Runner check passed 12/12. Final diff confirms only csv.js changed; evaluate.py is unchanged."
+          }
+        },
+        {
+          "candidate": 1,
+          "commit": "798c1caac0c038d881ed2cac6c9c302d041dd80a",
+          "valid": true,
+          "score": 12.0,
+          "reason": null,
+          "review": null,
+          "worker": {
+            "finished": false,
+            "steps": 12,
+            "summary": "step budget exhausted"
+          }
+        }
+      ]
+    }
+  ]
+}

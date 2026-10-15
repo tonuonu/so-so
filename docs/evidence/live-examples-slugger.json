@@ -1,0 +1,111 @@
+{
+  "trial": "live-examples-slugger",
+  "base": "726ccd54bad468a2f296fd7ac39c2fd043fe672f",
+  "head": "5ee98a31b367bad43238e4391dd2ca30dd9f6c0b",
+  "baseline": 3.0,
+  "best": 12.0,
+  "status": "plateau",
+  "calls": 76,
+  "elapsed_seconds": 412.34928448300343,
+  "rounds": [
+    {
+      "round": 1,
+      "accepted": "5ee98a31b367bad43238e4391dd2ca30dd9f6c0b",
+      "candidates": [
+        {
+          "candidate": 0,
+          "commit": "5ee98a31b367bad43238e4391dd2ca30dd9f6c0b",
+          "valid": true,
+          "score": 12.0,
+          "reason": null,
+          "review": {
+            "approve": true,
+            "reason": "The candidate implements the requested NFKD normalization, combining-mark removal, ASCII-only filtering, dash collapsing, trimming, and lowercasing, including empty input. It uses only the standard library, changes only slugger.py, and shows no evaluator gaming."
+          },
+          "worker": {
+            "finished": true,
+            "steps": 12,
+            "summary": "Updated slugger.py with standard-library NFKD normalization, combining-mark removal, ASCII alphanumeric filtering, collapsed dashes, edge stripping, and lowercase conversion. Preserved evaluate.py. Verification of its 12 cases was blocked because the runner requires --allow-exec."
+          }
+        },
+        {
+          "candidate": 1,
+          "commit": "8578626f918418c41c4b7c03acac5e3ba6e94735",
+          "valid": true,
+          "score": 12.0,
+          "reason": null,
+          "review": null,
+          "worker": {
+            "finished": true,
+            "steps": 12,
+            "summary": "Implemented the NFKD character scan in slugger.py: skip combining marks, retain ASCII letters and digits, insert dashes only between retained groups, and lowercase. Empty and punctuation-only inputs return an empty string. evaluate.py remains unchanged. Verification could not run because the runner requires --allow-exec."
+          }
+        }
+      ]
+    },
+    {
+      "round": 2,
+      "accepted": null,
+      "candidates": [
+        {
+          "candidate": 1,
+          "commit": "04191c8507b009e66ea6a6ce4e9323ba85a5b484",
+          "valid": true,
+          "score": 12.0,
+          "reason": null,
+          "review": null,
+          "worker": {
+            "finished": false,
+            "steps": 12,
+            "summary": "step budget exhausted"
+          }
+        },
+        {
+          "candidate": 0,
+          "commit": "44ac40d9036368cb6065ec845592fb4d49d9c6f0",
+          "valid": true,
+          "score": 12.0,
+          "reason": null,
+          "review": null,
+          "worker": {
+            "finished": true,
+            "steps": 12,
+            "summary": "slugger.py removes all Unicode mark categories (Mn, Mc, Me) after NFKD normalization, including zero-class marks, while preserving ASCII filtering, dash collapsing, trimming, and lowercasing. evaluate.py remains unchanged. Runtime verification was blocked because the runner requires --allow-exec."
+          }
+        }
+      ]
+    },
+    {
+      "round": 3,
+      "accepted": null,
+      "candidates": [
+        {
+          "candidate": 1,
+          "commit": "efaac81ebff46979479acf1c55559682c1391978",
+          "valid": true,
+          "score": 12.0,
+          "reason": null,
+          "review": null,
+          "worker": {
+            "finished": true,
+            "steps": 12,
+            "summary": "slugger.py now retains ASCII characters directly and calls unicodedata.combining() only for non-ASCII characters, preserving NFKD normalization and output semantics. evaluate.py was unchanged. Evaluator verification, mixed-input checks, and baseline benchmarking remain unverified because the runner rejected execution: run requires --allow-exec."
+          }
+        },
+        {
+          "candidate": 0,
+          "commit": null,
+          "valid": false,
+          "score": null,
+          "reason": "no changes",
+          "review": null,
+          "worker": {
+            "finished": false,
+            "steps": 12,
+            "summary": "step budget exhausted"
+          }
+        }
+      ]
+    }
+  ]
+}

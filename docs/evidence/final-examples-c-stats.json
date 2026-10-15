@@ -1,0 +1,50 @@
+{
+  "trial": "final-examples-c-stats",
+  "base": "ddc6a2ab37a7676c705741919811b7769df175fb",
+  "head": "ddc6a2ab37a7676c705741919811b7769df175fb",
+  "baseline": 2.0,
+  "best": 2.0,
+  "status": "round_limit",
+  "calls": 27,
+  "elapsed_seconds": 181.12828810198698,
+  "rounds": [
+    {
+      "round": 1,
+      "accepted": null,
+      "candidates": [
+        {
+          "candidate": 1,
+          "commit": "76049256f81b68b4d150c76a5bb9d59371dcfc03",
+          "valid": true,
+          "score": 12.0,
+          "reason": null,
+          "review": {
+            "approve": false,
+            "reason": "The running mean loses small contributions during cancellation. For example, inputs 1e100, 1, -1e100 have mean 0.333333, but the intermediate rounding discards the 1 and cannot recover it. The evaluator misses this case. Changes are within scope and show no evaluator gaming, but numerical correctness needs improvement."
+          },
+          "worker": {
+            "finished": true,
+            "steps": 12,
+            "summary": "Updated only stats.c with strict finite decimal/scientific parsing using strtold, overflow-aware online mean calculation, and six-decimal output. Empty and invalid inputs fail. evaluate.py is preserved. Runner check passed 12/12; additional focused executions were blocked because run requires --allow-exec."
+          }
+        },
+        {
+          "candidate": 0,
+          "commit": "7b6ab518b121ef4301b646d709974fadae556279",
+          "valid": true,
+          "score": 12.0,
+          "reason": null,
+          "review": {
+            "approve": false,
+            "reason": "parse() rejects every ERANGE result, including finite subnormal values and underflow to zero. Thus valid decimal inputs such as 1e-99999 fail instead of producing 0.000000. Reject overflow and nonfinite results while allowing finite underflow. Changes are implementation-only with no apparent evaluator gaming. This finding is from static review; no check tool was available."
+          },
+          "worker": {
+            "finished": false,
+            "steps": 12,
+            "summary": "step budget exhausted"
+          }
+        }
+      ]
+    }
+  ]
+}

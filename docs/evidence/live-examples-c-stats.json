@@ -1,0 +1,82 @@
+{
+  "trial": "live-examples-c-stats",
+  "base": "28475fe44a90cc2a5b03cc194d4131f62f4fae55",
+  "head": "28475fe44a90cc2a5b03cc194d4131f62f4fae55",
+  "baseline": 2.0,
+  "best": 2.0,
+  "status": "plateau",
+  "calls": 52,
+  "elapsed_seconds": 352.11881609400734,
+  "rounds": [
+    {
+      "round": 1,
+      "accepted": null,
+      "candidates": [
+        {
+          "candidate": 1,
+          "commit": "22e25b61c348a16821f3abb1b8133ba36014e25f",
+          "valid": true,
+          "score": 12.0,
+          "reason": null,
+          "review": null,
+          "worker": {
+            "finished": true,
+            "steps": 12,
+            "summary": "Updated stats.c with strict decimal/scientific syntax validation, finite strtold parsing, and a sign-aware long double running mean to preserve fractions and avoid unnecessary overflow. Missing, malformed, and nonfinite inputs fail; output uses six decimal places. evaluate.py remains unchanged. Verification could not run because the runner requires --allow-exec."
+          }
+        },
+        {
+          "candidate": 0,
+          "commit": "c9fe4bd226a0b721afec052a4cefe4b715cb34e6",
+          "valid": true,
+          "score": 12.0,
+          "reason": null,
+          "review": {
+            "approve": false,
+            "reason": "The evaluator is unchanged and there is no apparent gaming, but scaling each operand can substantially corrupt cancellation. With typical 64-bit-significand long double arithmetic, inputs 100000000000000000000 and -99999999999999999992 are exactly representable and have mean 4.000000, yet normalization produces approximately 2.710505. Compensated summation cannot recover precision lost during division by scale. The passing evaluator does not cover this case."
+          },
+          "worker": {
+            "finished": false,
+            "steps": 12,
+            "summary": "step budget exhausted"
+          }
+        }
+      ]
+    },
+    {
+      "round": 2,
+      "accepted": null,
+      "candidates": [
+        {
+          "candidate": 0,
+          "commit": "a1f7571ace2df1cd23ab186ee5a5f92a5cdc51ad",
+          "valid": true,
+          "score": 12.0,
+          "reason": null,
+          "review": {
+            "approve": false,
+            "reason": "The running mean loses small contributions during cancellation: arguments 1e100, 1, -1e100 should print 0.333333, but this algorithm produces zero or a large rounding residual. The evaluator misses this correctness case. Changes are confined to stats.c, with no apparent evaluator gaming."
+          },
+          "worker": {
+            "finished": false,
+            "steps": 12,
+            "summary": "step budget exhausted"
+          }
+        },
+        {
+          "candidate": 1,
+          "commit": "671151d3eb6d5136b04d22d648fee80e86fa5ff5",
+          "valid": true,
+          "score": 12.0,
+          "reason": null,
+          "review": null,
+          "worker": {
+            "finished": false,
+            "steps": 12,
+            "summary": "step budget exhausted"
+          }
+        }
+      ]
+    }
+  ]
+}

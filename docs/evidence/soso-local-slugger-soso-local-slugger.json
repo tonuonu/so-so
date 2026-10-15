@@ -1,0 +1,46 @@
+{
+  "trial": "soso-local-slugger-soso-local-slugger",
+  "base": "a62d0b46f1de59c16722e52b4d90c2412e2395ca",
+  "head": "a62d0b46f1de59c16722e52b4d90c2412e2395ca",
+  "baseline": 3.0,
+  "best": 3.0,
+  "status": "plateau",
+  "calls": 21,
+  "elapsed_seconds": 839.5902807980019,
+  "rounds": [
+    {
+      "round": 1,
+      "accepted": null,
+      "candidates": [
+        {
+          "candidate": 0,
+          "commit": null,
+          "valid": false,
+          "score": null,
+          "reason": "no changes",
+          "review": null,
+          "worker": {
+            "finished": false,
+            "steps": 14,
+            "summary": "step budget exhausted"
+          }
+        }
+      ]
+    },
+    {
+      "round": 2,
+      "accepted": null,
+      "candidates": [
+        {
+          "candidate": 0,
+          "commit": null,
+          "valid": false,
+          "score": null,
+          "reason": "RuntimeError",
+          "review": null,
+          "worker": null
+        }
+      ]
+    }
+  ]
+}

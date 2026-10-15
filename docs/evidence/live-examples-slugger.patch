@@ -1,0 +1,14 @@
+diff --git a/slugger.py b/slugger.py
+index d121588..a1d166d 100644
+--- a/slugger.py
++++ b/slugger.py
+@@ -1,2 +1,8 @@
++import re
++import unicodedata
++
++
+ def slug(text):
+-    return text.lower().replace(' ', '-')
++    normalized = unicodedata.normalize('NFKD', text)
++    unmarked = ''.join(char for char in normalized if not unicodedata.combining(char))
++    return re.sub(r'[^A-Za-z0-9]+', '-', unmarked).strip('-').lower()

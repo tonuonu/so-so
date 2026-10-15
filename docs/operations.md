@@ -81,3 +81,26 @@ model reviewers can be wrong. Keep stronger tests, human review, and domain chec
 There is no automatic online training, learned routing, distributed queue,
 merge-conflict solver, privileged sandbox, provider spend estimator, or GPU memory
 scheduler. The loop improves a Git project; it does not change model weights.
+
+## Persistent delivery
+
+The normal goal entry point uses an outer controller around bounded experiment
+epochs. Local epoch budgets remain finite; the goal can open a new epoch from the
+accepted commit. Provider rate/quota failures carry safe retry metadata. HTTP
+`Retry-After` is honored, including long waits; unknown reset times use backoff.
+Waiting is persisted before sleeping and is distinct from completion. `--once`
+returns after a bounded epoch or wait decision so an external service can manage
+lifetime. A process must be running, or restarted by your service manager, to wake
+and continue; writing a checkpoint is not an operating-system scheduler.
+
+The goal controller does not infer that credentials grant unlimited scope. Put the
+allowed accounts, regions, resource limits and release destination in INTENT.md.
+Keep secret values in environment/keychain/provider profiles, not in intent prose.
+Capability discovery reports tool availability without printing secrets.
+
+External side effects are not transactional with Git. Rejecting a candidate or
+removing its worktree does not remove a server, undo a database migration or revoke
+a release. Use stable goal-derived names, inspect existing resources, and prefer
+idempotent/declarative deployment tools. Avoid parallel competing deployments.
+The runner does not provide an exactly-once distributed transaction system, and
+its mobile/cloud workflows have not been production-validated in this release.

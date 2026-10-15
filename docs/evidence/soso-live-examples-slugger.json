@@ -1,0 +1,85 @@
+{
+  "trial": "soso-live-examples-slugger",
+  "base": "e1931b00a9d408908e02f6b06bb251d68425f5b1",
+  "head": "2053c922bb76ac47dfedbe2f178fcb85b4233cc4",
+  "baseline": 3.0,
+  "best": 12.0,
+  "status": "plateau",
+  "calls": 51,
+  "elapsed_seconds": 475.6863702169794,
+  "rounds": [
+    {
+      "round": 1,
+      "accepted": "2053c922bb76ac47dfedbe2f178fcb85b4233cc4",
+      "candidates": [
+        {
+          "candidate": 0,
+          "commit": null,
+          "valid": false,
+          "score": null,
+          "reason": "no changes",
+          "review": null,
+          "worker": {
+            "finished": false,
+            "steps": 12,
+            "summary": "step budget exhausted"
+          }
+        },
+        {
+          "candidate": 1,
+          "commit": "2053c922bb76ac47dfedbe2f178fcb85b4233cc4",
+          "valid": true,
+          "score": 12.0,
+          "reason": null,
+          "review": {
+            "approve": true,
+            "reason": "The candidate correctly implements NFKD normalization, mark removal, ASCII filtering, separator collapsing, trimming, and lowercasing using only the standard library. Changes are limited to slugger.py, with no evaluator gaming. In-memory verification passed all 12 evaluator cases and 4 additional Unicode and separator cases."
+          },
+          "worker": {
+            "finished": false,
+            "steps": 12,
+            "summary": "step budget exhausted"
+          }
+        }
+      ]
+    },
+    {
+      "round": 2,
+      "accepted": null,
+      "candidates": [
+        {
+          "candidate": 0,
+          "commit": null,
+          "valid": false,
+          "score": null,
+          "reason": "no changes",
+          "review": null,
+          "worker": {
+            "finished": true,
+            "steps": 11,
+            "summary": "No changes retained. The original implementation and evaluator were inspected, but the runner rejected execution with 'run requires --allow-exec'. Baseline, regression, and timing evidence could not be collected, so no concrete improvement was established. evaluate.py and protected files remain unchanged."
+          }
+        }
+      ]
+    },
+    {
+      "round": 3,
+      "accepted": null,
+      "candidates": [
+        {
+          "candidate": 0,
+          "commit": null,
+          "valid": false,
+          "score": null,
+          "reason": "no changes",
+          "review": null,
+          "worker": {
+            "finished": true,
+            "steps": 12,
+            "summary": "Retained the original slugger.py implementation; no unverified ASCII fast path remains. evaluate.py and protected files were preserved. Execution was rejected with 'run requires --allow-exec', so evaluator results, regression assertions, and benchmarks could not be verified. No performance improvement or increased evaluator coverage is claimed."
+          }
+        }
+      ]
+    }
+  ]
+}

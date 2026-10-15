@@ -1,0 +1,16 @@
+{
+  "models": {
+    "qwen": {"kind": "ollama", "url": "http://localhost:11434", "model": "YOUR_QWEN_MODEL", "roles": ["worker"], "cost": 0, "context_tokens": 32768, "context_bytes": 60000},
+    "fable": {"kind": "command", "command": ["YOUR_FABLE_WRAPPER"], "roles": ["worker"], "context_bytes": 60000},
+    "x": {"kind": "codex", "args": ["--ignore-user-config"], "roles": ["planner", "worker", "reviewer"], "context_bytes": 60000},
+    "triage": {"kind": "ollama", "url": "http://localhost:11434", "model": "YOUR_SMALL_CLASSIFIER", "roles": [], "max_tokens": 128}
+  },
+  "routes": {"planner": ["x"], "worker": ["qwen", "x"], "reviewer": ["x"]},
+  "routing": {
+    "rules": [
+      {"role": "worker", "contains": ["design", "branding", "user interface"], "regex": ".*", "models": ["fable", "x"]},
+      {"role": "worker", "contains": ["implement", "code", "function"], "not_contains": ["security audit"], "models": ["qwen", "x"]}
+    ],
+    "default": ["x"]
+  }
+}

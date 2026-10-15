@@ -1,0 +1,72 @@
+#!/bin/sh
+# One-command entry. All runtime setup stays below .so-so.
+set -eu
+so_so_state="$PWD/.so-so"
+if [ ! -e "$so_so_state" ]; then
+    mkdir -m 700 "$so_so_state"
+    printf '%s\n' '{"owner":"so-so","version":1}' > "$so_so_state/owner.json"
+    printf '%s\n' '*' > "$so_so_state/.gitignore"
+elif [ -L "$so_so_state" ] || [ ! -f "$so_so_state/owner.json" ] || ! grep -Eq '"owner"[[:space:]]*:[[:space:]]*"so-so"' "$so_so_state/owner.json"; then
+    printf '%s\n' 'so-so: existing .so-so directory is not owned by this launcher.' >&2
+    exit 1
+fi
+mkdir -p "$so_so_state/tools"
+so_so_python=''
+for so_so_candidate in python3 python3.14 python3.13 python3.12 python3.11; do
+    if command -v "$so_so_candidate" >/dev/null 2>&1 && "$so_so_candidate" -c 'import sys; raise SystemExit(sys.version_info < (3, 11))' >/dev/null 2>&1; then
+        so_so_python="$so_so_candidate"
+        break
+    fi
+done
+if [ -z "$so_so_python" ]; then
+    so_so_uv="$so_so_state/tools/uv"
+    if [ ! -x "$so_so_uv" ]; then
+        printf '%s\n' 'Preparing the local Python runtime…'
+        if command -v curl >/dev/null 2>&1; then
+            curl -fLsS https://astral.sh/uv/install.sh -o "$so_so_state/tools/install-uv.sh"
+        else
+            wget -q https://astral.sh/uv/install.sh -O "$so_so_state/tools/install-uv.sh"
+        fi
+        UV_UNMANAGED_INSTALL="$so_so_state/tools" sh "$so_so_state/tools/install-uv.sh"
+    fi
+    export UV_PYTHON_INSTALL_DIR="$so_so_state/tools/python"
+    export UV_CACHE_DIR="$so_so_state/tools/cache"
+    "$so_so_uv" python install 3.12
+    so_so_python=$("$so_so_uv" python find --managed-python 3.12)
+fi
+if ! command -v git >/dev/null 2>&1; then
+    printf '%s\n' 'Preparing Git…'
+    so_so_sudo=''
+    if [ "$(id -u)" != 0 ]; then
+        if command -v sudo >/dev/null 2>&1 && sudo -n true 2>/dev/null; then
+            so_so_sudo='sudo -n'
+        else
+            printf '%s\n' 'so-so: Git setup needs system installation permission on this host.' >&2
+            exit 1
+        fi
+    fi
+    if command -v apt-get >/dev/null 2>&1; then
+        $so_so_sudo apt-get update -qq
+        $so_so_sudo apt-get install -y -qq git
+    elif command -v dnf >/dev/null 2>&1; then
+        $so_so_sudo dnf install -y git
+    elif command -v apk >/dev/null 2>&1; then
+        $so_so_sudo apk add git
+    else
+        printf '%s\n' 'so-so: no supported automatic Git installer on this host.' >&2
+        exit 1
+    fi
+fi
+so_so_root=$("$so_so_python" -c 'import pathlib,sys; print(pathlib.Path(sys.argv[1]).resolve().parent)' "$0")
+if [ ! -f "$so_so_root/soso/launch.py" ]; then
+    so_so_root="$so_so_state/runtime"
+    if [ ! -f "$so_so_root/soso/launch.py" ]; then
+        printf '%s\n' 'Obtaining so-so…'
+        if command -v gh >/dev/null 2>&1; then
+            gh repo clone tonuonu/so-so "$so_so_root" -- --depth 1
+        else
+            GIT_TERMINAL_PROMPT=0 git clone --depth 1 git@github.com:tonuonu/so-so.git "$so_so_root"
+        fi
+    fi
+fi
+exec "$so_so_python" -c 'import runpy,sys; sys.path.insert(0,sys.argv.pop(1)); runpy.run_module("soso.launch",run_name="__main__")' "$so_so_root" "$@"

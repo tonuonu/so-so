@@ -1,0 +1,23 @@
+diff --git a/slugger.py b/slugger.py
+index d121588..a9bed6f 100644
+--- a/slugger.py
++++ b/slugger.py
+@@ -1,2 +1,17 @@
++import unicodedata
++
++
+ def slug(text):
+-    return text.lower().replace(' ', '-')
++    result = []
++    separator = False
++    for char in unicodedata.normalize('NFKD', text):
++        if unicodedata.category(char).startswith('M'):
++            continue
++        if 'a' <= char <= 'z' or 'A' <= char <= 'Z' or '0' <= char <= '9':
++            if separator and result:
++                result.append('-')
++            result.append(char)
++            separator = False
++        else:
++            separator = True
++    return ''.join(result).lower()

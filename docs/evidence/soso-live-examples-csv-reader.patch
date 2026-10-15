@@ -1,0 +1,54 @@
+diff --git a/csv.js b/csv.js
+index 276424d..bb6915b 100644
+--- a/csv.js
++++ b/csv.js
+@@ -1,4 +1,48 @@
+ function parseCSV(text) {
+-  return text.split('\n').map(line => line.split(','));
++  if (text.length === 0) return [];
++
++  const records = [];
++  let record = [];
++  let field = '';
++  let quoted = false;
++  let endedRecord = false;
++
++  for (let i = 0; i < text.length; i++) {
++    const char = text[i];
++    endedRecord = false;
++    if (quoted) {
++      if (char === '"') {
++        if (text[i + 1] === '"') {
++          field += '"';
++          i++;
++        } else {
++          quoted = false;
++        }
++      } else {
++        field += char;
++      }
++    } else if (char === '"' && field.length === 0) {
++      quoted = true;
++    } else if (char === ',') {
++      record.push(field);
++      field = '';
++    } else if (char === '\n' || (char === '\r' && text[i + 1] === '\n')) {
++      if (char === '\r') i++;
++      record.push(field);
++      records.push(record);
++      record = [];
++      field = '';
++      endedRecord = true;
++    } else {
++      field += char;
++    }
++  }
++
++  if (quoted) throw new Error('Unterminated quoted field');
++  if (!endedRecord) {
++    record.push(field);
++    records.push(record);
++  }
++  return records;
+ }
+ module.exports = { parseCSV };

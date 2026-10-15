@@ -1,0 +1,19 @@
+{
+  "trial": "self-improvement",
+  "base": "7174cd1c9006fbc5eeb92c6d781ef0bea871a308",
+  "head": "b53c306e644f5f3f162a89d1cdcf87001f35bf71",
+  "baseline": 7902.0,
+  "best": 7850.0,
+  "status": "round_limit",
+  "calls": 53,
+  "accepted": [
+    {
+      "round": 2,
+      "commit": "12cae1b163f6650263fd55d7d608ae6c59c21e85"
+    },
+    {
+      "round": 3,
+      "commit": "b53c306e644f5f3f162a89d1cdcf87001f35bf71"
+    }
+  ]
+}

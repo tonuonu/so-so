@@ -118,7 +118,7 @@ class ModelTests(unittest.TestCase):
 
 class EngineTests(RepoCase):
     @staticmethod
-    def actions(router,role,prompt,cwd,attempt=0):
+    def actions(router,role,prompt,cwd,attempt=0,task=None):
         router.budget.claim()
         if role=='reviewer': return {'approve':True}
         if role=='planner': return {'experiments':[{'task':'improve value'},{'task':'another improvement'}]}
@@ -161,7 +161,7 @@ class EngineTests(RepoCase):
         (self.root/'value.txt').write_text('dirty')
         with self.assertRaises(ValueError): self.run_fixture()
     def test_tampered_evaluator(self):
-        def tamper(router,role,prompt,cwd,attempt=0):
+        def tamper(router,role,prompt,cwd,attempt=0,task=None):
             if 'LAST RESULT:\n{"files"' in prompt: return {'tool':'run','argv':[sys.executable,'-c','from pathlib import Path; Path("evaluate.py").write_text("print(999)")']}
             return {'tool':'done'}
         runner=Run(self.root,self.config(),'Improve',allow_exec=True)
@@ -190,7 +190,7 @@ class EngineTests(RepoCase):
         self.assertLess(time.monotonic() - started - report['elapsed'], .3)
 
     def test_try_next_candidate_when_review_rejects(self):
-        def review(router, role, prompt, cwd, attempt=0):
+        def review(router, role, prompt, cwd, attempt=0, task=None):
             if role == 'reviewer':
                 return {'approve': '+2' not in prompt, 'reason':'reject top candidate'}
             return self.actions(router, role, prompt, cwd, attempt)

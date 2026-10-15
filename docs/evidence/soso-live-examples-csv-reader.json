@@ -1,0 +1,98 @@
+{
+  "trial": "soso-live-examples-csv-reader",
+  "base": "f109195cd5b19a6b7c8a98ff8063bad9d034fa53",
+  "head": "3e3c4d65c17632aa60e644e101b30bd4bb088f16",
+  "baseline": 4.0,
+  "best": 12.0,
+  "status": "plateau",
+  "calls": 64,
+  "elapsed_seconds": 523.6375943990133,
+  "rounds": [
+    {
+      "round": 1,
+      "accepted": "3e3c4d65c17632aa60e644e101b30bd4bb088f16",
+      "candidates": [
+        {
+          "candidate": 0,
+          "commit": "3e3c4d65c17632aa60e644e101b30bd4bb088f16",
+          "valid": true,
+          "score": 12.0,
+          "reason": null,
+          "review": {
+            "approve": true,
+            "reason": "The candidate satisfies the stated CSV requirements, including escaped quotes, embedded newlines, empty fields, Unicode, trailing record separators, and unterminated quoted fields. Changes are limited to csv.js; evaluate.py is unchanged. No evaluator gaming or out-of-scope changes found. The supplied evaluation reports 12/12 passing."
+          },
+          "worker": {
+            "finished": false,
+            "steps": 12,
+            "summary": "step budget exhausted"
+          }
+        },
+        {
+          "candidate": 1,
+          "commit": "bed3d6a1b204d0887ae99164b081e576ba8ae06d",
+          "valid": true,
+          "score": 12.0,
+          "reason": null,
+          "review": null,
+          "worker": {
+            "finished": true,
+            "steps": 12,
+            "summary": "Implemented cursor-based CSV parsing in csv.js with quoted commas, escaped quotes, CRLF/LF separators, quoted newlines, empty fields, Unicode, and unterminated-quote errors. Empty input returns []; trailing record separators create no extra record. Existing evaluator passed 12/12; final diff changes only csv.js and preserves evaluate.py. Focused Node assertions were blocked because runner execution requires --allow-exec."
+          }
+        }
+      ]
+    },
+    {
+      "round": 2,
+      "accepted": null,
+      "candidates": [
+        {
+          "candidate": 0,
+          "commit": "9f06188a42231e1a2b7ab75583a4d8f33af277ad",
+          "valid": true,
+          "score": 12.0,
+          "reason": null,
+          "review": null,
+          "worker": {
+            "finished": false,
+            "steps": 12,
+            "summary": "step budget exhausted"
+          }
+        }
+      ]
+    },
+    {
+      "round": 3,
+      "accepted": null,
+      "candidates": [
+        {
+          "candidate": 0,
+          "commit": null,
+          "valid": false,
+          "score": null,
+          "reason": "no changes",
+          "review": null,
+          "worker": {
+            "finished": false,
+            "steps": 12,
+            "summary": "step budget exhausted"
+          }
+        },
+        {
+          "candidate": 1,
+          "commit": "b519861b44245f96641cb6f1288df70a03e82335",
+          "valid": true,
+          "score": 12.0,
+          "reason": null,
+          "review": null,
+          "worker": {
+            "finished": false,
+            "steps": 12,
+            "summary": "step budget exhausted"
+          }
+        }
+      ]
+    }
+  ]
+}
