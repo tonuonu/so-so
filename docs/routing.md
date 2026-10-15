@@ -46,7 +46,7 @@ To classify unmatched jobs semantically, add a selector inside `routing`:
 
 The selector returns `{"route":"design"}` (or another configured label). `triage`
 can be a cheap local model **or a command adapter implementing your own algorithm**.
-It is called directly once, never recursively through itself. Ollama classifiers receive a JSON schema restricting output to the configured labels. A thinking-capable model can use `think: false` internally to reserve its small output budget for the route choice. Rules run first;
+It is called directly once, never recursively through itself. Ollama classifiers receive a JSON schema restricting output to the configured labels. Ollama calls default to `think: false` to reserve their output budget for actionable responses; explicit model preferences can enable thinking. Classifier calls also default to a short output limit. Rules run first;
 the optional selector handles unmatched jobs; a failed/invalid/unavailable selector
 falls through to the explicit default. Selector calls consume the same call/time
 budget and respect their own context/concurrency limits. Logs record the selected
@@ -74,3 +74,8 @@ The initial pool is copied into durable goal state; edits to its original file d
 not silently change a running goal's policy. Start a new goal to apply a changed
 pool. `--backend` and `--model` are diagnostic overrides for deliberately testing a
 single provider/model, not the normal pool-based interface.
+
+New Markdown policies receive a separate semantic review before caching. The review
+checks ordered fallbacks and model/resource preferences against the original intent.
+Existing cached policies remain unchanged so an ongoing goal keeps its chosen
+routing. Revise `INTENT.md` to compile and review a new policy for a new goal.

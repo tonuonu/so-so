@@ -15,7 +15,9 @@ def resolve_pool(text, cwd):
     """Discover adapters and interpret model/routing preferences once per intent.
 
     Markdown is interpreted by available inference, then validated by the same
-    pool/policy validators as runtime. Unknown destinations are never guessed.
+    pool/policy validators as runtime. Unknown destinations are never guessed. A separate semantic review must approve
+    a newly compiled policy against the Markdown before it can be cached. Existing
+    valid cache entries are reused unchanged without retroactive semantic review.
     """
     cwd = Path(cwd)
     folder = cwd / '.so-so' / 'pools'
@@ -27,7 +29,7 @@ def resolve_pool(text, cwd):
             pool = load_model_pool(cache)
             Router(pool, Budget(1, 1), lambda *a, **k: None)
             return pool
-        except (ValueError, KeyError, TypeError):
+        except (ValueError, KeyError, TypeError, re.error):
             cache.rename(cache.with_suffix('.invalid'))
     try:
         discovered = configure_models({})
@@ -54,7 +56,7 @@ def resolve_pool(text, cwd):
     candidates = mentioned or list(models)
     preferred = [n for n in ('kimi', 'codex', 'claude') if n in candidates]
     preferred += [n for n in candidates if n not in preferred]
-    compiler_config = {'delivery': True, 'models': models, 'routes': {'worker': preferred},
+    compiler_config = {'delivery': True, 'models': models, 'routes': {'worker': preferred, 'configuration_review': preferred},
                        '_router_state': str(folder / 'compiler-cooldowns.json')}
     def log(event, **data):
         with (folder / 'setup-events.jsonl').open('a') as stream:
@@ -134,10 +136,40 @@ INVENTORY:
                     if not (explicit_command or explicit_api):
                         raise ValueError('adapter must preserve discovered connection details or be explicitly provided in Markdown')
             Router(pool, Budget(1, 1), lambda *a, **k: None)
-        except (ValueError, KeyError, TypeError) as exc:
+        except (ValueError, KeyError, TypeError, re.error) as exc:
             log('policy_invalid', attempt=attempt, error=str(exc)[:300])
             feedback = '\nREPAIR POLICY: ' + str(exc)[:300]
             temporary.unlink(missing_ok=True)
+            continue
+        review_prompt = (
+            'Independently review this compiled model policy against the USER MARKDOWN and VERIFIED INVENTORY. '
+            'Return ONLY JSON {"approve":boolean,"reason":"concrete mismatches or approval rationale"}. '
+            'Approve only if the executable policy faithfully preserves every explicit model and routing requirement. '
+            'Check model identity/location, role assignments, ordered fallback lists in every rule and selector route, '
+            'classifier identity and labels, default destination, CPU/GPU preferences, context and output limits. '
+            'For example, "routine code uses Qwen with Kimi fallback" requires ["qwen","kimi"] in the code route; '
+            '["qwen"] silently loses the fallback even if Kimi exists elsewhere in the pool. '
+            'Check first-match rules cannot bypass a requested classifier or default. Do not invent keyword rules, '
+            'models, fallbacks, or restrictions that contradict the Markdown. Unspecified defaults may remain. '
+            'Do not execute commands or implement the task. Reject with concrete repair feedback when anything is '
+            'omitted, reordered or misinterpreted; do not approve merely because the JSON is structurally valid. '
+            '\nUSER MARKDOWN:\n' + text + '\nVERIFIED INVENTORY:\n' + json.dumps(models) +
+            '\nCOMPILED POLICY:\n' + json.dumps(pool))
+        try:
+            review = router.ask('configuration_review', review_prompt, cwd,
+                                task='Review model policy fidelity to user Markdown')
+        except (BudgetExceeded, ModelUnavailable) as exc:
+            temporary.unlink(missing_ok=True)
+            if isinstance(exc, BudgetExceeded):
+                raise ModelUnavailable(reason='model setup epoch exhausted; retry after a pause') from None
+            raise
+        approved = type(review.get('approve')) is bool and review['approve']
+        reason = str(review.get('reason', 'review must explicitly approve with a boolean'))[:2000]
+        log('policy_review', attempt=attempt, approve=approved, reason=reason,
+            policy_sha256=hashlib.sha256(json.dumps(pool, sort_keys=True).encode()).hexdigest())
+        if not approved:
+            temporary.unlink(missing_ok=True)
+            feedback = '\nREPAIR POLICY FROM INDEPENDENT REVIEW: ' + reason
             continue
         temporary.replace(cache)
         return pool

@@ -393,8 +393,7 @@ class Router:
                 "temperature": body.pop("temperature"),
                 "num_predict": model.get("max_tokens", min(8192, model.get("context_tokens", 8192) // 2)),
                 "num_ctx": model.get("context_tokens", 8192)})
-            if "think" in model:
-                body["think"] = model["think"]
+            body["think"] = model.get("think", False)
         else:
             endpoint += "/chat/completions"
             body["max_tokens"] = model.get("max_tokens", 2048)
@@ -417,7 +416,9 @@ class Router:
         reply = envelope["data"]
         if kind == "ollama":
             finish = reply.get('done_reason')
-            self.log('model_response', kind=kind, output_tokens=reply.get('eval_count'), finish_reason=finish)
+            message = reply.get('message', {})
+            self.log('model_response', kind=kind, output_tokens=reply.get('eval_count'), finish_reason=finish,
+                     thinking_chars=len(message.get('thinking') or ''), content_chars=len(message.get('content') or ''))
             if finish == 'length':
                 raise ModelOutputTruncated('provider output token limit reached')
             return reply['message']['content']

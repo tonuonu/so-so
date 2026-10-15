@@ -68,16 +68,44 @@ class RoutingPolicyTests(unittest.TestCase):
         self.assertEqual(body['format'], schema)
         self.assertIs(body['think'], False)
 
+    def test_ollama_defaults_thinking_off_preserves_opt_in_and_logs_only_lengths(self):
+        thinking = 'private reasoning sentinel'
+        content = '{"tool":"done"}'
+        response = {'returncode': 0, 'timed_out': False, 'truncated': False,
+                    'output': json.dumps({'status': 200, 'data': {'done_reason': 'stop', 'eval_count': 12,
+                                         'message': {'thinking': thinking, 'content': content}}})}
+        for preference in (None, True, 'high'):
+            with self.subTest(think=preference):
+                events = []
+                router = Router(config(), Budget(10, 30), lambda event, **data: events.append((event, data)))
+                model = {'kind': 'ollama', 'url': 'http://localhost:11434', 'model': 'qwen'}
+                if preference is not None:
+                    model['think'] = preference
+                with patch('soso.models.execute', return_value=response) as execute:
+                    self.assertEqual(router._call(model, 'code', Path.cwd(), 10), content)
+                body = json.loads(execute.call_args.kwargs['stdin'])['body']
+                self.assertEqual(body['think'], False if preference is None else preference)
+                if preference is None:
+                    self.assertNotIn('think', model)
+                self.assertEqual(events, [('model_response', {'kind': 'ollama', 'output_tokens': 12,
+                    'finish_reason': 'stop', 'thinking_chars': len(thinking), 'content_chars': len(content)})])
+                self.assertNotIn(thinking, json.dumps(events))
+                self.assertNotIn(content, json.dumps(events))
+
     def test_ollama_truncation_is_reported_before_json_parsing(self):
-        router = Router(config(), Budget(10, 30), lambda *a, **k: None)
+        events = []
+        router = Router(config(), Budget(10, 30), lambda event, **data: events.append((event, data)))
         response = {'returncode': 0, 'timed_out': False, 'truncated': False,
                     'output': json.dumps({'status': 200, 'data': {'done_reason': 'length',
-                              'eval_count': 8192, 'message': {'content': '{"unfinished":'}}})}
+                              'eval_count': 8192, 'message': {'thinking': 'private', 'content': '{"unfinished":'}}})}
         with patch('soso.models.execute', return_value=response) as execute:
             with self.assertRaises(ModelOutputTruncated):
                 router._call({'kind': 'ollama', 'url': 'http://localhost:11434', 'model': 'qwen',
                               'context_tokens': 32768}, 'code', Path.cwd(), 10)
         self.assertEqual(json.loads(execute.call_args.kwargs['stdin'])['body']['options']['num_predict'], 8192)
+        self.assertEqual(events[0][1]['thinking_chars'], 7)
+        self.assertEqual(events[0][1]['content_chars'], len('{"unfinished":'))
+        self.assertNotIn('private', json.dumps(events))
 
     def test_quota_cooldown_persists_and_other_model_keeps_working(self):
         with tempfile.TemporaryDirectory() as tmp:

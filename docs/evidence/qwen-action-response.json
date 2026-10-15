@@ -1,0 +1,23 @@
+{
+  "kind": "bounded Qwen code-generation probe, not project completion",
+  "seconds": 101.43,
+  "passed": true,
+  "code_chars": 1176,
+  "events": [
+    {
+      "event": "model_response",
+      "kind": "ollama",
+      "output_tokens": 309,
+      "finish_reason": "stop",
+      "thinking_chars": 0,
+      "content_chars": 1256
+    }
+  ],
+  "model": "hf.co/mradermacher/Qwen3.8-27B-Heretic-NoRefusal-GGUF:Q4_K_M",
+  "host": "RTX",
+  "checks": [
+    "Generated function accepts finite two-decimal amount",
+    "Generated function rejects NaN, Infinity, -Infinity, malformed text, and excess decimal places"
+  ],
+  "limitation": "One generated function checked externally; not a finished project or test-suite generation proof."
+}

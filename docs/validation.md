@@ -5,7 +5,7 @@ The runner was exercised with real inference as well as deterministic fixtures.
 
 ## Automated checks
 
-The delivery implementation passed 132 deterministic tests on macOS Python 3.11.
+The delivery implementation passed 136 deterministic tests on macOS Python 3.11.
 The earlier 117-test snapshot also passed in a Linux container; GitHub Actions
 checks the current commit on Linux. These cover tool paths, protected policy, subprocess and
 HTTP deadlines, routing, Git isolation, evaluation binding, restart recovery,
@@ -103,3 +103,17 @@ persistence, decimal totals and month filtering, CSV contents, malformed data,
 and invalid/non-finite amounts. Its automated tests were missing. The snapshot
 was an unaccepted intermediate candidate, not a completed delivery. See the
 [external check record](evidence/ledger-intermediate-checks.json).
+
+## Clean Linux bootstrap
+
+The no-arguments launcher was exercised with Python outside PATH and no curl or
+wget. It installed the downloader and a managed Python runtime automatically,
+kept Python executables under `.so-so/tools`, and reused that runtime on the second
+invocation. It reached the expected missing-INTENT diagnostic. This proves runtime
+setup, not application completion. No model weights were downloaded. See the
+[bootstrap record](evidence/linux-bootstrap.json).
+
+A bounded RTX Qwen code-generation probe with thinking disabled produced an
+executable decimal parser in 309 output tokens. External checks accepted `12.34`
+and rejected NaN, infinities, invalid text and excess decimal places. This is
+[function-level evidence](evidence/qwen-action-response.json), not project completion.

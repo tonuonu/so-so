@@ -1,0 +1,19 @@
+{
+  "platform": "Linux container, python:3.11-slim based test image",
+  "entrypoint": "./so-so without arguments",
+  "conditions": [
+    "PATH excludes installed Python",
+    "curl and wget initially absent",
+    "root package installation available",
+    "no INTENT.md supplied"
+  ],
+  "observations": [
+    "Downloader installed automatically",
+    "Managed Python 3.12.15 installed under .so-so/tools",
+    "python3 executable available to child tools",
+    "No python3 link created in /root/.local/bin",
+    "Second invocation reused managed runtime without downloading",
+    "Launcher reached missing INTENT.md diagnostic"
+  ],
+  "limitations": "Bootstrap validation only, not application delivery. Runtime packages downloaded; no model weights downloaded."
+}
