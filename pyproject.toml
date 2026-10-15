@@ -18,4 +18,4 @@ soso = "soso.cli:main"
 include = ["soso*"]
 
 [tool.setuptools.package-data]
-soso = ["skillpacks/superpowers/LICENSE", "skillpacks/superpowers/manifest.json", "skillpacks/superpowers/**/*.md"]
+soso = ["web/*.html", "web/*.css", "web/*.js", "skillpacks/superpowers/LICENSE", "skillpacks/superpowers/manifest.json", "skillpacks/superpowers/**/*.md"]

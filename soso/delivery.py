@@ -407,7 +407,8 @@ class DeliveryEpoch(Run):
 
     def plan(self):
         prompt = ('Plan one small useful next milestone step. Known baseline defects need not all be fixed in one step. '
-                  'Return JSON {"experiments":[{"task":"small specific next increment"}]}. Avoid large rewrites. '
+                  'Return JSON {"experiments":[{"task":"small specific next increment"}],"monitoring":[{"label":"intent-specific metric","source":"best_score","unit":"optional unit"}]}. Avoid large rewrites. '
+                  'Optionally define up to six dashboard metrics for this goal. Sources: best_score, baseline_score, accepted_count, plateau_count, or metric:NAME for numeric evaluator metrics. '
                   'Build and test locally. External operations are single-worker milestones: inspect existing state, '
                   'use stable goal identifiers and idempotent/declarative CLI operations. Git rollback does not undo external state.\nGOAL:\n' +
                   self.intent + '\nCONTRACT:\n' + json.dumps(self.contract) + '\nRECENT FEEDBACK:\n' +
@@ -417,6 +418,7 @@ class DeliveryEpoch(Run):
         task = reply.get('experiments', [{}])[0].get('task')
         if not isinstance(task, str) or not task.strip():
             raise ValueError('planner returned no next step')
+        self.log('plan', tasks=[task[:2500]], skills=['writing-plans'], monitoring=reply.get('monitoring', []))
         return [self.intent + '\nMILESTONES:\n' + json.dumps(self.contract['milestones']) + '\nNEXT STEP:\n' + task[:2500]]
 
     def review(self, candidate):
@@ -428,7 +430,7 @@ class DeliveryEpoch(Run):
                     'baseline progress; final acceptance separately requires all behaviors and adequate coverage. '
                     'Reject new regressions, gaming, scope violations and useless changes, including changes that '
                     'break an established interface or invalidate existing evidence. '
-                    'Return JSON {"approve":boolean,"useful":boolean,"reason":"..."}.\nGOAL:\n' + self.intent +
+                    'Return JSON {"approve":boolean,"useful":boolean,"reason":"...","milestone_statuses":[{"index":0,"status":"complete|in_progress|not_started","evidence":"specific test evidence"}]}. Report zero-based contract milestones; complete requires concrete evidence.\nGOAL:\n' + self.intent +
                     '\nCONTRACT:\n' + json.dumps(self.contract) + '\nBASELINE:\n' + json.dumps(self.report['baseline']) +
                     '\nDIFF:\n' + git(self.integration, 'diff', base, candidate['commit']) + '\nEVALUATION:\n' +
                     json.dumps(candidate['evaluation']), self.integration, task=self.intent)
@@ -470,6 +472,7 @@ class DeliveryEpoch(Run):
     def run_epoch(self):
         try:
             self.checkpoint()
+            self.log('activity', phase='testing', task='Baseline acceptance checks')
             baseline = _bound(self.integration, self.config, self.budget)
             self.report.update(baseline=baseline, best=baseline.get('score'))
             if not baseline['valid']:

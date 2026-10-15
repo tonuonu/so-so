@@ -380,6 +380,7 @@ def worker(router, task, root, config, log, variant=0):
         if action.get("tool") == "done":
             return {"finished": True, "steps": step + 1, "summary": str(action.get("summary", ""))[:2000]}
         try:
+            log("tool_started", candidate=variant, step=step + 1, tool=action.get("tool"))
             last = ws.tool(action)
             last = progress.observe(action, last, step + 1, remembered=reads.key(last) in visible_reads)
             changed = reads.invalidate()

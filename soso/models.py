@@ -8,6 +8,7 @@ from email.utils import parsedate_to_datetime
 import sys
 import threading
 import time
+import uuid
 from pathlib import Path
 from .process import execute
 
@@ -158,6 +159,7 @@ class Router:
         self.routing = config.get("routing", {})
         self.state_path = Path(config['_router_state']) if config.get('_router_state') else None
         self.state_lock = threading.Lock()
+        self.telemetry = threading.local()
         self.selection_cache = {}
         self.cooldowns = {}
         self.failures = {}
@@ -268,7 +270,7 @@ class Router:
                         classifier['response_schema'] = {'type': 'object', 'properties': {
                             'route': {'type': 'string', 'enum': list(selector['routes'])}},
                             'required': ['route'], 'additionalProperties': False}
-                    answer = object_json(self._call(classifier, packet, cwd, min(model.get('timeout', 30), self.budget.remaining())))
+                    answer = object_json(self._measured_call('router', name, classifier, packet, cwd, min(model.get('timeout', 30), self.budget.remaining())))
                     self.budget.remaining()
                     names = selector['routes'].get(answer.get('route'))
                     if names:
@@ -306,7 +308,7 @@ class Router:
             model.pop('response_schema', None)
             self.budget.claim()
             self.log('model_request', role='guard', model=name, call=self.budget.calls)
-            answer = self._call(model, prompt, cwd,
+            answer = self._measured_call('guard', name, model, prompt, cwd,
                                 min(model.get('timeout', 60), self.budget.remaining()))
             self.budget.remaining()
             safe = answer.strip() == 'safe'
@@ -369,7 +371,7 @@ class Router:
                 self.budget.claim()
                 timeout = min(model.get("timeout", 180), self.budget.remaining())
                 self.log("model_request", role=role, model=name, call=self.budget.calls)
-                response = self._call(model, prompt, cwd, timeout)
+                response = self._measured_call(role, name, model, prompt, cwd, timeout)
                 self.budget.remaining()
                 try:
                     result = object_json(response)
@@ -425,6 +427,23 @@ class Router:
         if self.validate:
             raise ModelUnavailable(reason="all model routes temporarily unavailable")
         raise RuntimeError("all routes failed: " + "; ".join(errors))
+
+    def _measured_call(self, role, name, model, prompt, cwd, timeout):
+        call_id = uuid.uuid4().hex
+        started = time.monotonic()
+        self.telemetry.usage = {}
+        self.log('call_started', call_id=call_id, role=role, model=name,
+                 prompt_bytes=len(prompt.encode()), context_tokens=model.get('context_tokens'),
+                 context_bytes=model.get('context_bytes'), timeout=timeout)
+        status = 'error'
+        try:
+            response = self._call(model, prompt, cwd, timeout)
+            status = 'returned'
+            return response
+        finally:
+            self.log('call_finished', call_id=call_id, role=role, model=name,
+                     seconds=round(time.monotonic() - started, 3), status=status,
+                     **getattr(self.telemetry, 'usage', {}))
 
     def _call(self, model, prompt, cwd, timeout):
         kind = model["kind"]
@@ -514,14 +533,20 @@ class Router:
         result = execute([sys.executable, "-I", "-c", HTTP_TRANSPORT], cwd, timeout,
                          stdin=payload, limit=1_000_000)
         if result["timed_out"] or result["returncode"] or result["truncated"]:
+            self.telemetry.usage = {"error_kind": "timeout" if result["timed_out"] else "transport_failure"}
             raise RuntimeError("HTTP model failed")
         envelope = json.loads(result["output"])
         if envelope["status"] in (429, 503):
             raise ModelUnavailable(retry_timestamp(envelope.get("retry_after")))
         if envelope["status"] != 200:
+            self.telemetry.usage = {"error_kind": "http_status_" + str(envelope["status"])}
             raise RuntimeError("HTTP model failed")
         reply = envelope["data"]
         if kind == "ollama":
+            self.telemetry.usage = {'input_tokens': reply.get('prompt_eval_count'),
+                                    'output_tokens': reply.get('eval_count'),
+                                    'generation_seconds': (reply['eval_duration'] / 1e9
+                                        if isinstance(reply.get('eval_duration'), (int, float)) else None)}
             finish = reply.get('done_reason')
             message = reply.get('message', {})
             self.log('model_response', kind=kind, output_tokens=reply.get('eval_count'), finish_reason=finish,
@@ -529,6 +554,9 @@ class Router:
             if finish == 'length':
                 raise ModelOutputTruncated('provider output token limit reached')
             return reply['message']['content']
+        usage = reply.get('usage') or {}
+        self.telemetry.usage = {'input_tokens': usage.get('prompt_tokens'),
+                                'output_tokens': usage.get('completion_tokens')}
         choice = reply['choices'][0]
         if choice.get('finish_reason') == 'length':
             raise ModelOutputTruncated('provider output token limit reached')

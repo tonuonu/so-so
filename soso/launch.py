@@ -237,7 +237,9 @@ def main(argv=None):
     parser.add_argument('goal', nargs='?', help='optional assignment instead of INTENT.md')
     args = parser.parse_args(argv)
     try:
-        result = launch(Path.cwd(), args.goal)
+        from .dashboard import automatic
+        with automatic(Path.cwd()):
+            result = launch(Path.cwd(), args.goal)
         print('Optimization reached a plateau.' if result['status'] == 'optimized' else 'Goal ' + result['status'] + '.')
         if result.get('worktree'):
             print('Result: ' + result['worktree'])

@@ -63,6 +63,14 @@ model or your own command can classify jobs into named routes. Initial policy
 setup currently needs a discoverable Ollama service or an installed Codex, Claude
 or Kimi CLI; a custom API or command alone is not yet sufficient to bootstrap it.
 
+## Watch the work
+
+`./so-so` prints a live dashboard URL automatically. It shows current activity,
+model usage, plans, milestones, checks and visual outputs. Optional goal-specific
+metrics are defined by the planner from your INTENT. Missing percentages, tokens
+and ETAs stay unknown instead of being guessed. See [dashboard details](docs/dashboard.md)
+for remote access and attaching to an already running project.
+
 ## What happens
 
 so-so connects three things: your intent, sandboxed language models, and the host

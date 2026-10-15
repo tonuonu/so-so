@@ -119,7 +119,10 @@ def evaluate(root, config, budget):
             scores.append(float(metric))
         except (ValueError, KeyError, IndexError, TypeError):
             return {"valid": False, "reason": "invalid metric", "samples": samples}
-    return {"valid": True, "score": statistics.median(scores), "scores": scores,
+    metrics = payload.get("metrics", {})
+    metrics = {k: v for k, v in metrics.items() if isinstance(k, str) and len(k) <= 80
+               and type(v) in (int, float) and math.isfinite(v)} if isinstance(metrics, dict) else {}
+    return {"valid": True, "score": statistics.median(scores), "scores": scores, "metrics": dict(list(metrics.items())[:30]),
             "complete": all(json.loads(s["output"].strip().splitlines()[-1]).get("complete") is True for s in samples),
             "checks": results, "samples": samples}
 
@@ -215,6 +218,7 @@ class Run:
                            "resources": resources(), "elapsed": 0,
                            "deadline_unix": self.created_wall + self.config["max_seconds"]}
             before = fingerprint(self.integration, self.config["protected"])
+            self.log("activity", phase="testing", task="Baseline checks")
             self.report["baseline"] = evaluate(self.integration, self.config, self.budget)
             if (git(self.integration, "rev-parse", "HEAD") != base
                     or git(self.integration, "status", "--porcelain")
@@ -296,7 +300,8 @@ class Run:
                     for r in self.report["rounds"][-2:]]
         prompt = (prelude("planner") + "Propose independent competing experiments for the same current source baseline. "
                   "They are alternatives, not dependent tasks. Return only JSON: "
-                  '{"experiments":[{"task":"specific small improvement and files to inspect"}]}. '
+                  '{"experiments":[{"task":"specific small improvement and files to inspect"}],"monitoring":[{"label":"intent-specific metric name","source":"best_score","unit":"optional unit"}]}. '
+                  'Optionally define up to six dashboard metrics relevant to this intent. Sources: best_score, baseline_score, accepted_count, plateau_count, or metric:NAME for numeric evaluator metrics. Labels describe observations, not promises. '
                   f"At most {self.config['parallel']} experiments. Optimize {self.config['direction']}.\n"
                   + "INTENT:\n" + self.intent + "\nFILES:\n"
                   + json.dumps(Workspace(self.integration, []).files()[:100])
@@ -305,6 +310,7 @@ class Run:
         tasks = reply.get("experiments", [])[:self.config["parallel"]]
         if not tasks or any(not isinstance(t, dict) or not isinstance(t.get("task"), str) or not t["task"] for t in tasks):
             raise ValueError("planner returned invalid experiments")
+        self.log("plan", tasks=[t["task"][:2000] for t in tasks], skills=["writing-plans"], monitoring=reply.get("monitoring", []))
         return [self.intent + "\nEXPERIMENT:\n" + t["task"][:2000] for t in tasks]
 
     def review(self, candidate):
@@ -326,6 +332,7 @@ class Run:
         preserve = getattr(self, 'retain_candidate', None)
         cleanup = True
         phase = 'worker'
+        self.log("activity", phase="writing", candidate=index, task=task[:2500])
         expected = None
         def retain():
             nonlocal cleanup
@@ -359,6 +366,7 @@ class Run:
             phase = 'evaluate'
             if preserve:
                 retain()  # Persist before evaluation or review can exhaust the epoch.
+            self.log("activity", phase="testing", candidate=index)
             result["evaluation"] = evaluate(path, self.config, self.budget)
             if (git(path, "rev-parse", "HEAD") != result["commit"]
                     or fingerprint(path, self.config["protected"]) != self.pinned
