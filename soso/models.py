@@ -391,7 +391,7 @@ class Router:
             body.update(stream=False, format=model.get("response_schema", "json"), options={
                 **model.get("options", {}),
                 "temperature": body.pop("temperature"),
-                "num_predict": model.get("max_tokens", 2048),
+                "num_predict": model.get("max_tokens", min(8192, model.get("context_tokens", 8192) // 2)),
                 "num_ctx": model.get("context_tokens", 8192)})
             if "think" in model:
                 body["think"] = model["think"]
@@ -415,4 +415,13 @@ class Router:
         if envelope["status"] != 200:
             raise RuntimeError("HTTP model failed")
         reply = envelope["data"]
-        return reply["message"]["content"] if kind == "ollama" else reply["choices"][0]["message"]["content"]
+        if kind == "ollama":
+            finish = reply.get('done_reason')
+            self.log('model_response', kind=kind, output_tokens=reply.get('eval_count'), finish_reason=finish)
+            if finish == 'length':
+                raise ModelOutputTruncated('provider output token limit reached')
+            return reply['message']['content']
+        choice = reply['choices'][0]
+        if choice.get('finish_reason') == 'length':
+            raise ModelOutputTruncated('provider output token limit reached')
+        return choice['message']['content']

@@ -43,7 +43,7 @@ def resolve_pool(text, cwd):
         for name in ollama_models(url):
             alias = 'remote-' + hashlib.sha256((url + name).encode()).hexdigest()[:10]
             models[alias] = {'kind': 'ollama', 'url': url, 'model': name,
-                             'context_tokens': 32768, 'context_bytes': 60000, 'timeout': 180}
+                             'context_tokens': 32768, 'context_bytes': 60000, 'timeout': 600}
     if not models:
         raise ModelUnavailable(reason='no inference endpoint available yet')
     # Bootstrap policy interpretation uses a mentioned adapter when possible;

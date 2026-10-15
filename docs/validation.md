@@ -5,8 +5,9 @@ The runner was exercised with real inference as well as deterministic fixtures.
 
 ## Automated checks
 
-The delivery implementation passed 117 deterministic tests on macOS Python 3.11
-and in a Linux container. These cover tool paths, protected policy, subprocess and
+The delivery implementation passed 132 deterministic tests on macOS Python 3.11.
+The earlier 117-test snapshot also passed in a Linux container; GitHub Actions
+checks the current commit on Linux. These cover tool paths, protected policy, subprocess and
 HTTP deadlines, routing, Git isolation, evaluation binding, restart recovery,
 quota waiting, intermediate acceptance, and independent completion review.
 Further entry-point regression checks are recorded in the final CI run.
@@ -86,3 +87,19 @@ See [recorded routing evidence](evidence/rtx-small-router.json). These are smoke
 checks, not an accuracy benchmark. Ollama classification uses an enum-constrained
 JSON schema; malformed or unavailable classification falls back to the user's
 explicit default. No model weights were downloaded for this test.
+
+## Failures found during mixed-model application trials
+
+Independent review found an impossible application path in the first todo oracle
+and demonstrated that the first Minesweeper oracle accepted HTML comments plus a
+printed success marker. These trials are not completion evidence. The
+[oracle audit](evidence/generated-oracle-audit.json) records the defects and hashes.
+Generated contracts now require independent behavioral review before freezing;
+rejections feed later bounded repair attempts. Existing frozen trial records are
+preserved rather than silently rewritten.
+
+A separate snapshot of the generated ledger passed 18 of 19 external checks:
+persistence, decimal totals and month filtering, CSV contents, malformed data,
+and invalid/non-finite amounts. Its automated tests were missing. The snapshot
+was an unaccepted intermediate candidate, not a completed delivery. See the
+[external check record](evidence/ledger-intermediate-checks.json).

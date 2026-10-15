@@ -212,6 +212,8 @@ class PreparedOptimizationTests(unittest.TestCase):
                 if 'Create a small acceptance contract' in prompt:
                     return {'milestones': ['build application'], 'evaluator': "import json\nprint(json.dumps({'score':0,'complete':False}))\n"}
                 return {'experiments': [{'task': 'make next small increment'}]}
+            if role == 'reviewer':
+                return {'approve': True}
             return {'tool': 'done'}
         def once(project, intent, **kwargs):
             self.assertTrue(kwargs['ignore_project_config'])

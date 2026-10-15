@@ -1,0 +1,53 @@
+{
+  "audit_date_utc": "2026-10-15",
+  "scope": "Read-only review of three frozen generated acceptance evaluators against their INTENT.md assignments. Live implementations, contracts and run states were preserved.",
+  "conclusion": "Generated completion signals are insufficient for final acceptance. The todo oracle has a target-path blocker; the Minesweeper oracle admits a non-game counterexample; the ledger oracle has validation and test-discovery gaps.",
+  "findings": [
+    {
+      "trial": "battle-todos",
+      "priority": 1,
+      "evaluator": ".soso-delivery/evaluate.py",
+      "evaluator_sha256": "12002bdb04b446ce1acaa3c88a03ee8c6d8f7d91a2aa964bdb8877e31690931c",
+      "lines": [9, 10, 17, 18],
+      "title": "Evaluator looks for the application inside its protected policy directory",
+      "evidence": "dirname(__file__) resolves to .soso-delivery, and server_path is then joined with server.py. INTENT.md and the frozen milestones require server.py in the project root. A correct root-level server is reported missing.",
+      "impact": "A conforming implementation cannot reach complete=true through the authorized worker file tools. Tests and documentation are also searched under the incorrect root.",
+      "recommendation": "Record this oracle as invalid. Any correction should produce an explicit reviewed contract version with provenance; do not silently mutate the frozen live contract. Independently exercise the root-level service over real localhost HTTP."
+    },
+    {
+      "trial": "battle-mines",
+      "priority": 1,
+      "evaluator": ".soso-delivery/evaluate.py",
+      "evaluator_sha256": "76782b286697c4cde4200b7020d18c192f9c49046d3e4fd4b2bc5ab6cb9363b5",
+      "lines": [23, 24, 25, 26, 27, 28, 29, 30, 31, 35, 36, 37, 38, 39, 40],
+      "title": "Keyword checks and a mutable test marker accept a non-game",
+      "evidence": "The evaluator searches HTML text for keywords and trusts a worker-owned test.js printing MINESWEEPER_TESTS_OK. It does not independently exercise mine generation, first-click safety, adjacency, flood reveal, flagging, win/loss, restart or keyboard interaction. Several lower-weight checks are optional in the complete predicate.",
+      "reproduction": {
+        "isolation": "The unchanged frozen evaluator was invoked from a disposable directory containing only the two fixture files below. No live project files or contract state were changed.",
+        "index.html": "<!-- board restart timer mine flag instructions aria-label 9 10 -->\n",
+        "test.js": "console.log(\"MINESWEEPER_TESTS_OK\");\n",
+        "observed": {"score": 100, "complete": true, "all_reported_checks_passed": true},
+        "actual_behavior": "No playable board, controls, game logic or real deterministic tests exist in this fixture."
+      },
+      "recommendation": "Require an external game-logic harness once the implementation interface exists and browser checks for rendering, keyboard access, reveal/flag controls, timer and restart. Leave Minesweeper explicitly not verified until those checks run."
+    },
+    {
+      "trial": "battle-expenses-v2",
+      "priority": 2,
+      "evaluator": ".soso-delivery/evaluate.py",
+      "evaluator_sha256": "24932a06c118be1d492591d246218c53cfa25f03c4c99bd9fbf69bf248974e0f",
+      "lines": [47, 48, 49, 50, 52, 53, 54, 55, 56, 98, 104, 111, 133],
+      "title": "Validation can pass on argument-parser rejection and empty test suites",
+      "evidence": "Valid commands try both --file orderings, but invalid-date, negative-amount and malformed-store probes always use --file before the subcommand. A CLI supporting only the other ordering can pass these probes without reaching its validation logic. The test gate accepts unittest exit code zero without checking whether any tests ran.",
+      "positive_coverage": "The evaluator does perform useful subprocess checks for entry creation, persistence, monthly filtering, decimal totals and CSV output.",
+      "recommendation": "Reuse a confirmed working command ordering for invalid inputs. Independently test calendar-invalid dates, negative/nonfinite/malformed amounts and stored-schema corruption with byte-preservation checks. Require a nonzero discovered test count and verify exported rows rather than substring presence."
+    }
+  ],
+  "external_acceptance": {
+    "harness": "work/verify_battle.py (outside the repository)",
+    "ledger": "Real subprocess CLI checks using discovered working syntax, temporary data stores, decimal totals, CSV rows, invalid-input preservation and nonzero unittest discovery.",
+    "todos": "Real localhost HTTP requests against a dynamically selected port, exact concurrent creation accounting, invalid-input preservation, restart persistence and JSON read-during-write smoke checks when the storage format is JSON.",
+    "mines": "Explicitly not verified until a game-logic/browser interface can be inspected and independently exercised.",
+    "limitation": "Independent harness results are additional bounded evidence, not exhaustive correctness proofs. This audit does not claim any of the three live implementations complete."
+  }
+}

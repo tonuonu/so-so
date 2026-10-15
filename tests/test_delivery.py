@@ -50,7 +50,7 @@ class DeliveryTests(unittest.TestCase):
                 return {'milestones': ['scaffold', 'finish game'], 'assumptions': [], 'evaluator': EVALUATOR}
             return {'experiments': [{'task': 'advance one stage'}]}
         if role == 'reviewer':
-            return {'approve': self.final_approve if 'final acceptance' in prompt else True,
+            return {'approve': self.final_approve if prompt.startswith('Perform independent final acceptance review.') else True,
                     'useful': True, 'complete': self.final_approve}
         last = json.loads(prompt.split('LAST RESULT:\n')[1])
         if 'files' in last:
@@ -83,6 +83,38 @@ class DeliveryTests(unittest.TestCase):
         plan = [p for r, p in self.prompts if r == 'planner' and 'RECENT FEEDBACK' in p][-1]
         self.assertIn(first['epochs'][0]['head'], plan)
         self.assertTrue((root / '.soso-delivery/contract.json').exists())
+
+    def test_increment_review_accepts_partial_progress_without_final_completion(self):
+        original = self.answer
+        increment_reviews = []
+        self.final_approve = False
+        def answer(router, role, prompt, cwd, **kwargs):
+            reply = original(router, role, prompt, cwd, **kwargs)
+            if role == 'planner' and 'Create a small acceptance contract' in prompt:
+                reply['evaluator'] = EVALUATOR.replace('100 if stage>=2 else 0',
+                                                       '100 if stage>=2 else 75 if stage==1 else 0')
+            if role == 'reviewer' and 'Independently review this increment.' in prompt:
+                # A reviewer must assess useful progress separately from the completion gate.
+                self.assertIn('This is NOT final acceptance', prompt)
+                self.assertIn('Approve a useful nonregressing partial increment', prompt)
+                self.assertIn('distinguish new defects introduced by this change', prompt)
+                self.assertIn('Missing future features or tests alone are not grounds', prompt)
+                self.assertIn('Reject new regressions, gaming, scope violations and useless changes', prompt)
+                increment_reviews.append(json.loads(prompt.split('\nEVALUATION:\n')[1]))
+                return {'approve': True, 'useful': True, 'reason': 'Useful progress; tests remain for later.'}
+            return reply
+        self.answer = answer
+        first = self.start()
+        self.assertEqual(first['status'], 'incomplete')
+        self.assertEqual(first['epochs'][0]['best'], 75)
+        self.assertEqual((Path(first['worktree']) / 'stage.txt').read_text(), '1')
+        self.assertFalse(increment_reviews[0]['complete'])
+        with patch('soso.delivery.time.time', return_value=time.time() + 5):
+            second = self.start(resume_goal=first['goal_id'])
+        self.assertEqual(second['status'], 'incomplete')
+        report = json.loads(Path(second['epochs'][-1]['report']).read_text())
+        self.assertFalse(report['completion_review']['approve'])
+        self.assertEqual((Path(second['worktree']) / 'stage.txt').read_text(), '2')
 
     def test_completion_requires_separate_reviewer(self):
         self.final_approve = False
@@ -197,6 +229,101 @@ class DeliveryTests(unittest.TestCase):
         result = self.start()
         self.assertEqual(count, 2)
         self.assertEqual(result['status'], 'incomplete')
+
+    def test_contract_path_review_repairs_before_freeze_and_implementation(self):
+        original = self.answer
+        planned, reviews, worker_calls = 0, [], 0
+        bad = EVALUATOR.replace("p=Path('stage.txt')", "p=Path(__file__).parent / 'stage.txt'")
+        def checked(router, role, prompt, cwd, attempt=0, task=None):
+            nonlocal planned, worker_calls
+            if role == 'planner' and 'Create a small acceptance contract' in prompt:
+                planned += 1
+                self.assertIn('.soso-delivery/evaluate.py', prompt)
+                self.assertIn('cwd equal to the project root', prompt)
+                if planned == 1:
+                    router.budget.claim()
+                    return {'milestones': ['scaffold', 'finish game'], 'evaluator': bad}
+                self.assertIn('policy directory instead of project root', prompt)
+            if role == 'reviewer' and 'proposed acceptance contract BEFORE' in prompt:
+                router.budget.claim()
+                self.assertFalse((Path(cwd) / '.soso-delivery/contract.json').exists())
+                self.assertEqual(worker_calls, 0)
+                self.assertIn('EXECUTION CWD (PROJECT ROOT):\n' + str(cwd), prompt)
+                self.assertIn('BASELINE:', prompt)
+                self.assertIn('loopback-only app servers', prompt)
+                approve = "p=Path(__file__).parent / 'stage.txt'" not in prompt
+                reviews.append(approve)
+                return {'approve': approve, 'reason': 'application path uses policy directory instead of project root' if not approve else 'cwd path and independent stage assertions are sound'}
+            if role == 'worker':
+                worker_calls += 1
+                self.assertEqual(reviews, [False, True])
+            return original(router, role, prompt, cwd, attempt, task)
+        self.answer = checked
+        first = self.start()
+        self.assertEqual(first['status'], 'incomplete')
+        self.assertEqual(planned, 2)
+        root = Path(first['worktree'])
+        self.assertEqual((root / '.soso-delivery/evaluate.py').read_text(), EVALUATOR)
+        history = [json.loads(line) for line in (Path(first['report']).parent / 'contract-reviews.jsonl').read_text().splitlines()]
+        self.assertEqual([r['review']['approve'] for r in history], [False, True])
+        self.assertEqual(history[0]['baseline']['score'], 0)
+        self.assertIn('policy directory', history[0]['review']['reason'])
+        self.assertTrue(first['contract']['acceptance_review']['review']['approve'])
+        self.assertEqual(first['contract']['acceptance_review']['evaluator_sha256'], first['contract']['evaluator_sha256'])
+        with patch('soso.delivery.time.time', return_value=time.time() + 5):
+            complete = self.start(resume_goal=first['goal_id'])
+        self.assertEqual(complete['status'], 'complete')
+        self.assertEqual((root / 'stage.txt').read_text(), '2')
+
+    def test_keyword_and_worker_pass_marker_oracle_is_rejected_without_freeze(self):
+        git(self.repo, 'init', '-b', 'main')
+        git(self.repo, 'config', 'user.name', 'Tester')
+        git(self.repo, 'config', 'user.email', 'test@example.invalid')
+        (self.repo / 'index.html').write_text('<!-- game placeholder -->')
+        (self.repo / 'test.js').write_text("console.log('PASS')")
+        git(self.repo, 'add', '--all')
+        git(self.repo, '-c', 'commit.gpgsign=false', 'commit', '-m', 'fake application')
+        base = git(self.repo, 'rev-parse', 'HEAD')
+        bad = """import json
+from pathlib import Path
+html=Path('index.html')
+test=Path('test.js')
+ok=html.exists() and test.exists() and 'game' in html.read_text() and 'PASS' in test.read_text()
+print(json.dumps({'score':100 if ok else 0,'complete':ok}))
+"""
+        original = self.answer
+        def reject(router, role, prompt, cwd, attempt=0, task=None):
+            router.budget.claim()
+            if role == 'planner':
+                return {'milestones': ['build game'], 'evaluator': bad}
+            if role == 'reviewer':
+                self.assertIn('HTML comments', prompt)
+                self.assertIn('worker-owned test.js/test script', prompt)
+                self.assertIn('independent assertions', prompt)
+                self.assertIn('fake implementation could pass', prompt)
+                return {'approve': False, 'reason': 'Keywords and worker-owned PASS marker do not exercise required behavior.'}
+            self.fail('worker ran before independent acceptance approval')
+        self.answer = reject
+        incomplete = self.start()
+        self.assertEqual(incomplete['status'], 'incomplete')
+        self.assertEqual(incomplete['setup_repairs'], 1)
+        self.assertEqual(incomplete['failures'], 0)
+        self.assertGreater(incomplete['next_retry_at'], time.time())
+        state_path = Path(incomplete['report'])
+        state = json.loads(state_path.read_text())
+        root = Path(state['worktree'])
+        self.assertFalse((root / '.soso-delivery/contract.json').exists())
+        self.assertEqual(git(root, 'rev-parse', 'HEAD'), base)
+        records = [json.loads(line) for line in (state_path.parent / 'contract-reviews.jsonl').read_text().splitlines()]
+        self.assertEqual(len(records), 3)
+        self.assertTrue(all(r['baseline']['complete'] and not r['review']['approve'] for r in records))
+        self.answer = original
+        with patch('soso.delivery.time.time', return_value=time.time() + 5):
+            resumed = self.start(resume_goal=state['goal_id'])
+        self.assertEqual(resumed['status'], 'incomplete')
+        repair_prompt = next(prompt for role, prompt in self.prompts if role == 'planner' and 'Create a small acceptance contract' in prompt)
+        self.assertIn('PREVIOUS ACCEPTANCE REVIEW REJECTION', repair_prompt)
+        self.assertIn('PASS marker', repair_prompt)
 
     def test_configured_evaluator_and_budget_preserved(self):
         git(self.repo, 'init', '-b', 'main')

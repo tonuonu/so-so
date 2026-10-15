@@ -1,0 +1,115 @@
+{
+  "kind": "external acceptance",
+  "applications": [
+    {
+      "application": "ledger",
+      "checks": [
+        {
+          "name": "root ledger.py exists",
+          "ok": true,
+          "detail": ""
+        },
+        {
+          "name": "help succeeds",
+          "ok": true,
+          "detail": ""
+        },
+        {
+          "name": "discover successful --file ordering",
+          "ok": true,
+          "detail": ""
+        },
+        {
+          "name": "four independent adds succeed in selected file",
+          "ok": true,
+          "detail": ""
+        },
+        {
+          "name": "entries persist across CLI processes",
+          "ok": true,
+          "detail": ""
+        },
+        {
+          "name": "January totals and month filtering",
+          "ok": true,
+          "detail": "CATEGORY                        TOTAL\nfood                             0.30\ntransport                       10.00\n"
+        },
+        {
+          "name": "February totals exclude January",
+          "ok": true,
+          "detail": "CATEGORY                        TOTAL\nfood                             5.50\n"
+        },
+        {
+          "name": "CSV contains exactly the four expected records",
+          "ok": true,
+          "detail": ""
+        },
+        {
+          "name": "reject invalid month without corruption",
+          "ok": true,
+          "detail": ""
+        },
+        {
+          "name": "reject non-leap February 29 without corruption",
+          "ok": true,
+          "detail": ""
+        },
+        {
+          "name": "reject negative without corruption",
+          "ok": true,
+          "detail": ""
+        },
+        {
+          "name": "reject NaN without corruption",
+          "ok": true,
+          "detail": ""
+        },
+        {
+          "name": "reject infinity without corruption",
+          "ok": true,
+          "detail": ""
+        },
+        {
+          "name": "reject malformed amount without corruption",
+          "ok": true,
+          "detail": ""
+        },
+        {
+          "name": "valid commands still work after rejected input",
+          "ok": true,
+          "detail": ""
+        },
+        {
+          "name": "reject invalid JSON without overwrite",
+          "ok": true,
+          "detail": ""
+        },
+        {
+          "name": "reject invalid stored scalar without overwrite",
+          "ok": true,
+          "detail": ""
+        },
+        {
+          "name": "automated tests execute and pass",
+          "ok": false,
+          "detail": "observed unittest count: 0"
+        },
+        {
+          "name": "usage documentation smoke check",
+          "ok": true,
+          "detail": "Documentation contents still merit a human review."
+        }
+      ],
+      "limitations": [],
+      "status": "failed"
+    }
+  ],
+  "scope": "Only listed checks ran. Frozen policies and implementations were not edited by this harness.",
+  "provenance": {
+    "source_sha256": "7d24bfe3d9c77695fbe60b6a7a95528d364691e10cbb1dcf6d9f4c1eae03715e",
+    "candidate_commit": "c2fe1cbe4b954202e5552df783e008cd9e7412e6",
+    "status": "unaccepted intermediate candidate",
+    "generation": "Qwen inspection, Kimi coding fallback; host ran tools; no manually authored application code",
+    "scope": "18/19 external checks passed; automated test suite missing; not completion evidence"
+  }
+}

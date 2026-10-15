@@ -25,6 +25,10 @@ from .workspace import Workspace
 POLICY = '.soso-delivery'
 
 
+class ContractRepairNeeded(RuntimeError):
+    """A bounded acceptance setup epoch ended without an approved oracle."""
+
+
 def ollama_models(url):
     parsed = urlsplit(url)
     if parsed.scheme not in ('http', 'https') or parsed.username or parsed.password or parsed.query or parsed.fragment:
@@ -208,7 +212,7 @@ def _bound(root, config, budget):
     return {**result, 'head': head}
 
 
-def _contract(root, config, intent, router, folder):
+def _contract(root, config, intent, router, folder, previous_feedback=''):
     policy = root / POLICY
     policy.mkdir(exist_ok=True)
     supplied_evaluate = config.get('evaluate')
@@ -223,15 +227,25 @@ def _contract(root, config, intent, router, folder):
                'Missing implementation is score 0 and complete false, never an exception. '
                'Complete means every required acceptance check passes. Test observable behavior, not file presence alone. '
                'Resource inventories and model-routing preferences describe the controller environment, not application features to test. '
-               'No network, install, mutations, credential access or deployment in the evaluator. '
-               'Use bounded subprocess timeouts where required. This contract will be frozen before implementation. '
+               'Use temporary test fixtures and loopback-only app servers when needed for behavioral acceptance; clean them up. '
+               'No external network, installation, source changes, credential access or deployment in the evaluator. '
+               'Use bounded subprocess timeouts where required. The generated evaluator is saved at .soso-delivery/evaluate.py '
+               'and executed with cwd equal to the project root. Path(__file__).parent is the policy directory, not the project root; '
+               'resolve application paths from Path.cwd() or Path(__file__).resolve().parents[1]. '
+               'Exercise required behavior independently: file names, keywords, HTML comments, and a worker-owned test script '
+               'printing a pass marker cannot prove behavioral acceptance. This contract will be reviewed and frozen before implementation. '
                'Never read, print or export credentials. Honor existing instructions; do not lower requirements for convenience.\nGOAL:\n' + intent +
                '\nFILES:\n' + json.dumps(inventory) + '\nROOT INSTRUCTIONS:\n' + Workspace(root, []).instructions() +
                '\nHOST TOOL AVAILABILITY:\n' + json.dumps(resources()))
     if supplied_evaluate:
         context += ('\nExisting fixed acceptance command must be preserved: ' + json.dumps(supplied_evaluate) +
                     '. Its successful output must include score 0..100 and boolean complete. Return milestones and assumptions; evaluator text is optional and will not replace this command.')
-    feedback = ''
+    feedback = previous_feedback[:2000]
+    latest_review = folder / 'contract-review.json'
+    if not supplied_evaluate and latest_review.exists():
+        previous = json.loads(latest_review.read_text())
+        if previous.get('review', {}).get('approve') is not True:
+            feedback = '\nPREVIOUS ACCEPTANCE REVIEW REJECTION: ' + str(previous.get('review', {}).get('reason', 'repair the acceptance oracle'))[:2000]
     for attempt in range(3):
         response = router.ask('planner', context + feedback, root, task=intent)
         milestones, evaluator = response.get('milestones'), response.get('evaluator')
@@ -254,11 +268,45 @@ def _contract(root, config, intent, router, folder):
         if not result['valid']:
             feedback = '\nREPAIR: evaluator must run successfully even on missing implementation; previous result: ' + result['reason']
             continue
+        acceptance_review = None
+        if not supplied_evaluate:
+            before = (git(root, 'rev-parse', 'HEAD'), _source_snapshot(root), git(root, 'status', '--porcelain'))
+            review = router.ask('reviewer',
+                'Independently review this proposed acceptance contract BEFORE it is frozen or implementation starts. '
+                'Return JSON {"approve":boolean,"reason":"concrete defects and required repairs, or evidence of sound coverage"}. '
+                'Reject incorrect application paths: the evaluator is .soso-delivery/evaluate.py and cwd is the project root. '
+                'Path(__file__).parent denotes .soso-delivery; it does not contain the application. '
+                'Missing implementation must yield score 0 and complete false without failing the evaluator. '
+                'Every required behavioral claim must be exercised by independent assertions against the implementation. '
+                'Reject file/keyword presence, HTML comments, worker prose, or trusting a worker-owned test.js/test script '
+                'to print a pass marker as proof of app behavior. Such substitutes must never yield complete true. '
+                'Require tests of actual required behavior with independently determined expectations, and reject vacuous coverage. '
+                'Temporary fixtures and loopback-only app servers are permitted, with bounded timeouts and cleanup. '
+                'Reject external network, installation, source changes, credential access or deployment. '
+                'A syntactically valid zero baseline is not sufficient; consider whether a correct implementation can pass '
+                'and whether a fake implementation could pass. Do not edit files.\nGOAL:\n' + intent +
+                '\nMILESTONES:\n' + json.dumps(milestones) + '\nEVALUATOR LOCATION:\n' + str(policy / 'evaluate.py') +
+                '\nEXECUTION CWD (PROJECT ROOT):\n' + str(root) + '\nFIXED ARGV:\n' + json.dumps(config['evaluate']) +
+                '\nEVALUATOR SOURCE:\n' + evaluator + '\nBASELINE:\n' + json.dumps(result), root, task=intent)
+            if (git(root, 'rev-parse', 'HEAD'), _source_snapshot(root), git(root, 'status', '--porcelain')) != before:
+                raise ValueError('acceptance review modified source')
+            acceptance_review = {'attempt': attempt + 1, 'evaluator_sha256': hashlib.sha256(evaluator.encode()).hexdigest(),
+                                 'location': str(policy / 'evaluate.py'), 'cwd': str(root), 'baseline': result,
+                                 'review': review, 'time': time.time()}
+            safe_review = json.loads(redact(json.dumps(acceptance_review)))
+            with (folder / 'contract-reviews.jsonl').open('a') as stream:
+                stream.write(json.dumps(safe_review) + '\n')
+            atomic_json(latest_review, safe_review)
+            if review.get('approve') is not True:
+                feedback = '\nREPAIR ACCEPTANCE CONTRACT AFTER INDEPENDENT REVIEW: ' + str(review.get('reason', 'reviewer did not approve; repair behavioral coverage and paths'))[:2000]
+                continue
         contract = {'intent': intent, 'milestones': milestones, 'assumptions': response.get('assumptions', []),
                     'evaluator_sha256': hashlib.sha256((evaluator if not supplied_evaluate else json.dumps(supplied_evaluate)).encode()).hexdigest(),
                     'evaluate': config['evaluate'],
                     'provenance': {'routes': config['routes'], 'models': list(config['models']), 'calls': router.budget.calls, 'generated_at': time.time()},
                     'limitation': 'Generated operational oracle; not proof of human correctness.'}
+        if acceptance_review is not None:
+            contract['acceptance_review'] = acceptance_review
         atomic_json(policy / 'contract.json', json.loads(redact(json.dumps(contract))))
         atomic_json(folder / 'config.json', config)  # prepared transaction, before moving HEAD
         (root / 'INTENT.md').write_text(intent + '\n')
@@ -267,7 +315,7 @@ def _contract(root, config, intent, router, folder):
         git(root, 'add', '--', POLICY, 'INTENT.md', '.gitignore')
         git(root, '-c', 'commit.gpgsign=false', 'commit', '-m', 'Freeze goal acceptance contract')
         return contract
-    raise ValueError('planner could not produce a valid acceptance contract in three attempts')
+    raise ContractRepairNeeded(feedback or 'acceptance contract still needs independent approval')
 
 
 class DeliveryEpoch(Run):
@@ -297,8 +345,13 @@ class DeliveryEpoch(Run):
 
     def review(self, candidate):
         base = git(self.integration, 'rev-parse', 'HEAD')
-        reply = self.router.ask('reviewer', 'Independently review this increment. Reject new regressions, gaming, scope '
-                    'violations and useless changes. Known baseline defects may remain for later milestones. '
+        reply = self.router.ask('reviewer', 'Independently review this increment. This is NOT final acceptance. '
+                    'Approve a useful nonregressing partial increment even when the goal is incomplete or milestones '
+                    'remain unmet. Compare against the baseline and distinguish new defects introduced by this change '
+                    'from remaining work. Missing future features or tests alone are not grounds to discard useful '
+                    'baseline progress; final acceptance separately requires all behaviors and adequate coverage. '
+                    'Reject new regressions, gaming, scope violations and useless changes, including changes that '
+                    'break an established interface or invalidate existing evidence. '
                     'Return JSON {"approve":boolean,"useful":boolean,"reason":"..."}.\nGOAL:\n' + self.intent +
                     '\nCONTRACT:\n' + json.dumps(self.contract) + '\nBASELINE:\n' + json.dumps(self.report['baseline']) +
                     '\nDIFF:\n' + git(self.integration, 'diff', base, candidate['commit']) + '\nEVALUATION:\n' +
@@ -510,8 +563,10 @@ def start_goal(repo: Path, intent: str | None = None, *, backend='auto', model=N
                     def setup_log(event, **data):
                         with (folder / 'setup-events.jsonl').open('a') as stream:
                             stream.write(json.dumps({'time': time.time(), 'event': event, **data}) + '\n')
-                    router = Router(config, Budget(min(config['max_calls'], 6), min(config['max_seconds'], 240)), setup_log)
-                    contract = _contract(root, config, state['intent'], router, folder)
+                    router = Router(config, Budget(min(config['max_calls'], 6), min(config['max_seconds'], 600)), setup_log)
+                    contract = _contract(root, config, state['intent'], router, folder, state.get('setup_repair_reason', ''))
+                    state.pop('setup_repair_reason', None)
+                    state['setup_repairs'] = 0
                     state.update(contract=contract, protected=config['protected'], policy=fingerprint(root, config['protected']),
                                  head=git(root, 'rev-parse', 'HEAD'),
                                  config_sha256=hashlib.sha256((folder / 'config.json').read_bytes()).hexdigest())
@@ -538,6 +593,13 @@ def start_goal(repo: Path, intent: str | None = None, *, backend='auto', model=N
                 state['failures'] += 1
                 state.update(status='waiting', next_retry_at=max(time.time() + 1, exc.retry_at) if exc.retry_at is not None else
                              time.time() + min(900, 30 * 2 ** min(state['failures'] - 1, 5)))
+                _save(folder, state)
+                if once:
+                    break
+            except ContractRepairNeeded as exc:
+                state['setup_repairs'] = state.get('setup_repairs', 0) + 1
+                state.update(status='incomplete', setup_repair_reason=str(exc)[:2000], next_retry_at=
+                             time.time() + min(60, 2 * 2 ** min(state['setup_repairs'] - 1, 5)))
                 _save(folder, state)
                 if once:
                     break

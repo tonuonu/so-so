@@ -4,7 +4,7 @@ import tempfile
 import time
 import unittest
 from unittest.mock import patch
-from soso.models import Router, Budget, ModelUnavailable
+from soso.models import Router, Budget, ModelUnavailable, ModelOutputTruncated
 
 
 def config():
@@ -67,6 +67,17 @@ class RoutingPolicyTests(unittest.TestCase):
         body = json.loads(execute.call_args.kwargs['stdin'])['body']
         self.assertEqual(body['format'], schema)
         self.assertIs(body['think'], False)
+
+    def test_ollama_truncation_is_reported_before_json_parsing(self):
+        router = Router(config(), Budget(10, 30), lambda *a, **k: None)
+        response = {'returncode': 0, 'timed_out': False, 'truncated': False,
+                    'output': json.dumps({'status': 200, 'data': {'done_reason': 'length',
+                              'eval_count': 8192, 'message': {'content': '{"unfinished":'}}})}
+        with patch('soso.models.execute', return_value=response) as execute:
+            with self.assertRaises(ModelOutputTruncated):
+                router._call({'kind': 'ollama', 'url': 'http://localhost:11434', 'model': 'qwen',
+                              'context_tokens': 32768}, 'code', Path.cwd(), 10)
+        self.assertEqual(json.loads(execute.call_args.kwargs['stdin'])['body']['options']['num_predict'], 8192)
 
     def test_quota_cooldown_persists_and_other_model_keeps_working(self):
         with tempfile.TemporaryDirectory() as tmp:
