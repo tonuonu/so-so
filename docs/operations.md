@@ -1,5 +1,8 @@
 # Operations and limits
 
+This is a developer and deployment reference. For ordinary use, write `INTENT.md`
+and run `./so-so`; the container commands below are optional deployment examples.
+
 ## Linux container
 
 Build the supplied image (contains Python, Git, C compiler and Node for the examples):

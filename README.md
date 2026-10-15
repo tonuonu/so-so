@@ -18,9 +18,9 @@ The launcher prepares its runtime when necessary, reads your intent, discovers
 available inference, and works in a managed copy of your project. Running it again
 resumes matching unfinished work. Your original files remain available.
 
-The repository is private for now, under the MIT license. The host needs access to
-this repository and to whatever inference services your assignment uses. The
-launcher cannot invent credentials or system installation permission.
+so-so is MIT-licensed. The host needs access to this repository and to the
+inference services your assignment uses. The launcher cannot invent credentials
+or system installation permission.
 
 ## Describe the outcome
 

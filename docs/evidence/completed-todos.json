@@ -116,10 +116,10 @@
     "head": "9ab46607bc8e7715f31dc25d8b086f41bfab3495",
     "base": "068d0173b3cad136e099f31961ab6ac4c5cb21c1",
     "worker_models": [
-      "RTX Qwen3.8-27B Q4_K_M",
-      "configured Kimi CLI"
+      "Qwen3.8-27B Q4_K_M via Ollama on an NVIDIA GeForce RTX 3090 Ti (24 GB VRAM)",
+      "Kimi CLI using its authenticated default model service"
     ],
-    "router": "existing RTX gemma4:e2b on CPU",
+    "router": "gemma4:e2b via Ollama on the Linux inference PC CPU",
     "files": {
       "server.py": "9b9ecefabab3875dc2a5e360914c098ce0d4ceaafd764fe7f95c902f0f84e80d",
       "README.md": "1141185b706111ac0bf7ac12215f018f11751c21f0ee137e6963bad650ce8b07",

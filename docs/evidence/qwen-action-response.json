@@ -14,7 +14,7 @@
     }
   ],
   "model": "hf.co/mradermacher/Qwen3.8-27B-Heretic-NoRefusal-GGUF:Q4_K_M",
-  "host": "RTX",
+  "host": "Linux inference PC with NVIDIA GeForce RTX 3090 Ti (24 GB VRAM)",
   "checks": [
     "Generated function accepts finite two-decimal amount",
     "Generated function rejects NaN, Infinity, -Infinity, malformed text, and excess decimal places"

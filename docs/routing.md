@@ -44,6 +44,10 @@ To classify unmatched jobs semantically, add a selector inside `routing`:
 }
 ```
 
+Here `fable`, `qwen`, `x` and `triage` are example aliases for models or command
+adapters in the model pool. `x` denotes the chosen fallback; these names do not
+install a provider or assert which model is best for a task.
+
 The selector returns `{"route":"design"}` (or another configured label). `triage`
 can be a cheap local model **or a command adapter implementing your own algorithm**.
 It is called directly once, never recursively through itself. Ollama classifiers receive a JSON schema restricting output to the configured labels. Ollama calls default to `think: false` to reserve their output budget for actionable responses; explicit model preferences can enable thinking. Classifier calls also default to a short output limit. Rules run first;

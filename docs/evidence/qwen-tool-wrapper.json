@@ -1,6 +1,6 @@
 {
   "model": "hf.co/mradermacher/Qwen3.8-27B-Heretic-NoRefusal-GGUF:Q4_K_M",
-  "host": "RTX",
+  "host": "Linux inference PC with NVIDIA GeForce RTX 3090 Ti (24 GB VRAM)",
   "scenario": "Live replay of a real worker prompt, no tools executed",
   "response": "<tool_call>\n{\"tool\":\"read\",\"path\":\"game.js\",\"start\":81,\"lines\":144}\n</invoke>\n</parameter>\n</function>\n</tool_call>",
   "parsed": {

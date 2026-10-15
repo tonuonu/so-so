@@ -46,10 +46,10 @@
     "entrypoint": "./so-so with INTENT.md",
     "head": "f4e803401ba586063f12df43fd2bbc41f3ac1c01",
     "status": "accepted partial progress; goal unfinished",
-    "router": "existing RTX gemma4:e2b on CPU",
+    "router": "gemma4:e2b via Ollama on the Linux inference PC CPU",
     "worker_models": [
-      "RTX Qwen3.8-27B Q4_K_M",
-      "configured Kimi CLI"
+      "Qwen3.8-27B Q4_K_M via Ollama on an NVIDIA GeForce RTX 3090 Ti (24 GB VRAM)",
+      "Kimi CLI using its authenticated default model service"
     ],
     "files": {
       "game.js": "d18fb22ec9c384dcc4a08cc40632d11fd7625403632d03c532b5a54e09b04a04",

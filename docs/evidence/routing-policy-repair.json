@@ -1,5 +1,5 @@
 {
-  "scenario": "Live Markdown policy compilation with Kimi and existing RTX Qwen",
+  "scenario": "Live Markdown policy compilation with Kimi CLI and a GPU-backed Qwen worker served by Ollama",
   "requirement": "Use gemma4:e2b for worker classification; routine code to Qwen with Kimi fallback; unmatched to Kimi",
   "reviews": [
     {

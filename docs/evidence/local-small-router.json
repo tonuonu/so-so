@@ -67,7 +67,12 @@
     }
   ],
   "model": "gemma4:e2b",
-  "host": "RTX",
+  "host": "Linux inference PC with NVIDIA GeForce RTX 3090 Ti (24 GB VRAM)",
   "execution": "CPU inference using existing model; no download",
-  "limitations": "Three classification smoke checks, not an accuracy benchmark."
+  "limitations": "Three classification smoke checks, not an accuracy benchmark.",
+  "model_aliases": {
+    "triage": "gemma4:e2b classifier, running on CPU",
+    "qwen": "Qwen3.8-27B Q4_K_M implementation worker, running on GPU",
+    "kimi": "Kimi CLI using its authenticated default model service"
+  }
 }

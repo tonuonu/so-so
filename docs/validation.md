@@ -3,6 +3,34 @@
 These are observed results, not a guarantee that arbitrary goals will complete.
 The runner was exercised with real inference as well as deterministic fixtures.
 
+## Test environment and model roles
+
+The mixed-model trials used a macOS computer to run so-so and execute project
+commands, plus a separate Linux PC with an **NVIDIA GeForce RTX 3090 Ti (24 GB
+VRAM)** to serve local models through Ollama. These are test-environment details,
+not hardware requirements for so-so.
+
+| Component | Execution | Role in these trials |
+| --- | --- | --- |
+| Qwen3.8-27B, Q4_K_M quantization | Ollama on the Linux PC's GPU, with a 32,768-token context | Routine implementation and file/tool requests |
+| `gemma4:e2b` | Ollama on the same PC's CPU | Classifies jobs into routing categories, leaving GPU memory available for the worker |
+| Kimi | Authenticated Kimi CLI on the controller computer, using its configured service | Planning, independent review, difficult jobs and fallback when the local worker fails |
+
+The exact Ollama worker identifier was
+`hf.co/mradermacher/Qwen3.8-27B-Heretic-NoRefusal-GGUF:Q4_K_M`.
+The names `qwen`, `triage` and `kimi` in routing records are aliases for these
+roles. The classifier chooses a route; it does not implement the project itself.
+Ollama was reached through an SSH tunnel. The loopback address and port appearing
+in recorded review text describe that connection, not an address users must copy.
+Model weights were already installed; the trials did not download them.
+
+Records below are snapshots from specific runs on 15 October 2026. Terms such as
+"unfinished" describe the recorded revision, not a live status feed. Example
+commit hashes identify commits in generated project repositories and need not
+exist in the so-so source repository. See the [evidence guide](evidence/README.md)
+for record formats and the distinction between complete runs, partial results and
+replayed model responses.
+
 ## Automated checks
 
 The delivery implementation passed 172 deterministic tests on macOS Python 3.11.
@@ -38,9 +66,9 @@ candidate when the highest-scoring candidate is rejected.
 An installed Ollama `granite4:latest` model returned valid JSON in a live probe.
 A full local-worker trial with Codex planning/review made no accepted improvement:
 small-model tool protocol failures exhausted the attempt. This is a real limitation,
-not a successful local-model demonstration. Later tests use the user's existing
-Qwen installation on RTX through its Ollama API, rather than installing models on
-the controller host. Each model still needs task-level evaluation.
+not a successful local-model demonstration. Subsequent tests used Qwen served by
+Ollama on the separate Linux inference PC described above. Each model still needs
+task-level evaluation.
 
 ## Self-improvement
 
@@ -65,25 +93,25 @@ Commands execute with host permissions; worktrees are isolation for source chang
 not an operating-system sandbox. Cloud operations need idempotent project-level
 logic because Git rollback cannot undo external effects.
 
-## Single-command and RTX validation
+## Single-command and mixed-model validation
 
 The no-argument executable now has a real subprocess regression test: only
 INTENT.md is supplied, provider responses are deterministic fixtures, and the
 launcher performs real snapshot/Git setup. Model-policy Markdown translation and
 per-model cooldown races have dedicated regression coverage.
 
-The exact Qwen3.8-27B Q4_K_M model answered a live JSON probe on the existing RTX
-Ollama installation. The configured Kimi CLI answered a separate live probe.
+The Qwen worker answered a live JSON probe through Ollama. The Kimi CLI
+answered a separate live probe using its authenticated service.
 The ordinary no-flags executable subsequently completed the ledger and todo
 assignments with Qwen, a smaller installed classifier and Kimi planning/review,
 as recorded below. The probes alone do not prove mixed-model task completion.
 
-## Small RTX classifier
+## CPU-based routing classifier
 
-The existing `gemma4:e2b` model, run on CPU, correctly classified three live jobs:
-ordinary Python implementation and CSV parsing went to Qwen; security architecture
+The `gemma4:e2b` model, run on the inference PC's CPU, correctly classified three
+live jobs: ordinary Python implementation and CSV parsing went to Qwen; security architecture
 review went to Kimi. All three decisions came from the classifier, not the default.
-See [recorded routing evidence](evidence/rtx-small-router.json). These are smoke
+See [recorded routing evidence](evidence/local-small-router.json). These are smoke
 checks, not an accuracy benchmark. Ollama classification uses an enum-constrained
 JSON schema; malformed or unavailable classification falls back to the user's
 explicit default. No model weights were downloaded for this test.
@@ -113,7 +141,9 @@ invocation. It reached the expected missing-INTENT diagnostic. This proves runti
 setup, not application completion. No model weights were downloaded. See the
 [bootstrap record](evidence/linux-bootstrap.json).
 
-A bounded RTX Qwen code-generation probe with thinking disabled produced an
+## Local worker probe and routing policy repair
+
+A bounded GPU-backed Qwen code-generation probe with thinking disabled produced an
 executable decimal parser in 309 output tokens. External checks accepted `12.34`
 and rejected NaN, infinities, invalid text and excess decimal places. This is
 [function-level evidence](evidence/qwen-action-response.json), not project completion.
@@ -131,7 +161,8 @@ Delivery now retains a separate guarded draft before worktree cleanup and resume
 that draft in the next epoch. Regression checks cover worker, evaluator and reviewer
 interruptions, quota waits, changed policy/history/ref rejection, and interruptions
 on both sides of the acceptance merge. Fresh evaluation and review remain required.
-These recovery checks pass; live application trials continue.
+The regression suite covers these recovery paths; a live recovery example is
+recorded below.
 
 ## Worker response compatibility
 
@@ -147,15 +178,15 @@ evidence, not autonomous application completion.
 ## Completed mixed-model ledger trial
 
 The ordinary `./so-so` launcher completed the expense-ledger assignment using
-existing RTX Qwen, the small RTX classifier, and configured Kimi CLI. Accepted
-commit `018cc873929be6999ff9676d99650fed23189d84` contains the implementation and
+the GPU-backed Qwen worker, CPU-based Gemma classifier and Kimi CLI described
+above. Accepted commit `018cc873929be6999ff9676d99650fed23189d84` contains the implementation and
 real subprocess tests. A separate harness passed all 19 checks, including persistence,
 decimal totals, month filtering, CSV content, invalid/non-finite inputs, stored-data
 corruption, tests and CLI help. The harness reads each subcommand help to support
 both positional and documented named arguments. Source and review provenance are in
 the [completion record](evidence/completed-ledger.json) and
 [generated patch](evidence/completed-ledger.patch). This is one small completed
-application, not the entire three-project validation goal.
+application; it does not establish general application-development reliability.
 
 The todo trial also retained a real implementation while review waited, resumed
 it after controller restart, reevaluated it and accepted the identical draft
@@ -170,8 +201,8 @@ commit `9ab46607bc8e7715f31dc25d8b086f41bfab3495` passed all 20 external checks:
 CRUD and error behavior, unique IDs, concurrent requests, persistence and restart,
 real generated tests, and documentation. See the
 [completion record](evidence/completed-todos.json) and
-[generated patch](evidence/completed-todos.patch). Minesweeper validation remains
-in progress; two completed applications do not substitute for the third trial.
+[generated patch](evidence/completed-todos.patch). The separately recorded
+Minesweeper result below is a partial implementation.
 
 A live replay also reproduced Qwen returning valid JSON inside a `<tool_call>`
 frame with trailing closing tags. The parser now decodes exactly one object from
@@ -200,9 +231,9 @@ win/loss and reset. The external harness adapts the exported API names without
 changing application code. See the [record](evidence/minesweeper-progress.json)
 and [generated source](evidence/minesweeper-progress.patch).
 
-This third project remains unfinished: no browser UI, timer or keyboard controls
-were verified, and its generated test file has an import mismatch. The controller
-accepted useful logic, not goal completion; implementation continues. These three
+At this recorded revision, the third project was unfinished: no browser UI, timer
+or keyboard controls were verified, and its generated test file had an import mismatch. The controller
+accepted useful logic, not goal completion. These three
 trials show two completed applications and one useful partial implementation,
 not a guarantee of completing an arbitrary assignment.
 
