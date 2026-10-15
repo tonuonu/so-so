@@ -143,3 +143,21 @@ Replaying that recorded first action through the repaired adapter produced a tod
 server that passed 19 of 20 external checks; the deferred test file was absent.
 See the [replay record](evidence/todo-protocol-replay.json). This is isolated replay
 evidence, not autonomous application completion.
+
+## Completed mixed-model ledger trial
+
+The ordinary `./so-so` launcher completed the expense-ledger assignment using
+existing RTX Qwen, the small RTX classifier, and configured Kimi CLI. Accepted
+commit `018cc873929be6999ff9676d99650fed23189d84` contains the implementation and
+real subprocess tests. A separate harness passed all 19 checks, including persistence,
+decimal totals, month filtering, CSV content, invalid/non-finite inputs, stored-data
+corruption, tests and CLI help. The harness reads each subcommand help to support
+both positional and documented named arguments. Source and review provenance are in
+the [completion record](evidence/completed-ledger.json) and
+[generated patch](evidence/completed-ledger.patch). This is one small completed
+application, not the entire three-project validation goal.
+
+The todo trial also retained a real implementation while review waited, resumed
+it after controller restart, reevaluated it and accepted the identical draft
+commit. Final review requested stronger integration tests, so work continued.
+See the [live draft recovery record](evidence/live-draft-resume.json).

@@ -1,0 +1,318 @@
+diff --git a/ledger.py b/ledger.py
+new file mode 100644
+index 0000000..2ed6dcc
+--- /dev/null
++++ b/ledger.py
+@@ -0,0 +1,197 @@
++#!/usr/bin/env python3
++"""Expense ledger CLI.
++
++Subcommands: add, list, report, export.
++Global option --file PATH selects the JSON data file (default: ledger.json).
++
++Decisions:
++- Amounts are stored and summed with decimal.Decimal (exact).
++- Entries are stored as a JSON object {"version": 1, "entries": [...]}.
++- list shows entries sorted by (date, category, amount, insertion index),
++  a stable, documented order. Newest-first is not assumed.
++- The data file is written atomically (temp file + os.replace), so a crash
++  or error never corrupts existing data.
++- Malformed stored JSON, or entries with wrong types/values, cause exit 1
++  and the file is never overwritten or truncated.
++"""
++
++import argparse
++import csv
++import json
++import os
++import sys
++import tempfile
++from decimal import Decimal, InvalidOperation
++from datetime import date
++
++VERSION = 1
++
++
++class LedgerError(Exception):
++    pass
++
++
++def _validate_entry(e, idx):
++    if not isinstance(e, dict):
++        raise LedgerError(f"entry {idx}: not an object")
++    if set(e.keys()) != {"date", "category", "amount"}:
++        raise LedgerError(f"entry {idx}: unexpected keys {sorted(e.keys())}")
++    d, c, a = e["date"], e["category"], e["amount"]
++    if not isinstance(d, str):
++        raise LedgerError(f"entry {idx}: date must be a string")
++    try:
++        date.fromisoformat(d)
++    except ValueError:
++        raise LedgerError(f"entry {idx}: invalid date {d!r}")
++    if not isinstance(c, str) or not c.strip():
++        raise LedgerError(f"entry {idx}: invalid category")
++    try:
++        amt = Decimal(a)
++    except (InvalidOperation, TypeError):
++        raise LedgerError(f"entry {idx}: invalid amount {a!r}")
++    if amt < 0:
++        raise LedgerError(f"entry {idx}: negative amount")
++    return {"date": d, "category": c, "amount": str(amt)}
++
++
++def load(path):
++    if not os.path.exists(path):
++        return []
++    try:
++        with open(path, "r", encoding="utf-8") as f:
++            data = json.load(f)
++    except (json.JSONDecodeError, OSError) as ex:
++        raise LedgerError(f"malformed data file {path}: {ex}")
++    if not isinstance(data, dict) or "entries" not in data:
++        raise LedgerError(f"malformed data file {path}: missing 'entries'")
++    entries = data["entries"]
++    if not isinstance(entries, list):
++        raise LedgerError(f"malformed data file {path}: 'entries' not a list")
++    return [_validate_entry(e, i) for i, e in enumerate(entries)]
++
++
++def save(path, entries):
++    payload = json.dumps({"version": VERSION, "entries": entries}, indent=2)
++    d = os.path.dirname(os.path.abspath(path)) or "."
++    fd, tmp = tempfile.mkstemp(dir=d, suffix=".tmp")
++    try:
++        with os.fdopen(fd, "w", encoding="utf-8") as f:
++            f.write(payload + "\n")
++        os.replace(tmp, path)
++    except BaseException:
++        try:
++            os.unlink(tmp)
++        except OSError:
++            pass
++        raise
++
++
++def parse_amount(s):
++    try:
++        amt = Decimal(s)
++    except (InvalidOperation, ValueError):
++        raise LedgerError(f"invalid amount: {s!r}")
++    if not amt.is_finite() or amt < 0:
++        raise LedgerError(f"amount must be a non-negative number: {s!r}")
++    return amt
++
++
++def cmd_add(args):
++    try:
++        d = date.fromisoformat(args.date)
++    except ValueError:
++        raise LedgerError(f"invalid date (expected YYYY-MM-DD): {args.date!r}")
++    date_s = d.isoformat()
++    if not args.category.strip():
++        raise LedgerError("category must be non-empty")
++    amt = parse_amount(args.amount)
++    entries = load(args.file)
++    entries.append({"date": date_s, "category": args.category, "amount": str(amt)})
++    save(args.file, entries)
++    print(f"added {date_s} {args.category} {amt}")
++    return 0
++
++
++def sorted_entries(entries):
++    return sorted(
++        enumerate(entries),
++        key=lambda p: (p[1]["date"], p[1]["category"], Decimal(p[1]["amount"]), p[0]),
++    )
++
++
++def cmd_list(args):
++    entries = load(args.file)
++    if not entries:
++        print("(no entries)")
++        return 0
++    for _, e in sorted_entries(entries):
++        print(f"{e['date']}  {e['category']}  {Decimal(e['amount'])}")
++    return 0
++
++
++def cmd_report(args):
++    entries = load(args.file)
++    month = None
++    if args.month:
++        try:
++            date.fromisoformat(args.month + "-01")
++        except ValueError:
++            raise LedgerError(f"invalid month (expected YYYY-MM): {args.month!r}")
++        month = args.month
++    totals = {}
++    for e in entries:
++        if month and not e["date"].startswith(month + "-"):
++            continue
++        key = (e["date"][:7], e["category"])
++        totals[key] = totals.get(key, Decimal(0)) + Decimal(e["amount"])
++    if not totals:
++        print("(no entries)")
++        return 0
++    for (m, cat), total in sorted(totals.items()):
++        print(f"{m}  {cat}  {total}")
++    return 0
++
++
++def cmd_export(args):
++    entries = load(args.file)
++    with open(args.output, "w", newline="", encoding="utf-8") as f:
++        w = csv.writer(f)
++        w.writerow(["date", "category", "amount"])
++        for _, e in sorted_entries(entries):
++            w.writerow([e["date"], e["category"], str(Decimal(e["amount"]))])
++    print(f"exported {len(entries)} entries to {args.output}")
++    return 0
++
++
++def main(argv=None):
++    p = argparse.ArgumentParser(prog="ledger", description="Simple expense ledger.")
++    p.add_argument("--file", default="ledger.json", help="JSON data file path")
++    sub = p.add_subparsers(dest="cmd", required=True)
++
++    pa = sub.add_parser("add", help="add an expense")
++    pa.add_argument("--date", required=True, help="YYYY-MM-DD")
++    pa.add_argument("--category", required=True)
++    pa.add_argument("--amount", required=True, help="non-negative decimal")
++    pa.set_defaults(fn=cmd_add)
++
++    pl = sub.add_parser("list", help="list entries")
++    pl.set_defaults(fn=cmd_list)
++
++    pr = sub.add_parser("report", help="monthly totals by category")
++    pr.add_argument("--month", help="filter to YYYY-MM")
++    pr.set_defaults(fn=cmd_report)
++
++    pe = sub.add_parser("export", help="export CSV")
++    pe.add_argument("--output", required=True, help="CSV output path")
++    pe.set_defaults(fn=cmd_export)
++
++    args = p.parse_args(argv)
++    try:
++        return args.fn(args)
++    except LedgerError as ex:
++        print(f"error: {ex}", file=sys.stderr)
++        return 1
++
++
++if __name__ == "__main__":
++    sys.exit(main())
+diff --git a/test_ledger.py b/test_ledger.py
+new file mode 100644
+index 0000000..321501a
+--- /dev/null
++++ b/test_ledger.py
+@@ -0,0 +1,109 @@
++import json
++import os
++import subprocess
++import sys
++import tempfile
++import unittest
++
++CLI = [sys.executable, "ledger.py"]
++
++
++def run_cli(*args):
++    return subprocess.run(CLI + list(args), capture_output=True, text=True)
++
++
++class LedgerCliTests(unittest.TestCase):
++    def setUp(self):
++        self.tmp = tempfile.TemporaryDirectory()
++        self.path = os.path.join(self.tmp.name, "ledger.json")
++
++    def tearDown(self):
++        self.tmp.cleanup()
++
++    def test_add_and_persist_across_processes(self):
++        r = run_cli("--file", self.path, "add", "--date", "2026-10-01",
++                    "--category", "food", "--amount", "0.10")
++        self.assertEqual(r.returncode, 0, r.stderr)
++        r = run_cli("--file", self.path, "add", "--date", "2026-10-02",
++                    "--category", "food", "--amount", "0.20")
++        self.assertEqual(r.returncode, 0, r.stderr)
++        with open(self.path) as f:
++            data = json.load(f)
++        self.assertEqual(len(data["entries"]), 2)
++        r = run_cli("--file", self.path, "list")
++        self.assertEqual(r.returncode, 0)
++        self.assertIn("2026-10-01", r.stdout)
++        self.assertIn("0.20", r.stdout)
++
++    def test_list_empty_ledger(self):
++        r = run_cli("--file", self.path, "list")
++        self.assertEqual(r.returncode, 0, r.stderr)
++        self.assertIn("no entries", r.stdout)
++
++    def test_list_sorted_by_date(self):
++        for date in ["2026-10-03", "2026-10-01", "2026-10-02"]:
++            self.assertEqual(run_cli("--file", self.path, "add", "--date",
++                                     date, "--category", "x",
++                                     "--amount", "1.00").returncode, 0)
++        r = run_cli("--file", self.path, "list")
++        dates = [line.split()[0] for line in r.stdout.strip().splitlines()]
++        self.assertEqual(dates, sorted(dates))
++
++    def test_invalid_inputs_rejected_without_corruption(self):
++        run_cli("--file", self.path, "add", "--date", "2026-10-01",
++                "--category", "food", "--amount", "1.00")
++        before = open(self.path).read()
++        bad_cases = [
++            ["add", "--date", "2026-13-40", "--category", "food", "--amount", "1.00"],
++            ["add", "--date", "2026-10-01", "--category", "food", "--amount", "-0.01"],
++            ["add", "--date", "2026-10-01", "--category", "food", "--amount", "abc"],
++            ["add", "--date", "2026-10-01", "--category", "", "--amount", "1.00"],
++        ]
++        for args in bad_cases:
++            r = run_cli("--file", self.path, *args)
++            self.assertNotEqual(r.returncode, 0)
++            self.assertTrue(r.stderr.strip())
++            self.assertEqual(open(self.path).read(), before)
++
++    def test_report_decimal_totals_and_month_filter(self):
++        run_cli("--file", self.path, "add", "--date", "2026-10-01",
++                "--category", "food", "--amount", "0.10")
++        run_cli("--file", self.path, "add", "--date", "2026-10-02",
++                "--category", "food", "--amount", "0.20")
++        run_cli("--file", self.path, "add", "--date", "2026-09-30",
++                "--category", "food", "--amount", "9.99")
++        r = run_cli("--file", self.path, "report", "--month", "2026-10")
++        self.assertEqual(r.returncode, 0, r.stderr)
++        self.assertIn("0.30", r.stdout)
++        self.assertNotIn("9.99", r.stdout)
++        self.assertNotIn("0.3000000000", r.stdout)
++
++    def test_export_csv_matches_entries(self):
++        run_cli("--file", self.path, "add", "--date", "2026-10-01",
++                "--category", "food", "--amount", "0.10")
++        out = os.path.join(self.tmp.name, "out.csv")
++        r = run_cli("--file", self.path, "export", "--output", out)
++        self.assertEqual(r.returncode, 0, r.stderr)
++        with open(out) as f:
++            rows = [line.strip() for line in f if line.strip()]
++        self.assertEqual(rows[0], "date,category,amount")
++        self.assertIn("2026-10-01,food,0.10", rows)
++
++    def test_malformed_stored_json_not_overwritten(self):
++        with open(self.path, "w") as f:
++            f.write("{not valid json")
++        r = run_cli("--file", self.path, "list")
++        self.assertNotEqual(r.returncode, 0)
++        self.assertTrue(r.stderr.strip())
++        self.assertEqual(open(self.path).read(), "{not valid json")
++
++    def test_malformed_stored_entry_rejected(self):
++        with open(self.path, "w") as f:
++            json.dump({"version": 1, "entries": [{"date": 3, "category": "x",
++                     "amount": "1"}]}, f)
++        r = run_cli("--file", self.path, "list")
++        self.assertNotEqual(r.returncode, 0)
++
++
++if __name__ == "__main__":
++    unittest.main()

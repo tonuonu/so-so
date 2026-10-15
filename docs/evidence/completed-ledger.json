@@ -1,0 +1,130 @@
+{
+  "kind": "external acceptance",
+  "applications": [
+    {
+      "application": "ledger",
+      "checks": [
+        {
+          "name": "root ledger.py exists",
+          "ok": true,
+          "detail": ""
+        },
+        {
+          "name": "help succeeds",
+          "ok": true,
+          "detail": ""
+        },
+        {
+          "name": "discover successful --file ordering",
+          "ok": true,
+          "detail": ""
+        },
+        {
+          "name": "four independent adds succeed in selected file",
+          "ok": true,
+          "detail": ""
+        },
+        {
+          "name": "entries persist across CLI processes",
+          "ok": true,
+          "detail": ""
+        },
+        {
+          "name": "January totals and month filtering",
+          "ok": true,
+          "detail": "2026-01  food  0.30\n2026-01  transport  10.00\n"
+        },
+        {
+          "name": "February totals exclude January",
+          "ok": true,
+          "detail": "2026-02  food  5.50\n"
+        },
+        {
+          "name": "CSV contains exactly the four expected records",
+          "ok": true,
+          "detail": ""
+        },
+        {
+          "name": "reject invalid month without corruption",
+          "ok": true,
+          "detail": ""
+        },
+        {
+          "name": "reject non-leap February 29 without corruption",
+          "ok": true,
+          "detail": ""
+        },
+        {
+          "name": "reject negative without corruption",
+          "ok": true,
+          "detail": ""
+        },
+        {
+          "name": "reject NaN without corruption",
+          "ok": true,
+          "detail": ""
+        },
+        {
+          "name": "reject infinity without corruption",
+          "ok": true,
+          "detail": ""
+        },
+        {
+          "name": "reject malformed amount without corruption",
+          "ok": true,
+          "detail": ""
+        },
+        {
+          "name": "valid commands still work after rejected input",
+          "ok": true,
+          "detail": ""
+        },
+        {
+          "name": "reject invalid JSON without overwrite",
+          "ok": true,
+          "detail": ""
+        },
+        {
+          "name": "reject invalid stored scalar without overwrite",
+          "ok": true,
+          "detail": ""
+        },
+        {
+          "name": "automated tests execute and pass",
+          "ok": true,
+          "detail": "observed unittest count: 8"
+        },
+        {
+          "name": "usage documentation smoke check",
+          "ok": true,
+          "detail": "Documentation contents still merit a human review."
+        }
+      ],
+      "limitations": [],
+      "status": "passed"
+    }
+  ],
+  "scope": "Only listed checks ran. Frozen policies and implementations were not edited by this harness.",
+  "provenance": {
+    "entrypoint": "./so-so with INTENT.md",
+    "status": "complete",
+    "head": "018cc873929be6999ff9676d99650fed23189d84",
+    "base": "11b7019cf02b1ebb3327b07af12577e5a58a5003",
+    "worker_models": [
+      "RTX Qwen3.8-27B Q4_K_M",
+      "configured Kimi CLI"
+    ],
+    "router": "existing RTX gemma4:e2b on CPU",
+    "files": {
+      "ledger.py": "38892af0f462740ab8bfeff581180bab084d362de1214939cc9c3a61cd33e45c",
+      "test_ledger.py": "dccb152a34bccd51d94cace783d681ede508cfe73e81c6d266d50dbc56f92129"
+    },
+    "completion_review": {
+      "approve": true,
+      "complete": true,
+      "reason": "All milestone behaviors are demonstrated by genuine independent evidence: evaluator ran ledger.py in subprocesses with temp files and verified add persistence across separate processes, rejection of malformed date/negative/non-numeric amount/empty category with the data file unchanged, list output, decimal-exact monthly totals (0.10+0.20==0.30) with --month filtering, CSV export with exact header and rows, and malformed stored JSON rejected (rc=1) with file content preserved. The provided ledger.py source substantiates these claims: it uses argparse subcommands with --file, Decimal arithmetic, strict load-time validation of stored entries, atomic writes via temp file + os.replace, sorted deterministic list/report ordering, and a documented report --month filter. Score 100/complete=true with timed_out=false. No README file is present in FILES, but usage documentation is embedded in ledger.py's docstring and --help output, which the evaluator's 'usage docs' check accepted; the remaining gap (tests-pass check could be vacuous) is not load-bearing because app behavior is independently asserted and a fake implementation printing markers cannot pass the concrete behavioral checks.",
+      "head": "018cc873929be6999ff9676d99650fed23189d84"
+    },
+    "limitation": "One completed small CLI project; not proof of arbitrary autonomous delivery."
+  }
+}

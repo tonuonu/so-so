@@ -1,0 +1,19 @@
+{
+  "kind": "Live candidate retained across review wait and controller restart",
+  "base": "068d0173b3cad136e099f31961ab6ac4c5cb21c1",
+  "draft_commit": "2efcd9bdbeaf54684adf4d22007566dedcacb771",
+  "phase": "review",
+  "files": {
+    "server.py": "5bc24474143e5a3c1e639d6c210722b0260a1c4f3c75610feefda47cd69de9ba",
+    "README.md": "1141185b706111ac0bf7ac12215f018f11751c21f0ee137e6963bad650ce8b07"
+  },
+  "status": "interrupted",
+  "accepted_after_restart": true,
+  "completion_review": {
+    "approve": false,
+    "complete": false,
+    "reason": "The evaluator evidence is largely strong and non-gamed: every core behavioral check (health, GET/POST/PATCH/DELETE semantics, 201/204/400/404 statuses, empty/bad-JSON rejection, unique ids, restart persistence, on-disk file, concurrent POSTs) was exercised via independent loopback HTTP requests against the real server.py subprocess, and the source excerpt confirms a genuine stdlib-only implementation with atomic persistence (temp write + os.replace), a threading lock around state, localhost default binding, and substantive usage docs in README.md. However, the 'real HTTP integration tests' milestone is supported only by a presence-only evaluator check (any tests/test_*.py file) and the tests/test_server.py content is not included in the source excerpts, so it cannot be verified that the committed tests actually exercise the server over HTTP rather than being an empty or stub file. Per the rule that source excerpts may be incomplete and uncertainty means complete=false, full completion of all required goal behaviors is not independently demonstrated. The service itself is functionally correct; re-submit with the tests/test_server.py contents visible (or a genuine integration-test check in the evaluator) for approval.",
+    "head": "2efcd9bdbeaf54684adf4d22007566dedcacb771"
+  },
+  "limitation": "Retained real candidate was freshly evaluated and accepted as an increment; todo delivery still in progress."
+}
