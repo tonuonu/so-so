@@ -79,13 +79,13 @@ can run in parallel isolated worktrees; delivery integrates reviewed steps in or
 
 ## Current evidence and limits
 
-See the [validation record](docs/validation.md) for deterministic tests, live trials,
-rejected candidates and self-improvement evidence. Live single-command trials with RTX Qwen, a small RTX router and Kimi completed
-an expense ledger (19/19 external checks) and a todo service (20/20). A third
-Minesweeper project has accepted logic passing 9/9 core checks, but its UI and
-generated test integration remain unfinished. The runner passes 172 automated
-tests and Linux CI on Python 3.11–3.13. These are small-project results, not proof
-of arbitrary autonomous application delivery.
+so-so supports local model servers and command-line model adapters. Your routing
+preferences determine which models handle each job; no particular GPU, machine
+or model is required.
+
+See the [validation record](docs/validation.md) for automated checks, live project
+trials, rejected candidates and measured self-improvement. Those results describe
+specific test setups and do not guarantee completion of arbitrary assignments.
 
 The runtime itself uses Python's standard library. Bootstrap can provision Python
 locally and install Git through supported Linux package managers when permission
