@@ -5,7 +5,7 @@ The runner was exercised with real inference as well as deterministic fixtures.
 
 ## Automated checks
 
-The delivery implementation passed 136 deterministic tests on macOS Python 3.11.
+The delivery implementation passed 147 deterministic tests on macOS Python 3.11.
 The earlier 117-test snapshot also passed in a Linux container; GitHub Actions
 checks the current commit on Linux. These cover tool paths, protected policy, subprocess and
 HTTP deadlines, routing, Git isolation, evaluation binding, restart recovery,
@@ -117,3 +117,18 @@ A bounded RTX Qwen code-generation probe with thinking disabled produced an
 executable decimal parser in 309 output tokens. External checks accepted `12.34`
 and rejected NaN, infinities, invalid text and excess decimal places. This is
 [function-level evidence](evidence/qwen-action-response.json), not project completion.
+
+The live todo trial also exercised semantic policy repair: the first generated
+policy omitted the requested Kimi fallback, the separate reviewer rejected it,
+and the next proposal restored the ordered Qwen/Kimi route and was approved.
+The [policy review record](evidence/routing-policy-repair.json) preserves both
+decisions. This validates policy repair, not task completion.
+
+## Unfinished delivery recovery
+
+Live trials exposed loss of generated files when an epoch exhausted its budget.
+Delivery now retains a separate guarded draft before worktree cleanup and resumes
+that draft in the next epoch. Regression checks cover worker, evaluator and reviewer
+interruptions, quota waits, changed policy/history/ref rejection, and interruptions
+on both sides of the acceptance merge. Fresh evaluation and review remain required.
+These recovery checks pass; live application trials continue.

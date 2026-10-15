@@ -319,24 +319,46 @@ class Run:
         candidate["review"] = reply
         return reply.get("approve") is True
 
-    def experiment(self, task, round_number, index):
+    def experiment(self, task, round_number, index, continuation=None):
         name = f"r{round_number}-c{index}-{uuid.uuid4().hex[:6]}"
         path = self.folder / name
         result = {"candidate": index, "task": task}
+        preserve = getattr(self, 'retain_candidate', None)
+        cleanup = True
+        phase = 'worker'
+        expected = None
+        def retain():
+            nonlocal cleanup
+            if preserve and path.exists() and expected:
+                cleanup = False  # Keep the worktree if its durable checkpoint fails.
+                preserve(path, result, base, expected, name, phase)
+                cleanup = True
         try:
             base = git(self.integration, "rev-parse", "HEAD")
-            git(self.root, "worktree", "add", "--detach", str(path), base)
-            result["worker"] = worker(self.router, task, path, self.config, self.log, index)
+            expected = base
+            if continuation:
+                if not preserve:
+                    raise ValueError('candidate continuation requires delivery mode')
+                expected = continuation['commit']
+            git(self.root, "worktree", "add", "--detach", str(path), expected)
+            if continuation and fingerprint(path, self.config['protected']) != self.pinned:
+                raise ValueError('retained candidate policy changed')
+            if not continuation or continuation['phase'] == 'worker':
+                result["worker"] = worker(self.router, task, path, self.config, self.log, index)
             if fingerprint(path, self.config["protected"]) != self.pinned:
                 raise ValueError("protected files changed")
-            if git(path, "rev-parse", "HEAD") != base:
+            if git(path, "rev-parse", "HEAD") != expected:
                 raise ValueError("worker changed Git history")
-            if not git(path, "status", "--porcelain"):
+            if git(path, "status", "--porcelain"):
+                git(path, "add", "--all")
+                git(path, "-c", "commit.gpgsign=false", "commit", "-m", f"Experiment {round_number}.{index}")
+            elif expected == base:
                 result["evaluation"] = {"valid": False, "reason": "no changes"}
                 return result
-            git(path, "add", "--all")
-            git(path, "-c", "commit.gpgsign=false", "commit", "-m", f"Experiment {round_number}.{index}")
-            result["commit"] = git(path, "rev-parse", "HEAD")
+            result["commit"] = expected = git(path, "rev-parse", "HEAD")
+            phase = 'evaluate'
+            if preserve:
+                retain()  # Persist before evaluation or review can exhaust the epoch.
             result["evaluation"] = evaluate(path, self.config, self.budget)
             if (git(path, "rev-parse", "HEAD") != result["commit"]
                     or fingerprint(path, self.config["protected"]) != self.pinned
@@ -344,18 +366,25 @@ class Run:
                 raise ValueError("evaluation modified source or protected files")
             # Retain accepted/rejected commits beyond Git's dangling-object grace period.
             git(self.root, "update-ref", f"refs/soso/{self.run_id}/{name}", result["commit"])
-        except ModelUnavailable as exc:
-            result["unavailable"] = {"retry_at": exc.retry_at}
-            result["evaluation"] = {"valid": False, "reason": "provider unavailable"}
-        except BudgetExceeded as exc:
-            result["budget_exhausted"] = True
-            result["error"] = str(exc)
-            result["evaluation"] = {"valid": False, "reason": "budget exhausted"}
+        except (ModelUnavailable, BudgetExceeded, KeyboardInterrupt, SystemExit) as exc:
+            retain()
+            if isinstance(exc, ModelUnavailable):
+                result["unavailable"] = {"retry_at": exc.retry_at}
+                result["evaluation"] = {"valid": False, "reason": "provider unavailable"}
+            elif isinstance(exc, BudgetExceeded):
+                result["budget_exhausted"] = True
+                result["error"] = str(exc)
+                result["evaluation"] = {"valid": False, "reason": "budget exhausted"}
+            elif isinstance(exc, SystemExit) or not preserve:
+                raise
+            else:
+                result['interrupted'] = True
+                result['evaluation'] = {'valid': False, 'reason': 'interrupted'}
         except Exception as exc:
             result["error"] = str(exc)[:2000]
             result["evaluation"] = {"valid": False, "reason": type(exc).__name__}
         finally:
-            if path.exists():
+            if cleanup and path.exists():
                 with contextlib.suppress(RuntimeError):
                     git(self.root, "worktree", "remove", "--force", str(path))
         self.log("experiment", **result)

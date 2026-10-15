@@ -320,7 +320,7 @@ def _contract(root, config, intent, router, folder, previous_feedback=''):
 
 class DeliveryEpoch(Run):
     """Reuse isolated candidates and commit guards, with nonregressing acceptance."""
-    def __init__(self, root, config, intent, contract, feedback, allow_exec):
+    def __init__(self, root, config, intent, contract, feedback, allow_exec, draft=None):
         super().__init__(root, config, intent, allow_exec)
         self.integration = root
         self.contract = contract
@@ -328,6 +328,50 @@ class DeliveryEpoch(Run):
         self.pinned = fingerprint(root, config['protected'])
         self.report = {'status': 'running', 'rounds': [], 'plateau': 0, 'branch': git(root, 'branch', '--show-current'),
                        'deadline_unix': time.time() + config['max_seconds']}
+        if draft:
+            self.report['draft'] = draft
+
+    def draft_binding(self):
+        return {'config_sha256': hashlib.sha256(json.dumps(self.config, sort_keys=True).encode()).hexdigest(),
+                'intent_sha256': hashlib.sha256(self.intent.encode()).hexdigest(), 'policy': self.pinned}
+
+    def pending_candidate(self):
+        draft = self.report.get('draft')
+        if not draft:
+            return None
+        base = git(self.integration, 'rev-parse', 'HEAD')
+        if (draft.get('base') != base or draft.get('phase') not in ('worker', 'evaluate', 'review')
+                or not isinstance(draft.get('task'), str) or not draft['task'].strip()
+                or any(draft.get(k) != v for k, v in self.draft_binding().items())):
+            raise ValueError('retained candidate base or policy binding changed')
+        ref = draft.get('ref', '')
+        if (not isinstance(ref, str) or not ref.startswith('refs/soso/')
+                or git(self.root, 'rev-parse', '--verify', ref) != draft.get('commit')
+                or git(self.root, 'merge-base', base, draft['commit']) != base):
+            raise ValueError('retained candidate ref or history changed')
+        return draft
+
+    def retain_candidate(self, path, result, base, expected, name, phase):
+        # This bounded local checkpoint does not consume an expired inference budget.
+        self.report.pop('draft', None)
+        if (git(self.integration, 'rev-parse', 'HEAD') != base
+                or git(path, 'rev-parse', 'HEAD') != expected
+                or fingerprint(path, self.config['protected']) != self.pinned):
+            raise ValueError('cannot retain candidate with changed policy, history or base')
+        dirty = git(path, 'status', '--porcelain')
+        if phase != 'worker' and dirty:
+            raise ValueError('cannot retain candidate modified by evaluation')
+        if dirty:
+            git(path, 'add', '--all')
+            git(path, '-c', 'commit.gpgsign=false', 'commit', '-m', 'Checkpoint unfinished delivery candidate')
+        commit = git(path, 'rev-parse', 'HEAD')
+        if commit == base:
+            return
+        ref = f'refs/soso/{self.run_id}/{name}'
+        git(self.root, 'update-ref', ref, commit)
+        self.report['draft'] = {**self.draft_binding(), 'task': result['task'], 'base': base,
+                                'commit': commit, 'ref': ref, 'phase': phase}
+        self.checkpoint()  # ref and descriptor are durable before the worktree is removed
 
     def plan(self):
         prompt = ('Plan one small useful next milestone step. Known baseline defects need not all be fixed in one step. '
@@ -393,38 +437,52 @@ class DeliveryEpoch(Run):
 
     def run_epoch(self):
         try:
+            self.checkpoint()
             baseline = _bound(self.integration, self.config, self.budget)
             self.report.update(baseline=baseline, best=baseline.get('score'))
             if not baseline['valid']:
                 raise ValueError('invalid delivery baseline')
             if self.completion(baseline):
+                self.report.pop('draft', None)
                 self.report['status'] = 'complete'
                 return self.report
             for number in range(1, self.config['rounds'] + 1):
                 self.budget.remaining()
-                task = self.plan()[0]
-                candidate = self.experiment(task, number, 0)
+                draft = self.pending_candidate()
+                task = draft['task'] if draft else self.plan()[0]
+                self.report.pop('draft', None)
+                candidate = self.experiment(task, number, 0, draft)
                 round_result = {'round': number, 'experiments': [candidate], 'accepted': None}
                 self.report['rounds'].append(round_result)
                 if candidate.get('unavailable') is not None:
                     raise ModelUnavailable(candidate['unavailable']['retry_at'])
                 if candidate.get('budget_exhausted'):
                     raise BudgetExceeded(candidate['error'])
+                if candidate.get('interrupted'):
+                    raise KeyboardInterrupt
                 evaluation = candidate.get('evaluation', {})
-                if evaluation.get('valid') and evaluation['score'] >= self.report['best'] and self.review(candidate):
+                approved = False
+                if evaluation.get('valid') and evaluation['score'] >= self.report['best']:
+                    self.report['draft']['phase'] = 'review'
+                    self.checkpoint()
+                    approved = self.review(candidate)
+                if approved:
                     if fingerprint(self.integration, self.config['protected']) != self.pinned or git(self.integration, 'status', '--porcelain'):
                         raise ValueError('review modified accepted source')
                     round_result['accepted'] = candidate['commit']
                     self.checkpoint()  # durable approval before the integration commit moves
                     git(self.integration, 'merge', '--ff-only', candidate['commit'])
+                    self.report.pop('draft', None)
                     self.report['best'] = evaluation['score']
                     round_result['accepted'] = candidate['commit']
                     self.report['plateau'] = 0
                     evaluation['head'] = candidate['commit']
+                    self.checkpoint()
                     if self.completion(evaluation):
                         self.report['status'] = 'complete'
                         break
                 else:
+                    self.report.pop('draft', None)  # explicit rejection is not a paused review
                     self.report['plateau'] += 1
                 self.checkpoint()
                 if self.report['plateau'] >= self.config['patience']:
@@ -436,7 +494,13 @@ class DeliveryEpoch(Run):
             self.report.update(status='waiting', next_retry_at=exc.retry_at)
         except BudgetExceeded as exc:
             self.report.update(status='budget_exhausted', reason=str(exc))
+        except KeyboardInterrupt:
+            self.report['status'] = 'interrupted'
         finally:
+            draft = self.report.get('draft')
+            if (draft and git(self.integration, 'rev-parse', 'HEAD') == draft['commit']
+                    and any(r.get('accepted') == draft['commit'] for r in self.report['rounds'])):
+                self.report.pop('draft', None)
             self.checkpoint()
         return self.report
 
@@ -526,9 +590,12 @@ def start_goal(repo: Path, intent: str | None = None, *, backend='auto', model=N
             accepted = [r['accepted'] for r in active.get('rounds', []) if r.get('accepted')]
             if current == active.get('head') or current in accepted:
                 state['head'] = current
+                draft = active.get('draft')
+                state['draft'] = None if draft and draft['commit'] == current and current in accepted else draft
                 if not any(e['report'] == active_report for e in state['epochs']):
                     state['epochs'].append({'status': 'interrupted', 'head': current, 'best': active.get('best'),
-                                            'report': active_report, 'feedback': active.get('rounds', [])[-2:]})
+                                            'report': active_report, 'feedback': active.get('rounds', [])[-2:],
+                                            'completion_review': active.get('completion_review')})
             state.pop('active_epoch', None)
         if pending or git(root, 'rev-parse', 'HEAD') != state['head']:
             raise ValueError('goal worktree or HEAD changed; inspect before resuming')
@@ -571,23 +638,27 @@ def start_goal(repo: Path, intent: str | None = None, *, backend='auto', model=N
                                  head=git(root, 'rev-parse', 'HEAD'),
                                  config_sha256=hashlib.sha256((folder / 'config.json').read_bytes()).hexdigest())
                     _save(folder, state)
-                epoch = DeliveryEpoch(root, config, state['intent'], state['contract'], state['epochs'][-2:], state['allow_exec'])
+                epoch = DeliveryEpoch(root, config, state['intent'], state['contract'], state['epochs'][-2:], state['allow_exec'], state.get('draft'))
                 state['active_epoch'] = str(epoch.report_path)
                 _save(folder, state)
                 report = epoch.run_epoch()
                 state.pop('active_epoch', None)
                 state['epochs'].append({'status': report['status'], 'head': report['head'], 'best': report.get('best'),
-                                        'report': str(epoch.report_path), 'feedback': report.get('rounds', [])[-2:]})
+                                        'report': str(epoch.report_path), 'feedback': report.get('rounds', [])[-2:],
+                                        'completion_review': report.get('completion_review')})
                 state['head'] = report['head']
+                state['draft'] = report.get('draft')
                 if report['status'] == 'complete':
                     state.update(status='complete', next_retry_at=None)
                 elif report['status'] == 'waiting':
                     raise ModelUnavailable(report.get('next_retry_at'))
+                elif report['status'] == 'interrupted':
+                    state.update(status='interrupted', next_retry_at=None)
                 else:
                     state.update(status='incomplete', next_retry_at=time.time() + 2)
                 state['failures'] = 0
                 _save(folder, state)
-                if once or state['status'] == 'complete':
+                if once or state['status'] in ('complete', 'interrupted'):
                     break
             except ModelUnavailable as exc:
                 state['failures'] += 1

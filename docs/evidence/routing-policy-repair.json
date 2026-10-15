@@ -1,0 +1,22 @@
+{
+  "scenario": "Live Markdown policy compilation with Kimi and existing RTX Qwen",
+  "requirement": "Use gemma4:e2b for worker classification; routine code to Qwen with Kimi fallback; unmatched to Kimi",
+  "reviews": [
+    {
+      "event": "policy_review",
+      "attempt": 0,
+      "approve": false,
+      "reason": "Routine code generation is required to be Qwen with Kimi fallback, but the selector route \"code\" is [\"qwen\"] only; repair to [\"qwen\",\"kimi\"] so the fallback is preserved. Also ensure any direct \"worker\" route cannot bypass the gemma-classifier selector, and keep difficult debugging/architecture and unmatched labels mapped to Kimi (direct/default fallback to Kimi is acceptable).",
+      "policy_sha256": "40041ab87a0bff0c532a0b80de858262a211f90dea60fcdcfd1d2a301c0805f6"
+    },
+    {
+      "event": "policy_review",
+      "attempt": 1,
+      "approve": true,
+      "reason": "Policy preserves all explicit requirements: Qwen exact name hf.co/mradermacher/Qwen3.8-27B-Heretic-NoRefusal-GGUF:Q4_K_M at http://127.0.0.1:11435 with 600s timeout, 8192 output tokens, context within 32k; classifier gemma4:e2b on same endpoint with num_gpu 0, 8192 context, non-reasoning (think false); Kimi via CLI used for planner, reviewer, hard, other, and default. Selector routes are correct ordered fallbacks: code ['qwen','kimi'] preserves the Kimi fallback; hard and other route to kimi. Default ['kimi'] matches 'unmatched jobs go to Kimi' and cannot be bypassed by first-match rules since classifier routes cover code/hard/other. No invented models, routes, or restrictions.",
+      "policy_sha256": "226a28e053f723bb075e568fc9fb9e56f8ec44edcfd76ceb7f96843eb2189502"
+    }
+  ],
+  "result": "First proposal rejected for missing Kimi fallback; repaired proposal approved before caching",
+  "limitation": "Policy fidelity evidence only; does not prove application completion."
+}

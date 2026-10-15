@@ -116,6 +116,200 @@ class DeliveryTests(unittest.TestCase):
         self.assertFalse(report['completion_review']['approve'])
         self.assertEqual((Path(second['worktree']) / 'stage.txt').read_text(), '2')
 
+    def resume_paused_worker(self, error, status):
+        calls = []
+        first = None
+        def work(router, task, path, config, log, index):
+            calls.append(task)
+            file = Path(path) / 'stage.txt'
+            if len(calls) == 1:
+                file.write_text('1')
+                raise error
+            self.assertEqual(file.read_text(), '1')
+            self.assertEqual(git(Path(first['worktree']), 'rev-parse', 'HEAD'), first['head'])
+            self.assertFalse((Path(first['worktree']) / 'stage.txt').exists())
+            file.write_text('2')
+            return {'finished': True, 'summary': 'Finished the retained scaffold.'}
+        with patch('soso.engine.worker', side_effect=work):
+            first = self.start()
+            self.assertEqual(first['status'], status)
+            draft = first['draft']
+            self.assertEqual(draft['phase'], 'worker')
+            self.assertEqual(draft['base'], first['head'])
+            self.assertNotEqual(draft['commit'], first['head'])
+            self.assertEqual(git(self.repo, 'show', draft['commit'] + ':stage.txt'), '1')
+            self.assertEqual(git(self.repo, 'rev-parse', draft['ref']), draft['commit'])
+            self.assertEqual(json.loads(Path(first['epochs'][0]['report']).read_text())['draft'], draft)
+            if isinstance(error, ModelUnavailable):
+                # Recover a crash after the epoch checkpoint but before updating goal state.
+                state = json.loads(Path(first['report']).read_text())
+                state.pop('draft')
+                state['active_epoch'] = first['epochs'][0]['report']
+                state['epochs'] = []
+                Path(first['report']).write_text(json.dumps(state))
+                early = self.start(resume_goal=first['goal_id'])
+                self.assertEqual(early['draft'], draft)
+                self.assertEqual(early['status'], 'waiting')
+                self.assertEqual(len(calls), 1)
+            later = max(time.time() + 5, getattr(error, 'retry_at', None) or 0) + 1
+            with patch('soso.delivery.time.time', return_value=later):
+                resumed = self.start(resume_goal=first['goal_id'])
+        self.assertEqual(resumed['status'], 'complete')
+        self.assertIsNone(resumed['draft'])
+        self.assertEqual(calls[0], calls[1])
+        self.assertEqual((Path(resumed['worktree']) / 'stage.txt').read_text(), '2')
+        report = json.loads(Path(resumed['epochs'][-1]['report']).read_text())
+        candidate = report['rounds'][0]['experiments'][0]
+        self.assertEqual(candidate['evaluation']['score'], 100)
+        self.assertTrue(candidate['review']['approve'])
+        self.assertEqual(report['rounds'][0]['accepted'], resumed['head'])
+
+    def test_unfinished_worker_survives_budget_epoch(self):
+        self.resume_paused_worker(BudgetExceeded('test epoch exhausted'), 'incomplete')
+
+    def test_unfinished_worker_survives_quota_and_crash_recovery(self):
+        self.resume_paused_worker(ModelUnavailable(time.time() + 300), 'waiting')
+
+    def test_unfinished_worker_survives_graceful_interrupt(self):
+        self.resume_paused_worker(KeyboardInterrupt(), 'interrupted')
+
+    def test_evaluation_budget_retries_retained_commit_without_worker(self):
+        def work(router, task, path, config, log, index):
+            (Path(path) / 'stage.txt').write_text('2')
+            return {'finished': True}
+        evaluations = []
+        def measure(path, config, budget):
+            evaluations.append(str(path))
+            if len(evaluations) == 1:
+                raise BudgetExceeded('evaluation deadline')
+            return evaluate(path, config, budget)
+        with patch('soso.engine.worker', side_effect=work) as worker, \
+                patch('soso.engine.evaluate', side_effect=measure) as evaluate_candidate:
+            first = self.start()
+            self.assertEqual(first['draft']['phase'], 'evaluate')
+            self.assertFalse((Path(first['worktree']) / 'stage.txt').exists())
+            with patch('soso.delivery.time.time', return_value=time.time() + 5):
+                resumed = self.start(resume_goal=first['goal_id'])
+        self.assertEqual(worker.call_count, 1)
+        self.assertEqual(evaluate_candidate.call_count, 2)
+        self.assertEqual(resumed['status'], 'complete')
+        self.assertIsNone(resumed['draft'])
+
+    def test_review_quota_retries_fresh_evaluation_and_review(self):
+        original = self.answer
+        reviews = []
+        def answer(router, role, prompt, cwd, **kwargs):
+            if role == 'reviewer' and prompt.startswith('Independently review this increment.'):
+                reviews.append(prompt)
+                if len(reviews) == 1:
+                    raise ModelUnavailable(time.time() + 300)
+            return original(router, role, prompt, cwd, **kwargs)
+        self.answer = answer
+        with patch('soso.engine.evaluate', wraps=evaluate) as evaluate_candidate:
+            first = self.start()
+            self.assertEqual(first['status'], 'waiting')
+            self.assertEqual(first['draft']['phase'], 'review')
+            with patch('soso.delivery.time.time', return_value=time.time() + 305):
+                resumed = self.start(resume_goal=first['goal_id'])
+        self.assertEqual(evaluate_candidate.call_count, 2)
+        self.assertEqual(len(reviews), 2)
+        self.assertEqual(len([p for r, p in self.prompts if r == 'worker']), 2)
+        self.assertIsNone(resumed['draft'])
+        self.assertEqual((Path(resumed['worktree']) / 'stage.txt').read_text(), '1')
+
+    def test_explicit_increment_rejection_clears_pending_draft(self):
+        original = self.answer
+        def answer(router, role, prompt, cwd, **kwargs):
+            if role == 'reviewer' and prompt.startswith('Independently review this increment.'):
+                return {'approve': False, 'useful': True, 'reason': 'Introduces a regression.'}
+            return original(router, role, prompt, cwd, **kwargs)
+        self.answer = answer
+        state = self.start()
+        self.assertIsNone(state['draft'])
+        self.assertFalse((Path(state['worktree']) / 'stage.txt').exists())
+
+    def reject_poisoned_paused_worker(self, history=False):
+        def work(router, task, path, config, log, index):
+            if history:
+                (Path(path) / 'stage.txt').write_text('1')
+                git(path, 'add', '--all')
+                git(path, '-c', 'commit.gpgsign=false', 'commit', '-m', 'Unauthorized worker commit')
+            else:
+                (Path(path) / '.soso-delivery/evaluate.py').write_text('print(100)')
+            raise BudgetExceeded('pause after poisoning candidate')
+        with patch('soso.engine.worker', side_effect=work), \
+                self.assertRaisesRegex(ValueError, 'cannot retain candidate with changed'):
+            self.start()
+        state_file = next((self.repo / '.git/soso/goals').glob('*/state.json'))
+        state = json.loads(state_file.read_text())
+        report = json.loads(Path(state['active_epoch']).read_text())
+        self.assertNotIn('draft', report)
+        self.assertEqual(git(Path(state['worktree']), 'rev-parse', 'HEAD'), state['head'])
+        self.assertEqual(git(self.repo, 'for-each-ref', '--format=%(refname)', 'refs/soso/'), '')
+
+    def test_paused_worker_cannot_preserve_changed_protected_policy(self):
+        self.reject_poisoned_paused_worker()
+
+    def test_paused_worker_cannot_preserve_changed_git_history(self):
+        self.reject_poisoned_paused_worker(history=True)
+
+    def test_retained_candidate_changed_ref_is_rejected_before_worker(self):
+        def pause(router, task, path, config, log, index):
+            (Path(path) / 'stage.txt').write_text('1')
+            raise BudgetExceeded('pause')
+        with patch('soso.engine.worker', side_effect=pause):
+            first = self.start()
+        git(self.repo, 'update-ref', first['draft']['ref'], first['head'])
+        with patch('soso.delivery.time.time', return_value=time.time() + 5), \
+                patch('soso.engine.worker') as worker, \
+                self.assertRaisesRegex(ValueError, 'retained candidate ref or history changed'):
+            self.start(resume_goal=first['goal_id'])
+        worker.assert_not_called()
+
+    def test_retained_candidate_changed_base_is_rejected_before_worker(self):
+        def pause(router, task, path, config, log, index):
+            (Path(path) / 'stage.txt').write_text('1')
+            raise BudgetExceeded('pause')
+        with patch('soso.engine.worker', side_effect=pause):
+            first = self.start()
+        state_file = Path(first['report'])
+        state = json.loads(state_file.read_text())
+        state['draft']['base'] = '0' * 40
+        state_file.write_text(json.dumps(state))
+        with patch('soso.delivery.time.time', return_value=time.time() + 5), \
+                patch('soso.engine.worker') as worker, \
+                self.assertRaisesRegex(ValueError, 'retained candidate base or policy binding changed'):
+            self.start(resume_goal=first['goal_id'])
+        worker.assert_not_called()
+
+    def test_interrupt_around_merge_preserves_or_reconciles_reviewed_draft(self):
+        for after_merge in (False, True):
+            with self.subTest(after_merge=after_merge):
+                def work(router, task, path, config, log, index):
+                    (Path(path) / 'stage.txt').write_text('2')
+                    return {'finished': True}
+                def interrupt(root, *args):
+                    if args[:2] == ('merge', '--ff-only'):
+                        if after_merge:
+                            git(root, *args)
+                        raise KeyboardInterrupt
+                    return git(root, *args)
+                with patch('soso.engine.worker', side_effect=work) as worker:
+                    with patch('soso.delivery.git', side_effect=interrupt):
+                        first = self.start()
+                    self.assertEqual(first['status'], 'interrupted')
+                    if after_merge:
+                        self.assertIsNone(first['draft'])
+                        self.assertEqual((Path(first['worktree']) / 'stage.txt').read_text(), '2')
+                    else:
+                        self.assertEqual(first['draft']['phase'], 'review')
+                        self.assertFalse((Path(first['worktree']) / 'stage.txt').exists())
+                    with patch('soso.delivery.time.time', return_value=time.time() + 5):
+                        resumed = self.start(resume_goal=first['goal_id'])
+                self.assertEqual(resumed['status'], 'complete')
+                self.assertIsNone(resumed['draft'])
+                self.assertEqual(worker.call_count, 1)
+
     def test_completion_requires_separate_reviewer(self):
         self.final_approve = False
         first = self.start()

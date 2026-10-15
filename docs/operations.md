@@ -53,8 +53,9 @@ work may wait for already-running workers to reach their bounded timeouts.
 
 ## Recovery and storage
 
-A persisted absolute wall deadline survives crashes and includes downtime. Resume
-never replenishes time or already-journaled model calls.
+An optimization run has a persisted absolute wall deadline that includes downtime.
+Resuming that run does not replenish time or already-journaled model calls.
+Persistent delivery instead opens bounded new epochs while preserving its goal.
 
 Only one run owns a repository at a time (POSIX file lock in the common Git directory).
 Source must be clean. Worktrees and configuration are pinned to committed source;
@@ -64,8 +65,13 @@ Git commands; do not rely on hooks as your evaluator.
 
 A run retains its result branch/worktree and candidate commit refs. Successful
 candidate commits are kept under `refs/soso/RUN_ID/`, including measured rejected
-candidates. Failed, uncommitted worker edits are discarded when that worker is
-cleaned up; its tool events remain. The JSON report lists base/head commit hashes,
+candidates. In persistent delivery, budget/quota exhaustion and graceful interruption
+save valid unfinished changes as a separate draft ref before cleanup. The next
+epoch resumes the draft against its original accepted base and frozen policy.
+Evaluation and independent review still precede acceptance; a saved draft is not
+a completed or accepted result. Explicitly rejected and invalid candidates are
+not resumed automatically. Optimization workers retain their existing cleanup
+behavior for uncommitted failed experiments; tool events remain. The JSON report lists base/head commit hashes,
 scores, stop reason, timing, model calls, candidate summaries and review verdicts.
 
 Review before removing a result worktree or candidate refs. Never blindly delete
