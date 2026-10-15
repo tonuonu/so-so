@@ -7,7 +7,8 @@ it; a dashboard port failure does not stop the work.
 
 The layout is independent of the assignment:
 
-- Current phase, active model calls, elapsed call time and last recorded activity.
+- Current phase, actual active model names, routing aliases, roles, elapsed call
+  time and last recorded activity.
 - Planner output, contract milestones, reviewer-reported status and evidence.
 - Per-model input/output tokens, input bytes, context capacity, duration and errors.
 - Evaluation results, accepted/rejected experiments and a recent event timeline.
@@ -53,7 +54,14 @@ checks the launcher lock separately from saved status, so a stale `running`
 record does not assert that a process is alive. Legacy in-flight calls are
 best-effort because old logs lack unique call IDs.
 
-The server binds to loopback and uses an unguessable URL path. For a remote Linux
+By default the server binds to loopback and uses an unguessable URL path.
+A project can set `dashboard.host` in its existing `soso.json` to a reachable LAN
+address. The launcher binds that address and prints it automatically, including
+when invoked as plain `./so-so`. `dashboard.public_host` optionally separates the
+advertised hostname from the bind address; it is required for wildcard binding.
+The environment equivalents are `SOSO_DASHBOARD_HOST` and
+`SOSO_DASHBOARD_PUBLIC_HOST`. These settings expose read-only run evidence on the
+selected interface; the random URL path remains required. For a remote Linux
 host, run the monitor there and forward its port from your computer:
 
 ```sh
@@ -77,3 +85,34 @@ statistics are not lifetime billing totals. Prompt text and raw model responses
 are not added to usage telemetry. Existing task descriptions and evaluator
 results remain in the normal run journal. Rendering treats those strings as
 text. Older runs cannot retrospectively gain metrics they did not record.
+
+Temporary inference failures show their reason and automatic retry time. A stopped
+launcher shows a saved retry time rather than promising an automatic retry.
+
+Model entries may set `display_name` and `host_label` for readable identification.
+These display-only fields are read live from the source `soso.json`; they do not
+change the frozen execution policy. The endpoint hostname and port come from the
+run's frozen model pool, with credentials and URL paths omitted. Model weight file
+size is not a parameter count. Output tokens per second uses completed requests
+with token telemetry and includes total request latency, not just decoding time.
+
+## Workflow roadmap and performance cards
+
+The roadmap distinguishes starting baseline checks from candidate validation.
+It shows observed stages in the current epoch, not a guessed completion percentage.
+Planning, implementation and review can repeat. Goal milestones remain separate
+and come from the planner and accepted review evidence. A stopped run shows its
+saved position; a waiting run shows the retry reason and time.
+
+Model cards group display name, exact model identifier, host, route alias, active
+request context, timeout, accumulated request time, live elapsed time, tokens,
+median response latency and end-to-end throughput. Accumulated request time sums
+parallel requests; it is not run wall-clock duration. Unfinished historical calls
+cannot become live when a new epoch starts. Unmatched stopped calls have unknown
+duration rather than an increasing timer. Token totals require provider telemetry;
+GPU utilization, RAM use, live token streaming and billing are not measured here.
+
+Temporary HTTP failures and model timeouts use the existing cooldown/retry loop.
+Global epoch budgets still apply. CPU-hosted models can have a longer model
+`timeout`, with a larger `max_seconds` allowance for the epoch. These are frozen
+when a run starts; changing source configuration applies on the next launch.

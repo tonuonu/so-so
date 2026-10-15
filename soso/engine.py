@@ -218,7 +218,7 @@ class Run:
                            "resources": resources(), "elapsed": 0,
                            "deadline_unix": self.created_wall + self.config["max_seconds"]}
             before = fingerprint(self.integration, self.config["protected"])
-            self.log("activity", phase="testing", task="Baseline checks")
+            self.log("activity", phase="baseline", task="Baseline checks")
             self.report["baseline"] = evaluate(self.integration, self.config, self.budget)
             if (git(self.integration, "rev-parse", "HEAD") != base
                     or git(self.integration, "status", "--porcelain")
@@ -255,7 +255,7 @@ class Run:
                 if unavailable:
                     self.report["rounds"].append(round_result)
                     resets = [e["retry_at"] for e in unavailable if e["retry_at"] is not None]
-                    raise ModelUnavailable(min(resets) if resets else None)
+                    raise ModelUnavailable(min(resets) if resets else None, unavailable[0].get("reason", "provider unavailable"))
                 valid = [x for x in round_result["experiments"] if x.get("evaluation", {}).get("valid")]
                 valid.sort(key=lambda x: (self.utility(x["evaluation"]["score"]), -x["candidate"]), reverse=True)
                 for best in valid:
@@ -275,6 +275,7 @@ class Run:
                 self.report["status"] = "round_limit"
         except ModelUnavailable as exc:
             self.report["status"] = "waiting"
+            self.report["reason"] = str(exc)
             self.report["next_retry_at"] = max(time.time() + 1, exc.retry_at) if exc.retry_at is not None else time.time() + 30
         except BudgetExceeded as exc:
             self.report["status"] = "budget_exhausted"
@@ -377,8 +378,8 @@ class Run:
         except (ModelUnavailable, BudgetExceeded, KeyboardInterrupt, SystemExit) as exc:
             retain()
             if isinstance(exc, ModelUnavailable):
-                result["unavailable"] = {"retry_at": exc.retry_at}
-                result["evaluation"] = {"valid": False, "reason": "provider unavailable"}
+                result["unavailable"] = {"retry_at": exc.retry_at, "reason": str(exc)}
+                result["evaluation"] = {"valid": False, "reason": str(exc)}
             elif isinstance(exc, BudgetExceeded):
                 result["budget_exhausted"] = True
                 result["error"] = str(exc)

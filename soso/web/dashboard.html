@@ -1,11 +1,22 @@
-<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>so-so · Run monitor</title><link rel="stylesheet" href="dashboard.css"><script defer src="dashboard.js"></script></head><body>
-<header><a href="#main" class="brand">so-so<span>RUN MONITOR</span></a><div class="connection"><span id="connection" role="status">Connecting…</span><button id="pause">Pause updates</button></div></header>
-<main id="main"><div class="heading"><div><p class="eyebrow">SOFTWARE ON SOFTWARE</p><h1 id="project">Your run, in view.</h1><p id="subtitle">Reading the run journal. No model calls are made by this monitor.</p></div><span id="status" class="badge">Loading</span></div>
-<div id="notice" class="notice" role="status"></div>
-<section class="stats" aria-label="Run summary"><article><p>Current activity</p><strong id="phase">—</strong><small id="freshness">Waiting for evidence</small></article><article><p>Progress</p><strong id="progress">—</strong><small id="progress-note">Measured outcomes, not guesses</small></article><article><p>Model calls</p><strong id="call-count">—</strong><small id="call-note">Recorded requests</small></article><article><p>Completion ETA</p><strong id="eta">Unknown</strong><small id="eta-note">Not enough evidence</small></article></section>
-<div class="columns"><section class="panel"><div class="section-title"><h2>In flight</h2><span>LIVE MODEL CALLS</span></div><div id="calls"></div></section><section class="panel"><div class="section-title"><h2>Plan & milestones</h2><span id="plan-type">PLANNER OUTPUT</span></div><div id="plan"></div><details><summary>Workflow guidance</summary><p>Superpowers skills guide the models; the plan shown above is the model’s recorded output, not a separate Superpowers execution engine.</p><div id="skills"></div></details></section></div>
-<section class="panel"><div class="section-title"><h2>Goal insights</h2><span>DEFINED BY THE PLANNER</span></div><div id="insights" class="stats"></div></section>
-<section class="panel"><div class="section-title"><h2>Model usage</h2><span>OBSERVED, NOT ESTIMATED</span></div><p id="usage-note" class="muted"></p><div class="table-wrap"><table><thead><tr><th>Model</th><th>Calls started</th><th>Input tokens</th><th>Output tokens</th><th>Largest input</th><th>Call time</th><th>Errors</th></tr></thead><tbody id="models"></tbody></table></div></section>
-<div class="columns"><section class="panel"><div class="section-title"><h2>Results & checks</h2><span>RECORDED EVIDENCE</span></div><div id="rounds"></div></section><section class="panel"><div class="section-title"><h2>Activity</h2><span>RECENT EVENTS</span></div><ol id="timeline" class="timeline"></ol></section></div>
-<section class="panel"><div class="section-title"><h2>Visual outputs</h2><span>GENERATED ASSETS</span></div><p class="muted">Images found in the result worktree. Existing images may appear too; this monitor does not take screenshots automatically.</p><div id="assets" class="assets"></div></section>
-<footer><span>Read-only · Local connection · Refreshes every 2 seconds</span><span id="report"></span></footer></main></body></html>
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>so-so · Run monitor</title><link rel="stylesheet" href="dashboard.css"><script defer src="dashboard.js"></script></head>
+<body><a class="skip-link" href="#main">Skip to main content</a><header><a href="#main" class="brand">so-so<span>Run monitor</span></a><div class="connection"><span id="connection" role="status">Connecting…</span><button id="pause">Pause updates</button></div></header>
+<main id="main">
+<div class="heading"><div><h1 id="project">Run progress</h1><p id="subtitle">Reading recorded activity. No model calls are made by this monitor.</p></div><span id="status" class="badge">Loading</span></div>
+<div id="notice" class="notice" role="status"></div><p id="next-action" class="next-action"></p>
+<section class="panel roadmap-panel"><div class="section-title"><h2>Run roadmap</h2><span id="roadmap-state"></span></div><ol id="roadmap" class="roadmap"></ol><p class="muted roadmap-note">Planning, implementation and review can repeat. These stages show where the runner is, not a percentage of the goal completed. Goal-specific milestones appear below when the planner provides them.</p></section>
+<section class="stats" aria-label="Run summary">
+<article><p>Current activity</p><strong id="phase">—</strong><small id="freshness">Waiting for evidence</small></article>
+<article><p>Active models</p><strong id="call-count">—</strong><small id="call-note">No active request</small></article>
+<article><p>Progress</p><strong id="progress">—</strong><small id="progress-note">Measured outcomes</small></article>
+<article><p>Completion estimate</p><strong id="eta">Unknown</strong><small id="eta-note">Not enough evidence</small></article>
+</section>
+<section class="panel"><div class="section-title"><h2>Models & performance</h2><span id="model-count">Recorded usage</span></div><div id="models" class="model-list"></div><details><summary>How these measurements work</summary><p id="usage-note" class="muted"></p></details></section>
+<div class="columns">
+<section class="panel"><div class="section-title"><h2>Plan & milestones</h2><span>Recorded plan</span></div><div id="plan"></div><details><summary>Workflow guidance</summary><p>Superpowers skills guide the models. This plan is their recorded output, not a separate workflow engine.</p><div id="skills"></div></details></section>
+<section class="panel"><div class="section-title"><h2>Results & checks</h2><span>Evaluation evidence</span></div><div id="rounds"></div><div id="insights" class="stats"></div></section>
+</div>
+<details class="panel" id="activity-panel"><summary>Activity history <span id="event-count"></span></summary><ol id="timeline" class="timeline"></ol></details>
+<details class="panel" id="assets-panel"><summary>Visual outputs <span id="asset-count"></span></summary><p class="muted">Images found in the result worktree, including existing assets. The monitor does not take screenshots.</p><div id="assets" class="assets"></div></details>
+<footer><span>Read-only monitor · Updates every 2 seconds</span><details><summary>Evidence location</summary><span id="report"></span></details></footer>
+</main></body></html>

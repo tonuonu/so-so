@@ -8,7 +8,7 @@ import threading
 import time
 import unittest
 
-from soso.models import Budget, BudgetExceeded, Router
+from soso.models import Budget, BudgetExceeded, ModelUnavailable, Router
 from soso.process import execute
 
 
@@ -90,7 +90,7 @@ class HTTPDeadlineTests(unittest.TestCase):
     def test_continuous_response_cannot_extend_model_timeout(self):
         router = self.router(seconds=5, timeout=.5)
         started = time.monotonic()
-        with self.assertRaisesRegex(RuntimeError, "all routes failed"):
+        with self.assertRaisesRegex(ModelUnavailable, "inference request timed out"):
             router.ask("worker", "test", ".")
         self.assertLess(time.monotonic() - started, 1.5)
 

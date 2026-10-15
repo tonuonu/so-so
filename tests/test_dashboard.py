@@ -6,7 +6,7 @@ import unittest
 import urllib.error
 import urllib.request
 from unittest.mock import patch
-from soso.dashboard import Dashboard, Monitor
+from soso.dashboard import Dashboard, Monitor, roadmap
 from soso.models import Router, Budget
 
 class DashboardTests(unittest.TestCase):
@@ -29,8 +29,71 @@ class DashboardTests(unittest.TestCase):
             state=Monitor(root).snapshot()
             self.assertEqual([c['model'] for c in state['calls']],['slow'])
             fast=next(m for m in state['models'] if m['model']=='fast')
-            self.assertEqual(fast['output_tokens'],15);self.assertIsNone(fast['input_tokens'])
+            self.assertEqual(fast['output_tokens_per_second'],15);self.assertEqual(fast['typical_seconds'],1);self.assertEqual(fast['output_tokens'],15);self.assertIsNone(fast['input_tokens'])
             self.assertEqual(state['plan'],['Implement parser']);self.assertIsNone(state['percent']);self.assertIsNone(state['eta_seconds'])
+
+    def test_active_call_has_configured_model_name(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root=Path(tmp);managed,_,report=self.fixture(root)
+            pool=managed/'models.json'
+            pool.write_text(json.dumps({'models':{'main':{'model':'/models/Qwen.gguf','url':'http://user:secret@192.0.2.1:8091/v1'}}}))
+            active=json.loads((managed/'active.json').read_text())
+            active['models_path']=str(pool)
+            (managed/'active.json').write_text(json.dumps(active))
+            (report.parent/'events.jsonl').write_text(json.dumps({'event':'call_started','call_id':'a','model':'main','role':'planner','time':1})+'\n')
+            (root/'soso.json').write_text(json.dumps({'models':{'main':{'display_name':'Large planner','host_label':'CPU server','url':'http://wrong.invalid'}}}))
+            call=Monitor(root).snapshot()['calls'][0]
+            self.assertEqual(call['model_name'],'Qwen.gguf')
+            self.assertEqual(call['display_name'],'Large planner')
+            self.assertEqual(call['host_label'],'CPU server')
+            self.assertEqual(call['host'],'192.0.2.1:8091')
+
+    def test_usage_elapsed_includes_live_call(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root=Path(tmp);_,_,report=self.fixture(root)
+            events=[{'event':'call_started','call_id':'a','model':'main','role':'planner','time':10},
+                    {'event':'call_finished','call_id':'a','model':'main','time':12,'seconds':2,'status':'returned','output_tokens':10},
+                    {'event':'call_started','call_id':'b','model':'main','role':'planner','time':13}]
+            (report.parent/'events.jsonl').write_text('\n'.join(json.dumps(e) for e in events))
+            with patch.object(Monitor,'running',return_value=True), patch('soso.dashboard.time.time',return_value=20):
+                model=Monitor(root).snapshot()['models'][0]
+            self.assertEqual(model['active_seconds'],7)
+            self.assertEqual(model['elapsed_seconds'],9)
+            self.assertEqual(model['output_tokens_per_second'],5)
+
+    def test_dashboard_uses_configured_binding_and_advertised_address(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root=Path(tmp)
+            (root/'soso.json').write_text(json.dumps({'dashboard':{'host':'127.0.0.1','public_host':'192.0.2.10'}}))
+            with Dashboard(root) as dashboard:
+                self.assertEqual(dashboard.server.server_address[0],'127.0.0.1')
+                self.assertTrue(dashboard.url.startswith('http://192.0.2.10:'))
+
+    def test_roadmap_distinguishes_baseline_from_candidate_checks(self):
+        baseline=[{'event':'activity','phase':'testing','task':'Baseline checks'}]
+        stages=roadmap(baseline,{},'running',True,[])
+        self.assertEqual([s['id'] for s in stages if s['state']=='active'],['baseline'])
+        self.assertEqual(next(s['state'] for s in stages if s['id']=='outcome'),'upcoming')
+        stages=roadmap(baseline+[{'event':'activity','phase':'testing','candidate':0}],{},'blocked',False,[])
+        self.assertEqual([s['id'] for s in stages if s['state']=='paused'],['verify'])
+        self.assertEqual(next(s['state'] for s in stages if s['id']=='outcome'),'upcoming')
+
+    def test_historical_unfinished_call_is_not_live_in_new_epoch(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root=Path(tmp);_,project,report=self.fixture(root)
+            old=report.parent.parent/'old/report.json';old.parent.mkdir();old.write_text('{}')
+            (old.parent/'events.jsonl').write_text(json.dumps({'event':'call_started','call_id':'old','model':'main','role':'planner','time':1}))
+            (project.parent/'optimization.json').write_text(json.dumps({'epochs':[{'report':str(old)}]}))
+            with patch.object(Monitor,'running',return_value=True):
+                state=Monitor(root).snapshot()
+            self.assertEqual(state['calls'],[])
+            self.assertEqual(state['models'][0]['active_seconds'],0)
+
+    def test_stopped_unfinished_call_has_unknown_duration(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root=Path(tmp);_,_,report=self.fixture(root)
+            (report.parent/'events.jsonl').write_text(json.dumps({'event':'call_started','call_id':'a','model':'main','role':'planner','time':1}))
+            self.assertIsNone(Monitor(root).snapshot()['calls'][0]['elapsed_seconds'])
 
     def test_rejected_candidate_cannot_complete_milestone(self):
         with tempfile.TemporaryDirectory() as tmp:

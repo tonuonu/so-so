@@ -10,6 +10,7 @@ import threading
 import time
 import uuid
 from pathlib import Path
+from urllib.parse import urlsplit
 from .process import execute
 
 
@@ -411,9 +412,10 @@ class Router:
             except BudgetExceeded:
                 raise
             except ModelUnavailable as exc:
+                self.budget.remaining()
                 until = self._cooldown(name, exc.retry_at)
-                unavailable.append(ModelUnavailable(until))
-                self.log("model_waiting", role=role, model=name, retry_at=until)
+                unavailable.append(ModelUnavailable(until, name + ": " + str(exc)))
+                self.log("model_waiting", role=role, model=name, retry_at=until, reason=str(exc))
             except Exception as exc:
                 self.budget.remaining()
                 # Avoid storing URLs/headers/credentials from raw transport exceptions.
@@ -423,7 +425,7 @@ class Router:
                 self.slots[name].release()
         if unavailable:
             explicit = [e.retry_at for e in unavailable if e.retry_at is not None]
-            raise ModelUnavailable(min(explicit) if explicit else None)
+            raise ModelUnavailable(min(explicit) if explicit else None, str(unavailable[-1]))
         if self.validate:
             raise ModelUnavailable(reason="all model routes temporarily unavailable")
         raise RuntimeError("all routes failed: " + "; ".join(errors))
@@ -525,6 +527,8 @@ class Router:
             body["max_tokens"] = model.get("max_tokens", 2048)
             if model.get("json_mode", True):
                 body["response_format"] = {"type": "json_object"}
+        address = urlsplit(endpoint)
+        host = (address.hostname or "provider") + (":" + str(address.port) if address.port else "")
         headers = {"Content-Type": "application/json"}
         if model.get("api_key_env"):
             headers["Authorization"] = "Bearer " + os.environ[model["api_key_env"]]
@@ -532,12 +536,17 @@ class Router:
                               "timeout": timeout})
         result = execute([sys.executable, "-I", "-c", HTTP_TRANSPORT], cwd, timeout,
                          stdin=payload, limit=1_000_000)
-        if result["timed_out"] or result["returncode"] or result["truncated"]:
+        if result["timed_out"] or result["returncode"]:
             self.telemetry.usage = {"error_kind": "timeout" if result["timed_out"] else "transport_failure"}
-            raise RuntimeError("HTTP model failed")
+            reason = f"inference request timed out after {timeout:g}s" if result["timed_out"] else "inference transport exited unexpectedly"
+            raise ModelUnavailable(reason=reason + " (" + host + ")")
+        if result["truncated"]:
+            raise ValueError("inference response exceeds size limit")
         envelope = json.loads(result["output"])
-        if envelope["status"] in (429, 503):
-            raise ModelUnavailable(retry_timestamp(envelope.get("retry_after")))
+        if envelope["status"] in (0, 408, 425, 429, 500, 502, 503, 504):
+            reason = "inference connection failed or timed out" if envelope["status"] == 0 else "inference service returned HTTP " + str(envelope["status"])
+            self.telemetry.usage = {"error_kind": "temporary_provider_failure"}
+            raise ModelUnavailable(retry_timestamp(envelope.get("retry_after")), reason + " (" + host + ")")
         if envelope["status"] != 200:
             self.telemetry.usage = {"error_kind": "http_status_" + str(envelope["status"])}
             raise RuntimeError("HTTP model failed")

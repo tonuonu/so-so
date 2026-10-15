@@ -472,7 +472,7 @@ class DeliveryEpoch(Run):
     def run_epoch(self):
         try:
             self.checkpoint()
-            self.log('activity', phase='testing', task='Baseline acceptance checks')
+            self.log('activity', phase='baseline', task='Baseline acceptance checks')
             baseline = _bound(self.integration, self.config, self.budget)
             self.report.update(baseline=baseline, best=baseline.get('score'))
             if not baseline['valid']:
@@ -495,7 +495,7 @@ class DeliveryEpoch(Run):
                 round_result = {'round': number, 'experiments': [candidate], 'accepted': None}
                 self.report['rounds'].append(round_result)
                 if candidate.get('unavailable') is not None:
-                    raise ModelUnavailable(candidate['unavailable']['retry_at'])
+                    raise ModelUnavailable(candidate['unavailable']['retry_at'], candidate['unavailable'].get('reason', 'provider unavailable'))
                 if candidate.get('budget_exhausted'):
                     raise BudgetExceeded(candidate['error'])
                 if candidate.get('interrupted'):
@@ -532,7 +532,7 @@ class DeliveryEpoch(Run):
             else:
                 self.report['status'] = 'round_limit'
         except ModelUnavailable as exc:
-            self.report.update(status='waiting', next_retry_at=exc.retry_at)
+            self.report.update(status='waiting', reason=str(exc), next_retry_at=exc.retry_at)
         except BudgetExceeded as exc:
             self.report.update(status='budget_exhausted', reason=str(exc))
         except KeyboardInterrupt:
@@ -650,7 +650,7 @@ def start_goal(repo: Path, intent: str | None = None, *, backend='auto', model=N
                     if once:
                         break
                     _wait(state['next_retry_at'])
-                state.update(status='running', next_retry_at=None)
+                state.update(status='running', next_retry_at=None, reason=None)
                 _save(folder, state)
                 if state.get('policy') and hashlib.sha256((folder / 'config.json').read_bytes()).hexdigest() != state.get('config_sha256'):
                     raise ValueError('frozen epoch configuration changed')
@@ -692,7 +692,7 @@ def start_goal(repo: Path, intent: str | None = None, *, backend='auto', model=N
                 if report['status'] == 'complete':
                     state.update(status='complete', next_retry_at=None)
                 elif report['status'] == 'waiting':
-                    raise ModelUnavailable(report.get('next_retry_at'))
+                    raise ModelUnavailable(report.get('next_retry_at'), report.get('reason', 'provider temporarily unavailable'))
                 elif report['status'] == 'interrupted':
                     state.update(status='interrupted', next_retry_at=None)
                 else:
@@ -703,8 +703,9 @@ def start_goal(repo: Path, intent: str | None = None, *, backend='auto', model=N
                     break
             except ModelUnavailable as exc:
                 state['failures'] += 1
-                state.update(status='waiting', next_retry_at=max(time.time() + 1, exc.retry_at) if exc.retry_at is not None else
+                state.update(status='waiting', reason=str(exc), next_retry_at=max(time.time() + 1, exc.retry_at) if exc.retry_at is not None else
                              time.time() + min(900, 30 * 2 ** min(state['failures'] - 1, 5)))
+                print('Waiting: ' + str(exc) + '. Retrying automatically at ' + time.strftime('%H:%M:%S', time.localtime(state['next_retry_at'])) + '. Ctrl+C pauses the run.', flush=True)
                 _save(folder, state)
                 if once:
                     break

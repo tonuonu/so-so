@@ -6,8 +6,10 @@
       "model": "/root/llm/models/qwen38-uncensored/Qwen3.8-Flash-Next-Uncensored.Q8_0.gguf",
       "context_bytes": 200000,
       "max_tokens": 8192,
-      "timeout": 600,
-      "parallel": 1
+      "timeout": 14400,
+      "parallel": 1,
+      "display_name": "Qwen3.8 large planner (~180 GB weights)",
+      "host_label": "Xeon"
     },
     "qwen_norefusal": {
       "kind": "ollama",
@@ -18,7 +20,9 @@
       "max_tokens": 8192,
       "timeout": 600,
       "parallel": 1,
-      "think": false
+      "think": false,
+      "display_name": "Qwen3.8 27B \u00b7 Q4_K_M",
+      "host_label": "RTX"
     },
     "gemma3n": {
       "kind": "ollama",
@@ -29,7 +33,9 @@
       "max_tokens": 8192,
       "timeout": 600,
       "parallel": 1,
-      "think": false
+      "think": false,
+      "display_name": "Gemma 3n",
+      "host_label": "RTX"
     },
     "triage": {
       "kind": "ollama",
@@ -45,7 +51,9 @@
       "send_think": false,
       "options": {
         "num_gpu": 99
-      }
+      },
+      "display_name": "Llama Guard 3 \u00b7 1B",
+      "host_label": "RTX"
     },
     "kimi": {
       "kind": "kimi",
@@ -75,7 +83,7 @@
   "patience": 2,
   "max_steps": 16,
   "max_calls": 120,
-  "max_seconds": 2400,
+  "max_seconds": 28800,
   "checks": [
     [
       "python3",
@@ -137,5 +145,8 @@
       "model": "kimi",
       "guard": "triage"
     }
+  },
+  "dashboard": {
+    "host": "192.168.6.235"
   }
 }

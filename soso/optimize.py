@@ -104,7 +104,7 @@ def optimize_project(project: Path, intent: str, folder: Path, models_path=None,
                     state['epochs'].append({'run_id': runner.run_id, 'root': state['root'],
                                             'report': str(runner.report_path), 'status': 'running',
                                             'plateau_before': state['plateau']})
-                state.update(run_id=runner.run_id, report=str(runner.report_path), status='running', next_retry_at=None)
+                state.update(run_id=runner.run_id, report=str(runner.report_path), status='running', next_retry_at=None, reason=None)
                 checkpoint()  # Save the ID before evaluation or any model calls.
                 try:
                     report = runner.run()
@@ -126,7 +126,7 @@ def optimize_project(project: Path, intent: str, folder: Path, models_path=None,
                     checkpoint()
                     return state
                 if report['status'] == 'waiting':
-                    raise ModelUnavailable(report.get('next_retry_at'))
+                    raise ModelUnavailable(report.get('next_retry_at'), report.get('reason', 'provider temporarily unavailable'))
                 if report['status'] == 'interrupted':
                     state['status'] = 'interrupted'
                     checkpoint()
@@ -143,8 +143,9 @@ def optimize_project(project: Path, intent: str, folder: Path, models_path=None,
                 return state
             except ModelUnavailable as exc:
                 state['failures'] += 1
-                state.update(status='waiting', next_retry_at=max(time.time() + 1, exc.retry_at) if exc.retry_at is not None else
+                state.update(status='waiting', reason=str(exc), next_retry_at=max(time.time() + 1, exc.retry_at) if exc.retry_at is not None else
                              time.time() + min(900, 30 * 2 ** min(state['failures'] - 1, 5)))
+                print('Waiting: ' + str(exc) + '. Retrying automatically at ' + time.strftime('%H:%M:%S', time.localtime(state['next_retry_at'])) + '. Ctrl+C pauses the run.', flush=True)
                 checkpoint()
     except KeyboardInterrupt:
         state['status'] = 'interrupted'

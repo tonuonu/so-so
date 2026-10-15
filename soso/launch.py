@@ -215,7 +215,7 @@ def launch(cwd: Path, goal: str | None = None):
                         _save(managed, folder, entry)
             if entry['mode'] == 'optimize':
                 def save_optimization(state):
-                    entry.update({key: state.get(key) for key in ('run_id', 'status', 'next_retry_at', 'report', 'worktree')})
+                    entry.update({key: state.get(key) for key in ('run_id', 'status', 'next_retry_at', 'report', 'worktree', 'reason')})
                     entry['phase'] = 'optimize'
                     _save(managed, folder, entry)
                 result = optimize_project(project, goal, folder, models_path=entry.get('models_path'), save=save_optimization)
@@ -240,7 +240,11 @@ def main(argv=None):
         from .dashboard import automatic
         with automatic(Path.cwd()):
             result = launch(Path.cwd(), args.goal)
-        print('Optimization reached a plateau.' if result['status'] == 'optimized' else 'Goal ' + result['status'] + '.')
+        if result['status'] == 'blocked':
+            print('Stopped: ' + (result.get('reason') or 'the runner could not continue') + '. This does not mean the goal is unachievable.')
+            print('Inspect the dashboard or evidence below before retrying. Completed results are preserved.')
+        else:
+            print('Optimization reached a plateau.' if result['status'] == 'optimized' else 'Goal ' + result['status'] + '.')
         if result.get('worktree'):
             print('Result: ' + result['worktree'])
         if result.get('report'):

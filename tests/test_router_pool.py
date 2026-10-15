@@ -92,6 +92,21 @@ class RoutingPolicyTests(unittest.TestCase):
         self.assertEqual(schema['properties']['route']['enum'], ['code', 'hard'])
         self.assertNotIn('response_schema', router.models['triage'])
 
+    def test_temporary_http_failures_are_retryable(self):
+        router = Router(config(), Budget(10, 30), lambda *a, **k: None)
+        model = {'kind': 'ollama', 'url': 'http://localhost:11434', 'model': 'small'}
+        for status in (0, 408, 425, 429, 500, 502, 503, 504):
+            response = {'returncode': 0, 'timed_out': False, 'truncated': False,
+                        'output': json.dumps({'status': status})}
+            with self.subTest(status=status), patch('soso.models.execute', return_value=response):
+                with self.assertRaises(ModelUnavailable) as error:
+                    router._call(model, 'test', Path.cwd(), 10)
+                self.assertIn('inference', str(error.exception))
+        response = {'returncode': 1, 'timed_out': True, 'truncated': False, 'output': ''}
+        with patch('soso.models.execute', return_value=response):
+            with self.assertRaisesRegex(ModelUnavailable, 'timed out after 10s'):
+                router._call(model, 'test', Path.cwd(), 10)
+
     def test_ollama_transmits_schema_and_thinking_preference(self):
         router = Router(config(), Budget(10, 30), lambda *a, **k: None)
         schema = {'type': 'object', 'properties': {'route': {'enum': ['code']}}}
