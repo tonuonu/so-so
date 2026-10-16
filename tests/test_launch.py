@@ -107,6 +107,52 @@ class LauncherTests(unittest.TestCase):
         self.assertEqual((folder / 'INTENT.md').read_text(), 'Create game tetris')
         self.assertEqual((self.root / 'INTENT.md').read_text(), original)
 
+    def test_resume_last_uses_saved_intent_and_snapshot_after_source_changes(self):
+        first = self.run_goal('Create game tetris')
+        (self.root / 'INTENT.md').unlink()
+        (self.root / 'app.py').write_text('changed after interruption')
+        with patch('soso.launch.resolve_pool', side_effect=AssertionError('must keep saved pool')), \
+             patch('soso.launch.start_goal', side_effect=self.result):
+            resumed = launch(self.root, resume='')
+        self.assertEqual(resumed['snapshot'], first['snapshot'])
+        self.assertEqual(self.calls[-1][1], 'Create game tetris')
+        self.assertEqual(self.calls[-1][2]['resume_goal'], 'goal-1')
+        self.assertEqual((Path(resumed['snapshot'])/'app.py').read_text(), 'value = 1\n')
+        self.assertEqual((self.root/'app.py').read_text(), 'changed after interruption')
+
+    def test_explicit_resume_selects_older_task(self):
+        first = self.run_goal('First task')
+        self.run_goal('Second task')
+        with patch('soso.launch.start_goal', side_effect=self.result):
+            resumed = launch(self.root, resume=first['resume_id'])
+        self.assertEqual(resumed['snapshot'], first['snapshot'])
+        self.assertEqual(self.calls[-1][1], 'First task')
+
+    def test_interrupt_prints_working_resume_command(self):
+        with patch('soso.launch.Path.cwd', return_value=self.root), \
+             patch('soso.launch.resolve_pool', return_value=self.pool), \
+             patch('soso.launch.start_goal', side_effect=KeyboardInterrupt), \
+             contextlib.redirect_stdout(io.StringIO()) as output:
+            self.assertEqual(main(['Create game tetris']), 2)
+        self.assertIn('To continue, execute: ./so-so resume', output.getvalue())
+        with patch('soso.launch.Path.cwd', return_value=self.root), \
+             patch('soso.launch.resolve_pool', side_effect=AssertionError('must reuse pool')), \
+             patch('soso.launch.start_goal', side_effect=self.result), contextlib.redirect_stdout(io.StringIO()):
+            self.assertEqual(main(['resume']), 0)
+        self.assertEqual(self.calls[-1][1], 'Create game tetris')
+
+    def test_resume_rejects_missing_or_tampered_saved_task(self):
+        with self.assertRaisesRegex(ValueError, 'no previous task'):
+            launch(self.root, resume='')
+        first = self.run_goal()
+        with self.assertRaisesRegex(ValueError, 'not found'):
+            launch(self.root, resume='unknown-task')
+        with self.assertRaisesRegex(ValueError, 'invalid saved task'):
+            launch(self.root, resume='../outside')
+        (Path(first['snapshot']).parent/'INTENT.md').write_text('Changed saved intent')
+        with self.assertRaisesRegex(ValueError, 'intent or fingerprint changed'):
+            launch(self.root, resume=first['resume_id'])
+
     def test_changed_source_keeps_previous_snapshot(self):
         first = self.run_goal()
         (self.root / 'app.py').write_text('value = 2\n')

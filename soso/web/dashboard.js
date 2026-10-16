@@ -14,7 +14,7 @@ function render(d){
  const failure=[...d.timeline].reverse().find(e=>e.event==='call_finished' && e.status==='error');
  if(!d.runner_active && d.status==='blocked' && failure?.error_kind==='timeout')text('notice',`${failure.model || 'Model'} request timed out after ${duration(failure.seconds)}. The runner stopped before completing the goal.`);
  $('notice').dataset.tone=d.status==='blocked'?'error':d.status==='waiting'?'waiting':'info';
- text('next-action',d.runner_active ? (d.next_retry_at?'No action needed: the runner will retry automatically.':'') : d.status==='blocked'?'Next step: run ./so-so again after addressing the recorded failure. Completed results are preserved.':d.status==='interrupted'?'Run ./so-so to continue the saved work.':'');
+ text('next-action',d.runner_active ? (d.next_retry_at?'No action needed: the runner will retry automatically.':'') : d.status==='blocked'?'Next step: run ./so-so resume after addressing the recorded failure. Completed results are preserved.':d.status==='interrupted'?'Run ./so-so resume to continue the saved work.':'');
  const stages=d.roadmap || [];
  const here=stages.filter(s=>['active','paused','complete'].includes(s.state));
  $('roadmap').replaceChildren();

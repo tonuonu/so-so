@@ -168,43 +168,88 @@ def _wait(until):
         time.sleep(min(1, max(0, until - time.time())))
 
 
-def launch(cwd: Path, goal: str | None = None, intent_file: str | None = None):
+def _resume_snapshot(managed, task_id):
+    if task_id == '':
+        active = managed / 'active.json'
+        if not active.is_file() or active.is_symlink():
+            raise ValueError('no previous task to resume')
+        task_id = json.loads(active.read_text()).get('fingerprint', '')
+    if not task_id or '/' in task_id or '\\' in task_id or task_id in ('.', '..'):
+        raise ValueError('invalid saved task ID')
+    matches = []
+    for folder in (managed / 'projects').iterdir():
+        path = folder / 'entry.json'
+        if folder.is_symlink() or not path.is_file() or path.is_symlink():
+            continue
+        entry = json.loads(path.read_text())
+        fingerprint = entry.get('fingerprint', '')
+        if task_id in (folder.name, entry.get('goal_id')) or (len(task_id) >= 8 and fingerprint.startswith(task_id)):
+            matches.append((folder, entry))
+    if len(matches) != 1:
+        raise ValueError('saved task ID is ambiguous' if matches else 'saved task not found; see .so-so/README.md')
+    folder, entry = matches[0]
+    project = folder / 'project'
+    if project.is_symlink() or entry.get('project') != str(project) or not (project / '.git').is_dir():
+        raise ValueError('saved task workspace is missing or changed')
+    intent_path = folder / 'INTENT.md'
+    if not intent_path.is_file() or intent_path.is_symlink():
+        raise ValueError('saved task intent is missing')
+    intent = intent_path.read_text()
+    manifest = json.loads((folder / 'manifest.json').read_text())
+    if (manifest.get('fingerprint') != entry['fingerprint'] or
+            manifest.get('intent_sha256') != hashlib.sha256(intent.encode()).hexdigest()):
+        raise ValueError('saved task intent or fingerprint changed')
+    return entry['fingerprint'], folder, project, intent, entry
+
+
+def launch(cwd: Path, goal: str | None = None, intent_file: str | None = None, resume: str | None = None):
     """Read an assignment and resume its owned snapshot without source Git edits."""
     cwd = Path(cwd).resolve()
-    intent_path = cwd / 'INTENT.md'
-    if intent_file is not None:
-        if goal is not None:
-            raise ValueError('use an assignment or --intent, not both')
-        assignment = cwd / intent_file
-        if assignment.is_symlink() or not assignment.is_file():
-            raise ValueError('--intent must name a regular Markdown file')
-        if assignment.stat().st_size > 8000:
-            raise ValueError('intent file must contain 1..8000 bytes')
-        goal = assignment.read_text()
-    use_file = intent_file is None and (goal is None or goal.strip().lower() == 'read intent.md')
-    if intent_path.is_symlink() and use_file:
-        raise ValueError('INTENT.md must be a regular file in this project')
-    source_intent = intent_path.read_text() if intent_path.is_file() and not intent_path.is_symlink() else None
-    if use_file:
-        if source_intent is None:
-            raise ValueError('write INTENT.md or provide an assignment after ./so-so')
-        goal = source_intent
-    if not goal.strip() or len(goal.encode()) > 8000 or (source_intent is not None and len(source_intent.encode()) > 8000):
-        raise ValueError('INTENT.md or goal must contain 1..8000 bytes')
-    settings = goal if use_file or source_intent is None else source_intent + '\n\nCurrent assignment (overrides the task above):\n' + goal
+    if resume is not None and (goal is not None or intent_file is not None):
+        raise ValueError('resume uses the saved assignment; do not supply a new intent')
+    if resume is None:
+        intent_path = cwd / 'INTENT.md'
+        if intent_file is not None:
+            if goal is not None:
+                raise ValueError('use an assignment or --intent, not both')
+            assignment = cwd / intent_file
+            if assignment.is_symlink() or not assignment.is_file():
+                raise ValueError('--intent must name a regular Markdown file')
+            if assignment.stat().st_size > 8000:
+                raise ValueError('intent file must contain 1..8000 bytes')
+            goal = assignment.read_text()
+        use_file = intent_file is None and (goal is None or goal.strip().lower() == 'read intent.md')
+        if intent_path.is_symlink() and use_file:
+            raise ValueError('INTENT.md must be a regular file in this project')
+        source_intent = intent_path.read_text() if intent_path.is_file() and not intent_path.is_symlink() else None
+        if use_file:
+            if source_intent is None:
+                raise ValueError('write INTENT.md or provide an assignment after ./so-so')
+            goal = source_intent
+        if not goal.strip() or len(goal.encode()) > 8000 or (source_intent is not None and len(source_intent.encode()) > 8000):
+            raise ValueError('INTENT.md or goal must contain 1..8000 bytes')
+        settings = goal if use_file or source_intent is None else source_intent + '\n\nCurrent assignment (overrides the task above):\n' + goal
     managed = _managed(cwd)
     with (managed / 'launch.lock').open('w') as lock:
         try:
             fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
         except BlockingIOError:
             raise RuntimeError('another so-so process owns this project') from None
-        source = (cwd / intent_file).resolve().parent if intent_file is not None else cwd
-        fingerprint, folder, project, excluded = _snapshot(source, managed, goal)
-        path = folder / 'entry.json'
-        entry = json.loads(path.read_text()) if path.exists() else {
-            'fingerprint': fingerprint, 'project': str(project), 'source': str(source),
-            'goal_id': None, 'status': 'starting', 'next_retry_at': None, 'phase': 'model_setup'}
+        if resume is not None:
+            fingerprint, folder, project, goal, entry = _resume_snapshot(managed, resume)
+            source = Path(entry['source'])
+            settings = entry.get('settings', goal)
+            excluded = []
+        else:
+            source = (cwd / intent_file).resolve().parent if intent_file is not None else cwd
+            fingerprint, folder, project, excluded = _snapshot(source, managed, goal)
+            path = folder / 'entry.json'
+            entry = json.loads(path.read_text()) if path.exists() else {
+                'fingerprint': fingerprint, 'project': str(project), 'source': str(source),
+                'goal_id': None, 'status': 'starting', 'next_retry_at': None, 'phase': 'model_setup'}
         entry['title'] = title(goal)
+        entry['settings'] = settings
+        entry['resume_id'] = fingerprint[:12]
         if not (folder / 'INTENT.md').exists():
             (folder / 'INTENT.md').write_text(goal)
         entry['mode'] = 'optimize' if prepared_optimization(project, goal) else 'delivery'
@@ -218,7 +263,11 @@ def launch(cwd: Path, goal: str | None = None, intent_file: str | None = None):
                     if entry.get('next_retry_at') and entry['next_retry_at'] > time.time():
                         _wait(entry['next_retry_at'])
                     try:
-                        pool = resolve_pool(settings, cwd)
+                        saved_pool = entry.get('models_path') if resume is not None else None
+                        if saved_pool:
+                            pool = json.loads(Path(saved_pool).read_text())
+                        else:
+                            pool = resolve_pool(settings, cwd)
                         pool_path = managed / 'pools' / (fingerprint + '.json')
                         if pool is not None:
                             atomic_json(pool_path, pool)
@@ -246,7 +295,7 @@ def launch(cwd: Path, goal: str | None = None, intent_file: str | None = None):
             entry.update(goal_id=result.get('goal_id'), status=result['status'], phase=entry['mode'],
                          next_retry_at=result.get('next_retry_at'), report=result.get('report'), worktree=result.get('worktree'))
             _save(managed, folder, entry)
-            return {**result, 'source': str(source), 'snapshot': str(project), 'excluded': excluded[:100]}
+            return {**result, 'source': str(source), 'snapshot': str(project), 'excluded': excluded[:100], 'resume_id': entry['resume_id']}
         except KeyboardInterrupt:
             entry.update(status='interrupted', goal_id=entry.get('goal_id') or _goal_id(project))
             _save(managed, folder, entry)
@@ -256,14 +305,20 @@ def launch(cwd: Path, goal: str | None = None, intent_file: str | None = None):
 def main(argv=None):
     parser = argparse.ArgumentParser(description='Read INTENT.md and carry out its goal; source files are preserved.')
     parser.add_argument('goal', nargs='?', help='optional assignment instead of INTENT.md')
+    parser.add_argument('task_id', nargs='?', help='optional saved task ID after resume')
     parser.add_argument('--intent', metavar='PATH', help='read the assignment from a Markdown file')
     args = parser.parse_args(argv)
+    if args.task_id is not None and args.goal != 'resume':
+        parser.error('a task ID is only valid after resume')
     if args.intent is not None and args.goal is not None:
         parser.error('use an assignment or --intent, not both')
     try:
         from .dashboard import automatic
         with automatic(Path.cwd()):
-            result = launch(Path.cwd(), args.goal, intent_file=args.intent)
+            if args.goal == 'resume':
+                result = launch(Path.cwd(), resume=args.task_id or '')
+            else:
+                result = launch(Path.cwd(), args.goal, intent_file=args.intent)
         if result['status'] == 'blocked':
             print('Stopped: ' + (result.get('reason') or 'the runner could not continue') + '. This does not mean the goal is unachievable.')
             print('Inspect the dashboard or evidence below before retrying. Completed results are preserved.')
@@ -272,6 +327,10 @@ def main(argv=None):
         from .reporting import summary_lines
         for line in summary_lines(result):
             print(line)
+        if result['status'] not in ('complete', 'optimized'):
+            print('To continue, execute: ./so-so resume')
+            if result.get('resume_id'):
+                print('To select this task later: ./so-so resume ' + result['resume_id'])
         print('Intent history: ' + str(Path.cwd() / '.so-so' / 'README.md'))
         if result.get('worktree'):
             print('Result: ' + result['worktree'])

@@ -29,6 +29,8 @@ def update_history(managed, folder, entry):
              'Status: ' + entry['status'], 'Updated (UTC): ' + updated, '',
              '[Original assignment](INTENT.md)', '',
              'This is an isolated source snapshot. Changes to the intent or source create a new snapshot.', '']
+    if entry.get('resume_id'):
+        lines += ['Resume: `./so-so resume ' + entry['resume_id'] + '`', '']
     for label, key in [('Result', 'worktree'), ('Evidence', 'report')]:
         if entry.get(key):
             lines += [label + ': `' + str(entry[key]) + '`', '']

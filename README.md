@@ -43,6 +43,15 @@ to an older web application linked by URL:
 ./so-so --intent ./examples/security-review/INTENT.md
 ```
 
+If interrupted, continue the latest task with:
+
+```sh
+./so-so resume
+```
+
+This uses its saved assignment and workspace, even if the original files changed.
+To select an older task, use `./so-so resume TASK_ID`; the exit message prints its ID.
+
 ## Describe the outcome
 
 Include the outcome, available resources and routing preferences in `INTENT.md`:
