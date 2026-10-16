@@ -17,7 +17,7 @@ ROOT = Path(__file__).resolve().parents[1]
 class ExampleLayoutTests(unittest.TestCase):
     def test_public_example_contains_only_intent(self):
         files = sorted(str(p.relative_to(ROOT / 'examples')) for p in (ROOT / 'examples').rglob('*') if p.is_file())
-        self.assertEqual(files, ['tetris/INTENT.md'])
+        self.assertEqual(files, ['security-review/INTENT.md', 'tetris/INTENT.md'])
         self.assertIn('game', (ROOT / 'examples/tetris/INTENT.md').read_text())
 
     def test_default_trial_preserves_configured_routes(self):

@@ -36,6 +36,13 @@ available tools. With `--intent`, the file's directory supplies the starting fil
 work happens in an isolated copy. The intent can also refer to existing code,
 datasheets or other resources by path, in ordinary language.
 
+The [security review example](examples/security-review/INTENT.md) asks for fixes
+to an older web application linked by URL:
+
+```sh
+./so-so --intent ./examples/security-review/INTENT.md
+```
+
 ## Describe the outcome
 
 Include the outcome, available resources and routing preferences in `INTENT.md`:
