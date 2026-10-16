@@ -6,12 +6,6 @@
 ./so-so
 ```
 
-Or give it the assignment directly:
-
-```sh
-./so-so "Build a browser platform game"
-```
-
 The launcher prepares its runtime, reads your intent, finds configured models and
 works in a managed copy of your project. Running it again resumes matching
 unfinished work. You do not need to create a virtual environment or initialize Git.
@@ -25,7 +19,8 @@ endpoints, model names and dashboard address to your machines, or set
 `use_project_model_policy` to `false` to use discovery and the Markdown preferences
 below. See [the included model policy](docs/routing.md#included-deployment-policy).
 
-The [Tetris example](examples/tetris/INTENT.md) contains only `Create game tetris`:
+Try `./so-so "Create game tetris"`, or use the same assignment from the
+[Tetris example](examples/tetris/INTENT.md):
 
 ```sh
 ./so-so --intent ./examples/tetris/INTENT.md
