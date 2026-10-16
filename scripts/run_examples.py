@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Run REAL inference on independent copies of all three example projects."""
+"""Run REAL inference on independent copies of three regression fixtures."""
 import argparse
 import concurrent.futures
 import json
@@ -9,12 +9,13 @@ import sys
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from soso.engine import Run, load_config
+from soso.intent import resolve_pool
 from soso.process import git
 
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('--backend', choices=['codex', 'ollama', 'mixed'], default='codex')
+    parser.add_argument('--backend', choices=['codex', 'ollama', 'mixed'], default=None)
     parser.add_argument('--model', help='Ollama model name; required for ollama/mixed')
     parser.add_argument('--output', required=True, type=Path, help='new directory for isolated example repos')
     parser.add_argument('--jobs', type=int, default=1)
@@ -22,16 +23,29 @@ def main():
     args = parser.parse_args()
     if args.jobs < 1 or (args.rounds is not None and args.rounds < 1):
         parser.error('jobs and rounds must be positive')
-    if args.backend != 'codex' and not args.model:
+    if args.backend in ('ollama', 'mixed') and not args.model:
         parser.error('--model required for Ollama')
+    if args.model and args.backend is None:
+        parser.error('--model requires an explicit diagnostic --backend; default trials use the configured pool')
     args.output.mkdir(parents=True, exist_ok=False)
-    source = Path(__file__).resolve().parents[1] / 'examples'
+    root = Path(__file__).resolve().parents[1]
+    source = root / 'tests' / 'fixtures' / 'example_projects'
+    if args.backend is None:
+        pool = resolve_pool((root / 'INTENT.md').read_text(), root)
+    else:
+        # Explicit diagnostic overrides remain available; normal trials use the pool.
+        pool = {'models': {
+            'local': {'kind': 'ollama', 'url': 'http://127.0.0.1:11434',
+                      'model': args.model or '', 'context_bytes': 20000, 'parallel': 1},
+            'codex': {'kind': 'codex', 'args': ['--ignore-user-config'],
+                      'parallel': 2, 'timeout': 180, 'context_bytes': 24000}},
+            'routes': {role: ['local', 'codex'] for role in ('planner', 'worker', 'reviewer')}}
 
     def trial(name):
         repo = args.output.resolve() / name
         shutil.copytree(source / name, repo, ignore=shutil.ignore_patterns('__pycache__'))
         config_path = repo / 'soso.json'
-        config = json.loads(config_path.read_text())
+        config = {**pool, **json.loads(config_path.read_text())}
         if args.rounds is not None:
             config['rounds'] = args.rounds
         if args.backend == 'codex':
@@ -50,7 +64,7 @@ def main():
         runner = Run(repo,load_config(config_path),(repo/'INTENT.md').read_text())
         report = runner.run()
         preserved = git(repo,'rev-parse','HEAD') == base and not git(repo,'status','--porcelain')
-        summary = {'project':name,'backend':args.backend,'baseline':report['baseline'].get('score'),
+        summary = {'project':name,'backend':args.backend or 'configured pool','baseline':report['baseline'].get('score'),
                    'best':report.get('best'),'status':report['status'],'calls':report.get('calls'),
                    'rounds':len(report['rounds']),'source_preserved':preserved,
                    'report':str(runner.report_path),'branch':report['branch']}
@@ -58,8 +72,8 @@ def main():
         return summary
 
     names = ['slugger','c-stats','csv-reader']
-    with concurrent.futures.ThreadPoolExecutor(max_workers=args.jobs) as pool:
-        results = list(pool.map(trial,names))
+    with concurrent.futures.ThreadPoolExecutor(max_workers=args.jobs) as executor:
+        results = list(executor.map(trial,names))
     (args.output/'summary.json').write_text(json.dumps(results,indent=2)+'\n')
     print(json.dumps(results,indent=2))
     return 0 if all(r['source_preserved'] and r['best'] > r['baseline'] for r in results) else 1

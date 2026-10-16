@@ -33,7 +33,5 @@ streamed token counts, costs and a reliable completion ETA are not recorded by
 this monitor. Unknown values remain unknown.
 
 Long-running CPU models need a model timeout and an epoch time allowance suited
-to their throughput. Increasing a timeout does not make the model faster. A
-future architectural improvement is a rarely-invoked high-level architect with
-a faster coordinator handling implementation cycles; this audit does not claim
-that scheduling architecture is implemented.
+to their throughput. Increasing a timeout does not make the model faster. The [architect/coordinator split](architecture.md) now keeps strategic guidance
+on disk and assigns routine planning to a faster model.

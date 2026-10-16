@@ -106,9 +106,9 @@ class ModelTests(unittest.TestCase):
         for thread in threads: thread.join()
         self.assertEqual(sum(outcomes),3)
     def test_fallback(self):
-        config={'models':{'bad':{'kind':'command','command':['false']},'ok':{'kind':'command','command':[sys.executable,'-c','print(\'{"ok":true}\')']}},'routes':{'worker':['bad','ok']}}
+        config={'models':{'bad':{'kind':'command','command':['false']},'ok':{'kind':'command','command':[sys.executable,'-c','print(\'{"tool":"done"}\')']}},'routes':{'worker':['bad','ok']}}
         budget=Budget(5,10)
-        self.assertEqual(Router(config,budget,lambda *a,**kw:None).ask('worker','test','.'),{'ok':True})
+        self.assertEqual(Router(config,budget,lambda *a,**kw:None).ask('worker','test','.'),{'tool':'done'})
         self.assertEqual(budget.calls,2)
     def test_context_limit(self):
         config={'models':{'x':{'kind':'command','command':['false'],'context_bytes':3}},'routes':{'worker':['x']}}
@@ -157,6 +157,47 @@ class EngineTests(RepoCase):
     def test_invalid_baseline(self):
         _,report=self.run_fixture(evaluate=[sys.executable,'-c','print("bad")'])
         self.assertEqual(report['status'],'invalid_baseline')
+    def test_architect_is_cached_while_coordinator_runs_each_round(self):
+        roles=[]
+        def answer(router,role,prompt,cwd,attempt=0,task=None):
+            roles.append(role)
+            if role=='architect':
+                router.budget.claim()
+                return {'milestones':['Improve value'],'constraints':['Keep evaluator'],'acceptance':['Score improves']}
+            return self.actions(router,'planner' if role=='coordinator' else role,prompt,cwd,attempt,task)
+        config=self.config(routes={'worker':['test'],'architect':['test'],'coordinator':['test']})
+        runner=Run(self.root,config,'Improve',allow_exec=True)
+        with patch.object(Router,'ask',answer), contextlib.redirect_stdout(io.StringIO()):
+            report=runner.run()
+        self.assertEqual(report['status'],'plateau')
+        self.assertEqual(roles.count('architect'),1)
+        self.assertGreaterEqual(roles.count('coordinator'),2)
+        self.assertNotIn('planner',roles)
+
+    def test_worker_protocol_failure_is_not_a_plateau(self):
+        from soso.models import ModelProtocolError
+        runner=Run(self.root,self.config(),'Improve',allow_exec=True)
+        with patch.object(Router,'ask',side_effect=ModelProtocolError('test: malformed JSON after 3 attempts')):
+            report=runner.run()
+        self.assertEqual(report['status'],'execution_failed')
+        self.assertEqual(report['plateau'],0)
+        self.assertEqual(report['best'],0)
+        self.assertEqual(len(report['rounds']),1)
+        self.assertTrue(all(e['error_kind']=='ModelProtocolError' for e in report['rounds'][0]['experiments']))
+
+    def test_reviewer_protocol_failure_preserves_evaluated_candidate(self):
+        from soso.models import ModelProtocolError
+        with patch.object(Run, 'review', side_effect=ModelProtocolError('invalid reviewer response')):
+            _, report = self.run_fixture()
+        self.assertEqual(report['status'], 'execution_failed')
+        self.assertEqual(report['plateau'], 0)
+        self.assertEqual(report['best'], 0)
+        self.assertEqual(len(report['rounds']), 1)
+        self.assertIsNone(report['rounds'][0]['accepted'])
+        failed = [e for e in report['rounds'][0]['experiments'] if e.get('error_kind') == 'ModelProtocolError']
+        self.assertEqual(len(failed), 1)
+        self.assertTrue(failed[0]['evaluation']['valid'])
+
     def test_dirty(self):
         (self.root/'value.txt').write_text('dirty')
         with self.assertRaises(ValueError): self.run_fixture()

@@ -12,27 +12,33 @@ Or give it the assignment directly:
 ./so-so "Build a browser platform game"
 ```
 
-That is the normal interface. No user-written JSON, virtual environment, package
-installation commands, model-backend switches, or manual Git setup are required.
-The launcher prepares its runtime when necessary, reads your intent, discovers
-available inference, and works in a managed copy of your project. Running it again
-resumes matching unfinished work. Your original files remain available.
+The launcher prepares its runtime, reads your intent, finds configured models and
+works in a managed copy of your project. Running it again resumes matching
+unfinished work. You do not need to create a virtual environment or initialize Git.
 
-so-so is MIT-licensed. The host needs access to this repository and to the
-inference services your assignment uses. The launcher cannot invent credentials
-or system installation permission.
+so-so is MIT-licensed. After checkout, it runs from local files without GitHub
+access. It uses the inference services and tools available for your assignment;
+installing missing tools may require network access and installation permission.
 
-The repository itself includes the maintainer's explicit model policy in
-`soso.json`: a LAN-hosted planner, local Qwen worker, and guarded Kimi overflow.
-That policy takes precedence when running from this checkout; its LAN service is
-not publicly accessible. See [the included deployment policy](docs/routing.md#included-deployment-policy)
-to adapt it or restore automatic discovery. Projects without that explicit policy
-use the Markdown interface described below.
+**This checkout includes an explicit model policy in `soso.json`.** Adapt its
+endpoints, model names and dashboard address to your machines, or set
+`use_project_model_policy` to `false` to use discovery and the Markdown preferences
+below. See [the included model policy](docs/routing.md#included-deployment-policy).
+
+The [Tetris example](examples/tetris/INTENT.md) contains only `Create game tetris`:
+
+```sh
+./so-so --intent ./examples/tetris/INTENT.md
+```
+
+The runner chooses reasonable implementation defaults from the assignment and
+available tools. With `--intent`, the file's directory supplies the starting files;
+work happens in an isolated copy. The intent can also refer to existing code,
+datasheets or other resources by path, in ordinary language.
 
 ## Describe the outcome
 
-`INTENT.md` is ordinary Markdown. Include the outcome and whatever resources or
-preferences matter. For example:
+Include the outcome, available resources and routing preferences in `INTENT.md`:
 
 ```markdown
 # Inventory application
@@ -54,62 +60,71 @@ For a job that does not match a rule, use Kimi.
 Wait when providers exhaust their quota and resume when capacity returns.
 ```
 
-Use your actual endpoint and model names. You can describe any number of models,
-command adapters, match rules, exclusions, specialists, and a default route. Model
-preferences are translated into validated internal policy and retained with the
-goal. Explicit policy determines eligible models; context limits and quota
-availability then determine which eligible model receives the call. A small local
-model or your own command can classify jobs into named routes. Initial policy
-setup currently needs a discoverable Ollama service or an installed Codex, Claude
-or Kimi CLI; a custom API or command alone is not yet sufficient to bootstrap it.
+Use your actual endpoints and model names. You can specify multiple models,
+command adapters, matching rules, exclusions, specialists and a default route.
+so-so translates these preferences into a validated policy and saves it with the
+goal. Models receive work only through eligible routes, within their context and
+availability limits.
+
+Initial Markdown policy setup needs a discoverable Ollama service or an installed
+Codex, Claude or Kimi CLI. A custom API or command alone cannot yet bootstrap it.
+An explicit project model policy overrides Markdown model preferences.
 
 ## Watch the work
 
-`./so-so` prints a live dashboard URL automatically. It shows current activity,
-model usage, plans, milestones, checks and visual outputs. Optional goal-specific
-metrics are defined by the planner from your INTENT. Missing percentages, tokens
-and ETAs stay unknown instead of being guessed. See [dashboard details](docs/dashboard.md)
-for remote access and attaching to an already running project.
+`./so-so` prints a dashboard URL. The dashboard shows the roadmap, current activity,
+model identities and hosts, elapsed times, measured usage, checks and visual
+outputs. The planner can add metrics relevant to your intent. Percentages, token
+counts and ETAs appear only when supported by recorded data.
 
-## What happens
+See [dashboard details](docs/dashboard.md) for remote access and attaching to an
+existing run. The terminal prints the result and evidence locations when work stops.
 
-so-so connects three things: your intent, sandboxed language models, and the host
-command line. It sends bounded context to a model, executes its requested actions,
-returns observations, and continues. The host handles files, Git, builds, tests and
-commands; the model does not need direct access to your filesystem or GitHub.
+## How it works
 
-The loop creates an acceptance plan, implements small steps, runs checks and reviews
-results. Useful intermediate work survives later attempts. Completion requires
-observed acceptance evidence and a separate review; a plateau or expired budget is
-not delivery completion. Per-model quota waits are durable. Eligible alternatives
-can keep working while another model waits.
+so-so sends bounded context to models, executes their requested actions and returns
+observations. The host handles files, Git, builds, tests and commands; a model does
+not need filesystem or GitHub access.
 
-Internal state and managed results live under `.so-so/`. The launcher prints the
-result and evidence locations. Source snapshots exclude common credential files;
-keep credentials in the host's normal credential stores, not in intent text.
+With separate architect and coordinator routes, the architect produces a compact
+strategy once. The faster coordinator assigns implementation steps to workers and
+uses test results to choose what happens next. The strategy survives restarts; a
+specific contradiction in evaluated results can trigger one revision.
+
+The loop implements small steps, runs checks and reviews results. Experiments can
+run in parallel isolated worktrees; delivery integrates reviewed steps in order.
+Completion requires acceptance evidence and a separate review. A plateau means
+completed attempts stopped improving; malformed responses and failed executions
+are reported as failures, not progress toward a plateau. Invalid model responses
+receive bounded repair attempts. Temporary provider failures wait and retry.
+
+State and managed results live under `.so-so/`. Open `.so-so/README.md` for an
+intent history with status and links. Snapshot folders use an intent title and a
+short revision fingerprint; each contains the exact assignment in `INTENT.md`
+and a `README.md` with result and evidence paths. A changed intent or changed
+source creates a separate snapshot. Copy wanted results before deleting this
+directory: it contains the work itself as well as resume checkpoints. Source snapshots exclude common
+credential files; keep credentials in the host's credential stores rather than
+intent text.
 
 Selected [Superpowers](https://github.com/obra/superpowers) planning, debugging,
-testing and review skills are pinned and bundled with their license. Experiments
-can run in parallel isolated worktrees; delivery integrates reviewed steps in order.
+testing and review skills are pinned and bundled with their license.
 
-## Current evidence and limits
+## Validation and operating limits
 
-so-so supports local model servers and command-line model adapters. Your routing
-preferences determine which models handle each job; no particular GPU, machine
-or model is required.
+The [validation record](docs/validation.md) contains automated checks, live project
+trials, rejected candidates and measured self-improvement. These results cover the
+recorded setups, not every possible assignment.
 
-See the [validation record](docs/validation.md) for automated checks, live project
-trials, rejected candidates and measured self-improvement. Those results describe
-specific test setups and do not guarantee completion of arbitrary assignments.
+The runtime uses Python's standard library. Bootstrap can provision Python locally
+and install Git through supported Linux package managers when permitted. The
+bundled self-improvement assignment can also prepare Node and C build tools for
+its checks. Models are not downloaded automatically.
 
-The runtime itself uses Python's standard library. Bootstrap can provision Python
-locally and install Git through supported Linux package managers when permission
-is available. The bundled self-improvement assignment also prepares missing Node
-and C build tools for its existing checks. Models are not downloaded automatically. Commands run with host
-permissions: Git worktrees are not an operating-system sandbox, and rolling back
-source does not undo cloud operations. Model-generated acceptance checks and model
-reviews can miss requirements.
+Commands run with host permissions. Git worktrees isolate source changes, but do
+not sandbox commands or undo cloud operations. Acceptance checks and model reviews
+can miss requirements; inspect the results before relying on them.
 
-Developer-only details: [routing internals](docs/routing.md),
-[configuration schema](docs/configuration.md), [operations](docs/operations.md),
-[Superpowers provenance](docs/superpowers.md). These are not setup steps for users.
+Further reference: [routing](docs/routing.md),
+[configuration](docs/configuration.md), [operations](docs/operations.md),
+[Superpowers provenance](docs/superpowers.md).

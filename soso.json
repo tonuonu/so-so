@@ -5,10 +5,10 @@
       "url": "http://192.168.6.183:8091/v1",
       "model": "/root/llm/models/qwen38-uncensored/Qwen3.8-Flash-Next-Uncensored.Q8_0.gguf",
       "context_bytes": 200000,
-      "max_tokens": 8192,
+      "max_tokens": 2048,
       "timeout": 14400,
       "parallel": 1,
-      "display_name": "Qwen3.8 large planner (~180 GB weights)",
+      "display_name": "Qwen3.8 architect (~180 GB weights)",
       "host_label": "Xeon"
     },
     "qwen_norefusal": {
@@ -65,12 +65,18 @@
   },
   "routes": {
     "planner": [
-      "main"
+      "qwen_norefusal"
     ],
     "reviewer": [
       "qwen_norefusal"
     ],
     "worker": [
+      "qwen_norefusal"
+    ],
+    "architect": [
+      "main"
+    ],
+    "coordinator": [
       "qwen_norefusal"
     ]
   },
@@ -80,7 +86,7 @@
   ],
   "parallel": 2,
   "rounds": 3,
-  "patience": 2,
+  "patience": 3,
   "max_steps": 16,
   "max_calls": 120,
   "max_seconds": 28800,
@@ -118,9 +124,21 @@
   "routing": {
     "rules": [
       {
-        "role": "planner",
+        "role": "architect",
         "models": [
           "main"
+        ]
+      },
+      {
+        "role": "coordinator",
+        "models": [
+          "qwen_norefusal"
+        ]
+      },
+      {
+        "role": "planner",
+        "models": [
+          "qwen_norefusal"
         ]
       },
       {
@@ -137,7 +155,7 @@
       }
     ],
     "default": [
-      "main"
+      "qwen_norefusal"
     ],
     "busy_overflow": {
       "role": "worker",

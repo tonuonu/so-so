@@ -28,7 +28,7 @@ def roadmap(events, report, status, live, calls):
               ('outcome', 'Outcome', 'Accepted completion or an explicit stopping condition')]
     observed = {'prepare'}
     current = 'prepare'
-    roles = {'planner': 'plan', 'worker': 'implement', 'reviewer': 'verify'}
+    roles = {'architect': 'plan', 'coordinator': 'plan', 'planner': 'plan', 'worker': 'implement', 'reviewer': 'verify'}
     for event in events:
         stage = None
         kind, phase = event.get('event'), event.get('phase')
@@ -171,6 +171,10 @@ class Monitor:
                 for key in ('input_tokens', 'output_tokens'):
                     if isinstance(e.get(key), int):
                         m[key] = (m[key] or 0) + e[key]
+        for event in events:
+            if event.get('event') == 'model_protocol_error' and event.get('model') in models:
+                model = models[event['model']]
+                model['invalid_replies'] = model.get('invalid_replies', 0) + 1
         for m in models.values():
             durations = m.pop('durations')
             m['typical_seconds'] = statistics.median(durations) if durations else None
@@ -224,8 +228,8 @@ class Monitor:
         rounds = []
         for r in reports:
             for row in r.get('rounds', []):
-                rounds.append({'round': row.get('round'), 'accepted': row.get('accepted'),
-                               'experiments': [{k: x.get(k) for k in ('task', 'evaluation', 'error', 'review', 'candidate', 'commit')}
+                rounds.append({'round': row.get('round'), 'accepted': row.get('accepted'), 'outcome': row.get('outcome'),
+                               'experiments': [{k: x.get(k) for k in ('task', 'evaluation', 'error', 'error_kind', 'review', 'candidate', 'commit')}
                                                for x in row.get('experiments', [])]})
         contract = goal.get('contract', {})
         if not contract and project:

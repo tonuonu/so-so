@@ -537,10 +537,11 @@ class DeliveryTests(unittest.TestCase):
             return original(router, role, prompt, cwd, attempt)
         self.answer = rewrite
         state = self.start()
-        self.assertEqual(state['status'], 'incomplete')
+        self.assertEqual(state['status'], 'blocked')
         self.assertEqual((Path(state['worktree']) / '.soso-delivery/evaluate.py').read_text(), EVALUATOR)
         report = json.loads(Path(state['epochs'][0]['report']).read_text())
-        self.assertEqual(report['status'], 'plateau')
+        self.assertEqual(report['status'], 'execution_failed')
+        self.assertEqual(report['plateau'], 0)
         self.assertFalse(report['rounds'][0]['accepted'])
 
     def test_contract_invalid_python_is_repaired_before_workers(self):
@@ -676,7 +677,7 @@ print(json.dumps({'score':100 if ok else 0,'complete':ok}))
         secret = 'secret-value-not-for-model'
         config = {'models': {'test': {'kind': 'command'}}, 'routes': {'worker': ['test']}}
         router = Router(config, Budget(1, 5), lambda *a, **k: None)
-        with patch.dict(os.environ, {'TEST_API_KEY': secret}), patch.object(router, '_call', return_value='{"ok":true}') as call:
+        with patch.dict(os.environ, {'TEST_API_KEY': secret}), patch.object(router, '_call', return_value='{"tool":"done"}') as call:
             router.ask('worker', 'value=' + secret, self.repo)
         self.assertNotIn(secret, call.call_args.args[1])
 

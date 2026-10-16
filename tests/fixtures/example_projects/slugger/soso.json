@@ -1,0 +1,12 @@
+{
+  "evaluate": [
+    "python3",
+    "evaluate.py"
+  ],
+  "parallel": 2,
+  "rounds": 4,
+  "patience": 2,
+  "max_steps": 12,
+  "max_calls": 100,
+  "max_seconds": 1800
+}

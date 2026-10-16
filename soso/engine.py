@@ -12,10 +12,11 @@ import shutil
 import threading
 import time
 import uuid
-from .models import Budget, BudgetExceeded, ModelUnavailable, Router, redact
+from .models import Budget, BudgetExceeded, ModelProtocolError, ModelUnavailable, Router, redact
 from .process import execute, git
 from .workspace import Workspace, worker
 from .skills import prelude
+from .architecture import planning_reply
 
 
 DEFAULTS = {"rounds": 8, "patience": 3, "parallel": 2, "max_steps": 18,
@@ -256,23 +257,40 @@ class Run:
                     self.report["rounds"].append(round_result)
                     resets = [e["retry_at"] for e in unavailable if e["retry_at"] is not None]
                     raise ModelUnavailable(min(resets) if resets else None, unavailable[0].get("reason", "provider unavailable"))
+                self.report["rounds"].append(round_result)
                 valid = [x for x in round_result["experiments"] if x.get("evaluation", {}).get("valid")]
                 valid.sort(key=lambda x: (self.utility(x["evaluation"]["score"]), -x["candidate"]), reverse=True)
                 for best in valid:
                     if self.utility(best["evaluation"]["score"]) <= self.utility(self.report["best"]) + self.config["min_delta"]:
                         break
-                    if self.review(best):
+                    try:
+                        approved = self.review(best)
+                    except ModelProtocolError as exc:
+                        best.update(error=str(exc), error_kind=type(exc).__name__)
+                        round_result['outcome'] = 'execution_failed'
+                        raise
+                    if approved:
                         git(self.integration, "merge", "--ff-only", best["commit"])
                         self.report["best"] = best["evaluation"]["score"]
                         round_result["accepted"] = best["commit"]
                         break
+                failures = [e for e in round_result['experiments'] if e.get('error')]
+                if failures and not round_result['accepted']:
+                    round_result['outcome'] = 'execution_failed'
+                    self.report.update(status='execution_failed', reason=
+                        f"{len(failures)} of {len(round_result['experiments'])} attempts failed to execute: "
+                        + failures[0]['error'] + '. This is not an optimization plateau.')
+                    self.log('round', round=number, outcome='execution_failed', reason=self.report['reason'])
+                    break
+                round_result['outcome'] = 'accepted' if round_result['accepted'] else 'no_improvement'
                 self.report["plateau"] = 0 if round_result["accepted"] else self.report["plateau"] + 1
-                self.report["rounds"].append(round_result)
                 self.log("round", round=number, best=self.report["best"], accepted=round_result["accepted"])
                 self.checkpoint()
                 print(json.dumps({"round": number, "best": self.report["best"], "accepted": round_result["accepted"]}), flush=True)
             else:
                 self.report["status"] = "round_limit"
+        except ModelProtocolError as exc:
+            self.report.update(status='execution_failed', reason=str(exc))
         except ModelUnavailable as exc:
             self.report["status"] = "waiting"
             self.report["reason"] = str(exc)
@@ -293,7 +311,7 @@ class Run:
         return score if self.config["direction"] == "max" else -score
 
     def plan(self):
-        if "planner" not in self.config["routes"]:
+        if not any(role in self.config["routes"] for role in ("planner", "architect")):
             return [self.intent] * self.config["parallel"]
         feedback = [{"round": r["round"], "accepted": r["accepted"],
                      "experiments": [{"task": e.get("task"), "evaluation": e.get("evaluation"),
@@ -307,7 +325,7 @@ class Run:
                   + "INTENT:\n" + self.intent + "\nFILES:\n"
                   + json.dumps(Workspace(self.integration, []).files()[:100])
                   + "\nRECENT FEEDBACK:\n" + json.dumps(feedback)[-6500:])
-        reply = self.router.ask("planner", prompt, self.integration, task=self.intent)
+        reply = planning_reply(self.router, self.config, self.intent, self.storage, self.integration, prompt, feedback)
         tasks = reply.get("experiments", [])[:self.config["parallel"]]
         if not tasks or any(not isinstance(t, dict) or not isinstance(t.get("task"), str) or not t["task"] for t in tasks):
             raise ValueError("planner returned invalid experiments")
@@ -362,6 +380,8 @@ class Run:
                 git(path, "-c", "commit.gpgsign=false", "commit", "-m", f"Experiment {round_number}.{index}")
             elif expected == base:
                 result["evaluation"] = {"valid": False, "reason": "no changes"}
+                if result.get('worker', {}).get('finished') is False:
+                    result.update(error='Worker exhausted its step budget without producing a candidate', error_kind='worker_incomplete')
                 return result
             result["commit"] = expected = git(path, "rev-parse", "HEAD")
             phase = 'evaluate'
@@ -391,6 +411,7 @@ class Run:
                 result['evaluation'] = {'valid': False, 'reason': 'interrupted'}
         except Exception as exc:
             result["error"] = str(exc)[:2000]
+            result["error_kind"] = type(exc).__name__
             result["evaluation"] = {"valid": False, "reason": type(exc).__name__}
         finally:
             if cleanup and path.exists():

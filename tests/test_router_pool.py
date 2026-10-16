@@ -257,6 +257,7 @@ class BusyOverflowTests(unittest.TestCase):
             r.ask('worker','packet',Path.cwd(),attempt=9)
         self.assertEqual(call.call_args.args[0]['command'],['local'])
         self.assertEqual(call.call_count,1)
+        self.assertTrue(all(c.args[0]['command'] == ['local'] for c in call.call_args_list))
         self.assertTrue(r.slots['local'].acquire(False))
 
     def test_busy_safe_allows_cloud_and_checks_whole_packet(self):
@@ -306,7 +307,8 @@ class BusyOverflowTests(unittest.TestCase):
         r=self.router()
         with patch.object(r,'_call',side_effect=ValueError('bad')) as call:
             with self.assertRaises(RuntimeError):r.ask('worker','packet',Path.cwd())
-        self.assertEqual(call.call_count,1)
+        self.assertEqual(call.call_count,3)
+        self.assertTrue(all(c.args[0]['command'] == ['local'] for c in call.call_args_list))
         self.assertTrue(r.slots['local'].acquire(False))
 
     def test_native_guard_transport_omits_json_and_thinking(self):

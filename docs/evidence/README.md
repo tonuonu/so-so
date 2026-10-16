@@ -22,7 +22,7 @@ further work on the same example.
 
 Files with `live-examples-`, `soso-live-examples-` or `final-examples-` prefixes
 are distinct development runs of the Python slugger, JavaScript CSV reader and
-C statistics examples under `examples/`. The prefixes distinguish runs; `final`
+C statistics regression fixtures under `tests/fixtures/example_projects/`. The prefixes distinguish runs; `final`
 is a run label, not a guarantee of completion. The `soso-local-slugger-` record
 covers a local-model trial. Use each record's scores, review decisions and stop
 reason rather than its filename to assess the outcome.

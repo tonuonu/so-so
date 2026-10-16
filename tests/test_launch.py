@@ -67,6 +67,46 @@ class LauncherTests(unittest.TestCase):
         active = json.loads((self.root / '.so-so/active.json').read_text())
         self.assertEqual(active['project'], third['snapshot'])
 
+    def test_history_identifies_command_line_intent_and_results(self):
+        result = self.run_goal('Build a chess game')
+        folder = Path(result['snapshot']).parent
+        self.assertTrue(folder.name.startswith('build-a-chess-game--'))
+        self.assertEqual((folder / 'INTENT.md').read_text(), 'Build a chess game')
+        self.assertIn('Status: complete', (folder / 'README.md').read_text())
+        self.assertIn('Result: `' + result['worktree'] + '`', (folder / 'README.md').read_text())
+        history = (self.root / '.so-so/README.md').read_text()
+        self.assertIn('Build a chess game', history)
+        self.assertIn(folder.name, history)
+        self.assertEqual(self.run_goal('Build a chess game')['snapshot'], result['snapshot'])
+
+    def test_old_hash_snapshot_resumes_without_moving_git_worktrees(self):
+        first = self.run_goal()
+        folder = Path(first['snapshot']).parent
+        manifest = json.loads((folder / 'manifest.json').read_text())
+        legacy = folder.with_name(manifest['fingerprint'])
+        folder.rename(legacy)
+        entry = json.loads((legacy / 'entry.json').read_text())
+        entry['project'] = str(legacy / 'project')
+        (legacy / 'entry.json').write_text(json.dumps(entry))
+        result = self.run_goal()
+        self.assertEqual(result['snapshot'], str(legacy / 'project'))
+        self.assertEqual(self.calls[-1][2]['resume_goal'], 'goal-1')
+
+    def test_explicit_intent_file_uses_its_text_without_changing_default(self):
+        original = (self.root / 'INTENT.md').read_text()
+        example = self.root / 'examples/tetris/INTENT.md'
+        example.parent.mkdir(parents=True)
+        example.write_text('Create game tetris')
+        with patch('soso.launch.Path.cwd', return_value=self.root), \
+             patch('soso.launch.resolve_pool', return_value=self.pool), \
+             patch('soso.launch.start_goal', side_effect=self.result), contextlib.redirect_stdout(io.StringIO()):
+            self.assertEqual(main(['--intent', './examples/tetris/INTENT.md']), 0)
+        self.assertEqual(self.calls[0][1], 'Create game tetris')
+        self.assertFalse((self.calls[0][0] / 'app.py').exists())
+        folder = self.calls[0][0].parent
+        self.assertEqual((folder / 'INTENT.md').read_text(), 'Create game tetris')
+        self.assertEqual((self.root / 'INTENT.md').read_text(), original)
+
     def test_changed_source_keeps_previous_snapshot(self):
         first = self.run_goal()
         (self.root / 'app.py').write_text('value = 2\n')
@@ -90,6 +130,16 @@ class LauncherTests(unittest.TestCase):
                 "    return {'goal_id':'subprocess-goal','status':'complete','worktree':str(project)}\n")
         (runtime / 'soso/intent.py').write_text('def resolve_pool(text,cwd):\n    return None\n')
         return runtime
+
+    def test_actual_executable_accepts_intent_file(self):
+        runtime = self.trusted_runtime()
+        assignment = self.root / 'game.md'
+        assignment.write_text('Create game tetris')
+        result = subprocess.run([str(runtime / 'so-so'), '--intent', './game.md'], cwd=self.root,
+                                text=True, capture_output=True, timeout=30)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        active = json.loads((self.root / '.so-so/active.json').read_text())
+        self.assertEqual((Path(active['project']) / '.git/test-intent').read_text(), 'Create game tetris')
 
     def test_actual_executable_with_no_arguments_uses_intent(self):
         runtime = self.trusted_runtime()

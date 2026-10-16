@@ -51,6 +51,10 @@ def retry_timestamp(value, now=None):
         return None
 
 
+class ModelProtocolError(RuntimeError):
+    """A selected model failed the structured protocol after bounded repairs."""
+
+
 class ModelOutputTruncated(ValueError):
     """Provider exhausted its output allowance before completing the response."""
 
@@ -116,6 +120,8 @@ class Budget:
 
 
 def object_json(text):
+    if not isinstance(text, str):
+        raise ValueError('expected text containing one JSON object')
     text = text.strip()
     if text.startswith('<tool_call>'):
         # Some locally served tool-trained models wrap their JSON even when
@@ -129,7 +135,10 @@ def object_json(text):
             raise ValueError('expected one JSON object')
         return result
     if text.startswith("```"):
-        text = text.split("\n", 1)[1].rsplit("```", 1)[0].strip()
+        framed = re.fullmatch(r"```(?:json)?\s*\n(.*?)\n?```", text, re.S)
+        if not framed:
+            raise ValueError("incomplete or ambiguous JSON fence")
+        text = framed.group(1).strip()
     result = json.loads(text)
     if not isinstance(result, dict):
         raise ValueError("expected one JSON object")
@@ -369,47 +378,10 @@ class Router:
                 if until > time.time():
                     unavailable.append(ModelUnavailable(until))
                     continue
-                self.budget.claim()
-                timeout = min(model.get("timeout", 180), self.budget.remaining())
-                self.log("model_request", role=role, model=name, call=self.budget.calls)
-                response = self._measured_call(role, name, model, prompt, cwd, timeout)
-                self.budget.remaining()
-                try:
-                    result = object_json(response)
-                except ValueError:
-                    unavailable_response = cli_unavailable(response) if model["kind"] in ("command", "codex", "kimi") else None
-                    if unavailable_response is not None:
-                        raise unavailable_response
-                    raise
-                if role == 'worker':
-                    result.pop('_unexecuted_actions', None)
-                    if 'tool' in result and 'actions' in result:
-                        raise ValueError('ambiguous direct action and batch')
-                    batch = result.get('actions')
-                    if 'tool' not in result and isinstance(batch, list) and batch and isinstance(batch[0], dict):
-                        first = dict(batch[0])
-                        if 'actions' in first:
-                            raise ValueError('nested action batch')
-                        first.pop('_unexecuted_actions', None)
-                        if first.get('tool') != 'done' or len(batch) == 1:
-                            if 'note' not in first and isinstance(result.get('note'), str):
-                                first['note'] = result['note']
-                            first['_unexecuted_actions'] = len(batch) - 1
-                            result = first
-                valid = (role != 'worker' or result.get('tool') in
-                         ('list', 'read', 'search', 'write', 'replace', 'delete', 'run', 'diff', 'check', 'skill', 'done'))
-                if role == 'reviewer':
-                    valid = type(result.get('approve')) is bool
-                if role == 'planner':
-                    valid = isinstance(result.get('experiments'), list) or isinstance(result.get('milestones'), list)
-                if self.validate and not valid:
-                    unavailable_response = cli_unavailable(response) if model["kind"] in ("command", "codex", "kimi") else None
-                    if unavailable_response is not None:
-                        raise unavailable_response
-                    raise ValueError('invalid role response schema')
+                result = self._structured_call(role, name, model, prompt, cwd)
                 self.log("model", role=role, model=name, prompt_bytes=len(prompt.encode()))
                 return result
-            except BudgetExceeded:
+            except (BudgetExceeded, ModelProtocolError):
                 raise
             except ModelUnavailable as exc:
                 self.budget.remaining()
@@ -429,6 +401,80 @@ class Router:
         if self.validate:
             raise ModelUnavailable(reason="all model routes temporarily unavailable")
         raise RuntimeError("all routes failed: " + "; ".join(errors))
+
+    def _role_response(self, role, response):
+        result = object_json(response)
+        if role == 'worker':
+            result.pop('_unexecuted_actions', None)
+            if 'tool' in result and 'actions' in result:
+                raise ValueError('ambiguous direct action and batch')
+            batch = result.get('actions')
+            if 'tool' not in result and isinstance(batch, list) and batch and isinstance(batch[0], dict):
+                first = dict(batch[0])
+                if 'actions' in first:
+                    raise ValueError('nested action batch')
+                first.pop('_unexecuted_actions', None)
+                if first.get('tool') != 'done' or len(batch) == 1:
+                    if 'note' not in first and isinstance(result.get('note'), str):
+                        first['note'] = result['note']
+                    first['_unexecuted_actions'] = len(batch) - 1
+                    result = first
+        valid = (role != 'worker' or result.get('tool') in
+                 ('list', 'read', 'search', 'write', 'replace', 'delete', 'run', 'diff', 'check', 'skill', 'done'))
+        if role == 'reviewer':
+            valid = type(result.get('approve')) is bool
+        if role in ('planner', 'coordinator'):
+            experiments, milestones = result.get('experiments'), result.get('milestones')
+            valid = False
+            if 'experiments' in result:
+                valid = isinstance(experiments, list) and bool(experiments) and all(
+                    isinstance(item, dict) and isinstance(item.get('task'), str) and item['task'].strip()
+                    for item in experiments)
+            elif 'milestones' in result:
+                valid = isinstance(milestones, list) and bool(milestones) and all(
+                    isinstance(item, str) and item.strip() for item in milestones)
+        if role == 'architect':
+            from .architecture import _plan
+            _plan(result)
+            valid = True
+        if not valid:
+            raise ValueError('invalid role response schema')
+        return result
+
+    def _structured_call(self, role, name, model, prompt, cwd):
+        # Keep the selected model and reservation throughout repair. Never send
+        # malformed output (possibly private or adversarial) to another model.
+        packet = prompt
+        for attempt in range(3):
+            if len(packet.encode()) > model.get('context_bytes', 24000):
+                raise ModelProtocolError(name + ': response repair exceeds context budget')
+            self.budget.claim()
+            self.log('model_request', role=role, model=name, call=self.budget.calls)
+            try:
+                response = self._measured_call(role, name, model, packet, cwd,
+                    min(model.get('timeout', 180), self.budget.remaining()))
+                self.budget.remaining()
+                try:
+                    return self._role_response(role, response)
+                except ValueError:
+                    unavailable = cli_unavailable(response) if isinstance(response, str) and model['kind'] in ('command', 'codex', 'kimi') else None
+                    if unavailable is not None:
+                        raise unavailable
+                    raise
+            except (ValueError, IndexError) as exc:
+                self.budget.remaining()
+                # Only safe structural diagnostics, never response excerpts.
+                problem = ('output_limit' if isinstance(exc, ModelOutputTruncated) else
+                           'invalid_json' if isinstance(exc, json.JSONDecodeError) else 'invalid_schema')
+                self.log('model_protocol_error', role=role, model=name,
+                         attempt=attempt + 1, problem=problem, retrying=attempt < 2)
+                if attempt == 2:
+                    raise ModelProtocolError(name + ': ' + problem + ' after 3 attempts') from None
+                packet = prompt + ('\n\nPROTOCOL REPAIR: The previous response was invalid. '
+                    'Return exactly one complete JSON object matching the requested role schema. '
+                    'Do not include prose, markdown or tool-call tags. Use JSON escaping in strings. '
+                    'For worker requests emit one small tool action; split large writes into smaller steps. '
+                    'Never claim an action was executed. Keep the response concise.')
 
     def _measured_call(self, role, name, model, prompt, cwd, timeout):
         call_id = uuid.uuid4().hex

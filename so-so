@@ -85,7 +85,13 @@ try:
     root=pathlib.Path.cwd()
     intent=(root/"INTENT.md").read_text()
     config=json.loads((root/"soso.json").read_text())
-    goal=sys.argv[2] if len(sys.argv)>2 else intent
+    arguments=sys.argv[2:]
+    if arguments[:1]==["--intent"] and len(arguments)>1:
+        goal=pathlib.Path(arguments[1]).read_text()
+    elif arguments and arguments[0].startswith("--intent="):
+        goal=pathlib.Path(arguments[0].split("=",1)[1]).read_text()
+    else:
+        goal=arguments[0] if arguments else intent
     if goal.strip().lower()=="read intent.md": goal=intent
     required=(root.resolve()==pathlib.Path(sys.argv[1]).resolve()
         and config.get("mode")=="optimize"

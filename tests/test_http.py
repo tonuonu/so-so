@@ -12,8 +12,8 @@ class HTTPTests(unittest.TestCase):
             def do_POST(self):
                 data=json.loads(self.rfile.read(int(self.headers['Content-Length'])))
                 received.append((self.path,data))
-                result=({'message':{'content':'{"ok":true}'}} if self.path=='/api/chat'
-                        else {'choices':[{'message':{'content':'{"ok":true}'}}]})
+                result=({'message':{'content':'{"tool":"done"}'}} if self.path=='/api/chat'
+                        else {'choices':[{'message':{'content':'{"tool":"done"}'}}]})
                 payload=json.dumps(result).encode()
                 self.send_response(200)
                 self.send_header('Content-Length',str(len(payload)))
@@ -28,7 +28,7 @@ class HTTPTests(unittest.TestCase):
                 url=f'http://127.0.0.1:{server.server_port}'+('/v1' if kind=='openai' else '')
                 config={'models':{'local':{'kind':kind,'url':url,'model':'test'}},'routes':{'worker':['local']}}
                 response=Router(config,Budget(2,5),lambda *a,**k:None).ask('worker','test',Path.cwd())
-                self.assertTrue(response['ok'])
+                self.assertEqual(response['tool'],'done')
             self.assertEqual(received[0][0],'/v1/chat/completions')
             self.assertEqual(received[1][0],'/api/chat')
             self.assertEqual(received[1][1]['format'],'json')

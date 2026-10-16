@@ -16,8 +16,9 @@ import time
 import uuid
 from urllib.parse import urlsplit
 
+from .architecture import planning_reply
 from .engine import DEFAULTS, Run, atomic_json, evaluate, fingerprint, load_config, resources
-from .models import Budget, BudgetExceeded, HTTP_TRANSPORT, ModelUnavailable, Router, redact
+from .models import ModelProtocolError, Budget, BudgetExceeded, HTTP_TRANSPORT, ModelUnavailable, Router, redact
 from .process import execute, git
 from .workspace import Workspace
 
@@ -240,6 +241,8 @@ def _contract(root, config, intent, router, folder, previous_feedback=''):
     if supplied_evaluate:
         context += ('\nExisting fixed acceptance command must be preserved: ' + json.dumps(supplied_evaluate) +
                     '. Its successful output must include score 0..100 and boolean complete. Return milestones and assumptions; evaluator text is optional and will not replace this command.')
+    common = Path(git(root, 'rev-parse', '--git-common-dir'))
+    architecture_storage = (common if common.is_absolute() else root / common).resolve() / 'soso'
     feedback = previous_feedback[:2000]
     latest_review = folder / 'contract-review.json'
     if not supplied_evaluate and latest_review.exists():
@@ -247,7 +250,7 @@ def _contract(root, config, intent, router, folder, previous_feedback=''):
         if previous.get('review', {}).get('approve') is not True:
             feedback = '\nPREVIOUS ACCEPTANCE REVIEW REJECTION: ' + str(previous.get('review', {}).get('reason', 'repair the acceptance oracle'))[:2000]
     for attempt in range(3):
-        response = router.ask('planner', context + feedback, root, task=intent)
+        response = planning_reply(router, config, intent, architecture_storage, root, context + feedback)
         milestones, evaluator = response.get('milestones'), response.get('evaluator')
         if not isinstance(milestones, list) or not milestones or not all(isinstance(x, str) and x.strip() for x in milestones):
             feedback = '\nREPAIR: milestones must be a nonempty list of small textual steps.'
@@ -414,7 +417,8 @@ class DeliveryEpoch(Run):
                   self.intent + '\nCONTRACT:\n' + json.dumps(self.contract) + '\nRECENT FEEDBACK:\n' +
                   json.dumps(self.feedback + self.report['rounds'][-2:])[-7000:] + '\nFILES:\n' +
                   json.dumps(Workspace(self.integration, []).files()[:100]))
-        reply = self.router.ask('planner', prompt, self.integration, task=self.intent)
+        reply = planning_reply(self.router, self.config, self.intent, self.storage, self.integration,
+                               prompt, self.feedback + self.report['rounds'][-2:])
         task = reply.get('experiments', [{}])[0].get('task')
         if not isinstance(task, str) or not task.strip():
             raise ValueError('planner returned no next step')
@@ -500,6 +504,10 @@ class DeliveryEpoch(Run):
                     raise BudgetExceeded(candidate['error'])
                 if candidate.get('interrupted'):
                     raise KeyboardInterrupt
+                if candidate.get('error'):
+                    round_result['outcome'] = 'execution_failed'
+                    self.report.update(status='execution_failed', reason=candidate['error'])
+                    break
                 evaluation = candidate.get('evaluation', {})
                 approved = False
                 if evaluation.get('valid') and evaluation['score'] >= self.report['best']:
@@ -531,6 +539,8 @@ class DeliveryEpoch(Run):
                     break
             else:
                 self.report['status'] = 'round_limit'
+        except ModelProtocolError as exc:
+            self.report.update(status='execution_failed', reason=str(exc))
         except ModelUnavailable as exc:
             self.report.update(status='waiting', reason=str(exc), next_retry_at=exc.retry_at)
         except BudgetExceeded as exc:
@@ -671,7 +681,7 @@ def start_goal(repo: Path, intent: str | None = None, *, backend='auto', model=N
                     def setup_log(event, **data):
                         with (folder / 'setup-events.jsonl').open('a') as stream:
                             stream.write(json.dumps({'time': time.time(), 'event': event, **data}) + '\n')
-                    router = Router(config, Budget(min(config['max_calls'], 6), min(config['max_seconds'], 600)), setup_log)
+                    router = Router(config, Budget(min(config['max_calls'], 8), config['max_seconds']), setup_log)
                     contract = _contract(root, config, state['intent'], router, folder, state.get('setup_repair_reason', ''))
                     state.pop('setup_repair_reason', None)
                     state['setup_repairs'] = 0
@@ -691,6 +701,8 @@ def start_goal(repo: Path, intent: str | None = None, *, backend='auto', model=N
                 state['draft'] = report.get('draft')
                 if report['status'] == 'complete':
                     state.update(status='complete', next_retry_at=None)
+                elif report['status'] == 'execution_failed':
+                    state.update(status='blocked', reason=report.get('reason', 'candidate execution failed'), next_retry_at=None)
                 elif report['status'] == 'waiting':
                     raise ModelUnavailable(report.get('next_retry_at'), report.get('reason', 'provider temporarily unavailable'))
                 elif report['status'] == 'interrupted':
@@ -699,7 +711,7 @@ def start_goal(repo: Path, intent: str | None = None, *, backend='auto', model=N
                     state.update(status='incomplete', next_retry_at=time.time() + 2)
                 state['failures'] = 0
                 _save(folder, state)
-                if once or state['status'] in ('complete', 'interrupted'):
+                if once or state['status'] in ('complete', 'interrupted', 'blocked'):
                     break
             except ModelUnavailable as exc:
                 state['failures'] += 1

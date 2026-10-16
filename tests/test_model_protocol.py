@@ -5,6 +5,13 @@ from soso.models import object_json
 
 
 class ModelProtocolTests(unittest.TestCase):
+    def test_json_fences_require_one_complete_frame(self):
+        self.assertEqual(object_json('```json\n{"tool":"list"}\n```'), {'tool': 'list'})
+        for reply in ('```', '```json\n{"tool":"list"}',
+                      '```json\n{"tool":"list"}\n``` ignored'):
+            with self.subTest(reply=reply), self.assertRaises(ValueError):
+                object_json(reply)
+
     def test_observed_qwen_tool_wrapper(self):
         reply = '<tool_call>\n{"tool":"read","path":"game.js","start":81,"lines":144}\n</invoke>\n</parameter>\n</function>\n</tool_call>'
         self.assertEqual(object_json(reply), {'tool': 'read', 'path': 'game.js', 'start': 81, 'lines': 144})

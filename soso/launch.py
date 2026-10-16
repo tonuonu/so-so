@@ -14,6 +14,7 @@ import uuid
 
 from .delivery import _identity, start_goal
 from .engine import atomic_json
+from .history import folder_name, title, update_history
 from .models import ModelUnavailable, redact
 from .optimize import optimize_project, optimization_requested, prepared_optimization
 from .process import execute, git
@@ -44,6 +45,8 @@ def _managed(cwd):
     marker = folder / 'owner.json'
     if folder.is_symlink():
         raise ValueError('refusing a symlink at .so-so')
+    if folder.is_symlink():
+        raise ValueError('managed project must not be a symlink')
     if folder.exists():
         if not marker.is_file() or json.loads(marker.read_text()).get('owner') != 'so-so':
             raise ValueError('existing .so-so directory is not owned by this launcher')
@@ -100,11 +103,14 @@ def _inputs(cwd):
 def _snapshot(cwd, managed, intent):
     manifest, excluded = _inputs(cwd)
     digest = hashlib.sha256(json.dumps({'intent': intent, 'files': manifest}, sort_keys=True).encode()).hexdigest()
-    folder = managed / 'projects' / digest
+    legacy = managed / 'projects' / digest
+    folder = legacy if legacy.exists() else managed / 'projects' / folder_name(intent, digest)
     project = folder / 'project'
     if folder.exists():
         if not (folder / 'manifest.json').is_file() or not (project / '.git').is_dir():
             raise ValueError('managed project snapshot is incomplete; inspect before continuing')
+        if json.loads((folder / 'manifest.json').read_text()).get('fingerprint') != digest:
+            raise ValueError('snapshot name collision; existing snapshot preserved')
         return digest, folder, project, excluded
     temporary = managed / 'projects' / ('.preparing-' + uuid.uuid4().hex)
     temporary.mkdir()
@@ -127,6 +133,7 @@ def _snapshot(cwd, managed, intent):
         git(target, '-c', 'commit.gpgsign=false', 'commit', '--allow-empty', '-m', 'Snapshot project inputs')
         atomic_json(temporary / 'manifest.json', {'fingerprint': digest, 'files': manifest,
                                                 'intent_sha256': hashlib.sha256(intent.encode()).hexdigest()})
+        (temporary / 'INTENT.md').write_text(intent)
         temporary.rename(folder)
     except BaseException:
         shutil.rmtree(temporary)
@@ -153,6 +160,7 @@ def _save(managed, folder, entry):
     entry['updated_at'] = time.time()
     atomic_json(folder / 'entry.json', entry)
     atomic_json(managed / 'active.json', entry)
+    update_history(managed, folder, entry)
 
 
 def _wait(until):
@@ -160,11 +168,20 @@ def _wait(until):
         time.sleep(min(1, max(0, until - time.time())))
 
 
-def launch(cwd: Path, goal: str | None = None):
+def launch(cwd: Path, goal: str | None = None, intent_file: str | None = None):
     """Read an assignment and resume its owned snapshot without source Git edits."""
     cwd = Path(cwd).resolve()
     intent_path = cwd / 'INTENT.md'
-    use_file = goal is None or goal.strip().lower() == 'read intent.md'
+    if intent_file is not None:
+        if goal is not None:
+            raise ValueError('use an assignment or --intent, not both')
+        assignment = cwd / intent_file
+        if assignment.is_symlink() or not assignment.is_file():
+            raise ValueError('--intent must name a regular Markdown file')
+        if assignment.stat().st_size > 8000:
+            raise ValueError('intent file must contain 1..8000 bytes')
+        goal = assignment.read_text()
+    use_file = intent_file is None and (goal is None or goal.strip().lower() == 'read intent.md')
     if intent_path.is_symlink() and use_file:
         raise ValueError('INTENT.md must be a regular file in this project')
     source_intent = intent_path.read_text() if intent_path.is_file() and not intent_path.is_symlink() else None
@@ -181,11 +198,15 @@ def launch(cwd: Path, goal: str | None = None):
             fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
         except BlockingIOError:
             raise RuntimeError('another so-so process owns this project') from None
-        fingerprint, folder, project, excluded = _snapshot(cwd, managed, goal)
+        source = (cwd / intent_file).resolve().parent if intent_file is not None else cwd
+        fingerprint, folder, project, excluded = _snapshot(source, managed, goal)
         path = folder / 'entry.json'
         entry = json.loads(path.read_text()) if path.exists() else {
-            'fingerprint': fingerprint, 'project': str(project), 'source': str(cwd),
+            'fingerprint': fingerprint, 'project': str(project), 'source': str(source),
             'goal_id': None, 'status': 'starting', 'next_retry_at': None, 'phase': 'model_setup'}
+        entry['title'] = title(goal)
+        if not (folder / 'INTENT.md').exists():
+            (folder / 'INTENT.md').write_text(goal)
         entry['mode'] = 'optimize' if prepared_optimization(project, goal) else 'delivery'
         if entry['mode'] == 'delivery':
             entry['goal_id'] = entry.get('goal_id') or _goal_id(project)
@@ -223,9 +244,9 @@ def launch(cwd: Path, goal: str | None = None):
                 options = {'ignore_project_config': True} if optimization_requested(project) else {}
                 result = start_goal(project, goal, models_path=entry.get('models_path'), resume_goal=entry['goal_id'], **options)
             entry.update(goal_id=result.get('goal_id'), status=result['status'], phase=entry['mode'],
-                         next_retry_at=result.get('next_retry_at'), report=result.get('report'))
+                         next_retry_at=result.get('next_retry_at'), report=result.get('report'), worktree=result.get('worktree'))
             _save(managed, folder, entry)
-            return {**result, 'source': str(cwd), 'snapshot': str(project), 'excluded': excluded[:100]}
+            return {**result, 'source': str(source), 'snapshot': str(project), 'excluded': excluded[:100]}
         except KeyboardInterrupt:
             entry.update(status='interrupted', goal_id=entry.get('goal_id') or _goal_id(project))
             _save(managed, folder, entry)
@@ -235,16 +256,23 @@ def launch(cwd: Path, goal: str | None = None):
 def main(argv=None):
     parser = argparse.ArgumentParser(description='Read INTENT.md and carry out its goal; source files are preserved.')
     parser.add_argument('goal', nargs='?', help='optional assignment instead of INTENT.md')
+    parser.add_argument('--intent', metavar='PATH', help='read the assignment from a Markdown file')
     args = parser.parse_args(argv)
+    if args.intent is not None and args.goal is not None:
+        parser.error('use an assignment or --intent, not both')
     try:
         from .dashboard import automatic
         with automatic(Path.cwd()):
-            result = launch(Path.cwd(), args.goal)
+            result = launch(Path.cwd(), args.goal, intent_file=args.intent)
         if result['status'] == 'blocked':
             print('Stopped: ' + (result.get('reason') or 'the runner could not continue') + '. This does not mean the goal is unachievable.')
             print('Inspect the dashboard or evidence below before retrying. Completed results are preserved.')
         else:
             print('Optimization reached a plateau.' if result['status'] == 'optimized' else 'Goal ' + result['status'] + '.')
+        from .reporting import summary_lines
+        for line in summary_lines(result):
+            print(line)
+        print('Intent history: ' + str(Path.cwd() / '.so-so' / 'README.md'))
         if result.get('worktree'):
             print('Result: ' + result['worktree'])
         if result.get('report'):

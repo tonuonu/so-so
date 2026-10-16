@@ -53,7 +53,13 @@ def main(argv=None):
         if args.command == "probe":
             config = load_config(args.config)
             router = Router(config, Budget(5, 240), lambda *a, **kw: None)
-            print(json.dumps(router.ask(args.role, 'Return exactly {"ok":true}. Do not use tools.', Path.cwd())))
+            examples = {'worker': {'tool': 'done'}, 'reviewer': {'approve': False},
+                        'planner': {'experiments': [{'task': 'Connectivity probe only'}]},
+                        'coordinator': {'experiments': [{'task': 'Connectivity probe only'}]},
+                        'architect': {'milestones': ['Check connectivity'], 'constraints': ['No changes'],
+                                      'acceptance': ['Valid response']}}
+            prompt = 'Return exactly ' + json.dumps(examples.get(args.role, {'ok': True})) + '. Do not execute tools.'
+            print(json.dumps(router.ask(args.role, prompt, Path.cwd())))
             return 0
         root = Path(args.repo).resolve()
         config = load_config(root / args.config)
