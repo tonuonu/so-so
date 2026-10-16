@@ -96,6 +96,16 @@ counts and ETAs appear only when supported by recorded data.
 See [dashboard details](docs/dashboard.md) for remote access and attaching to an
 existing run. The terminal prints the result and evidence locations when work stops.
 
+<details>
+<summary>Screenshot: a live Tetris run</summary>
+
+The run is preparing acceptance checks. The dashboard shows the active local model,
+CPU architect, elapsed call times, token counts, throughput and proposed milestones.
+
+![Live Tetris dashboard showing model activity, performance and planning progress](docs/images/dashboard-live.png)
+
+</details>
+
 ## How it works
 
 so-so sends bounded context to models, executes their requested actions and returns
