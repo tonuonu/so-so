@@ -87,3 +87,16 @@ class ResponseRepairTests(unittest.TestCase):
         with patch.object(router, '_call', side_effect=['{"experiments":[null]}', json.dumps(valid)]):
             self.assertEqual(router.ask('coordinator', 'plan', Path.cwd()), valid)
         self.assertEqual(router.budget.calls, 2)
+
+    def test_milestone_objects_get_precise_safe_repair(self):
+        router = self.router()
+        invalid = {'milestones': [{'title': 'private project detail'}]}
+        valid = {'milestones': ['deliver behavior'], 'evaluator': 'source'}
+        with patch.object(router, '_call', side_effect=[json.dumps(invalid), json.dumps(valid)]) as call:
+            self.assertEqual(router.ask('coordinator', 'Create acceptance contract', Path.cwd()), valid)
+        repair = call.call_args.args[1]
+        self.assertIn('milestones must be a nonempty array of strings, not objects', repair)
+        self.assertNotIn('private project detail', repair)
+        errors = [data for event, data in self.events if event == 'model_protocol_error']
+        self.assertIn('not objects', errors[0]['detail'])
+        self.assertNotIn('private project detail', json.dumps(errors))

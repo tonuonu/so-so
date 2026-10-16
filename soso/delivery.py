@@ -223,7 +223,8 @@ def _contract(root, config, intent, router, folder, previous_feedback=''):
                   protected=list(dict.fromkeys(config['protected'] + [f'{POLICY}/*'] + protected_commands)))
     inventory = Workspace(root, []).files()[:120]
     context = ('Create a small acceptance contract for this goal. Return JSON with "milestones" (nonempty list of '
-               'small steps), "assumptions" (list), and "evaluator" (complete Python 3 stdlib source). '
+               'nonempty strings, not objects), "assumptions" (list), and "evaluator" (complete Python 3 stdlib source). '
+               'Response shape: {"milestones":["observable step"],"assumptions":[],"evaluator":"Python source here"}. '
                'The evaluator must print JSON {"score":0..100,"complete":boolean,"checks":...}. '
                'Missing implementation is score 0 and complete false, never an exception. '
                'Complete means every required acceptance check passes. Test observable behavior, not file presence alone. '
@@ -737,8 +738,13 @@ def start_goal(repo: Path, intent: str | None = None, *, backend='auto', model=N
                 state['status'] = 'interrupted'
                 _save(folder, state)
                 break
-            except Exception:
-                state['status'] = 'blocked'
+            except ModelProtocolError as exc:
+                phase = 'acceptance setup' if not state.get('policy') else 'execution'
+                state.update(status='blocked', reason=phase + ': ' + str(exc), next_retry_at=None)
+                _save(folder, state)
+                break
+            except Exception as exc:
+                state.update(status='blocked', reason=redact(str(exc))[:2000], next_retry_at=None)
                 _save(folder, state)
                 raise
     return {**state, 'report': str(folder / 'state.json')}

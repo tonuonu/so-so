@@ -55,6 +55,10 @@ class ModelProtocolError(RuntimeError):
     """A selected model failed the structured protocol after bounded repairs."""
 
 
+class ResponseSchemaError(ValueError):
+    """Static structural diagnostic safe to record and send back for repair."""
+
+
 class ModelOutputTruncated(ValueError):
     """Provider exhausted its output allowance before completing the response."""
 
@@ -423,14 +427,22 @@ class Router:
                  ('list', 'read', 'search', 'write', 'replace', 'delete', 'run', 'diff', 'check', 'skill', 'done'))
         if role == 'reviewer':
             valid = type(result.get('approve')) is bool
+        diagnostic = 'response must match the requested role schema'
+        if role == 'reviewer':
+            diagnostic = 'approve must be a JSON boolean'
+        if role == 'worker':
+            diagnostic = 'tool must name one of the permitted worker actions'
         if role in ('planner', 'coordinator'):
+            diagnostic = 'return experiments with task strings, or milestones as nonempty strings, as requested'
             experiments, milestones = result.get('experiments'), result.get('milestones')
             valid = False
             if 'experiments' in result:
+                diagnostic = 'experiments must be a nonempty array of objects with nonempty task strings'
                 valid = isinstance(experiments, list) and bool(experiments) and all(
                     isinstance(item, dict) and isinstance(item.get('task'), str) and item['task'].strip()
                     for item in experiments)
             elif 'milestones' in result:
+                diagnostic = 'milestones must be a nonempty array of strings, not objects'
                 valid = isinstance(milestones, list) and bool(milestones) and all(
                     isinstance(item, str) and item.strip() for item in milestones)
         if role == 'architect':
@@ -438,7 +450,7 @@ class Router:
             _plan(result)
             valid = True
         if not valid:
-            raise ValueError('invalid role response schema')
+            raise ResponseSchemaError(diagnostic)
         return result
 
     def _structured_call(self, role, name, model, prompt, cwd):
@@ -466,11 +478,15 @@ class Router:
                 # Only safe structural diagnostics, never response excerpts.
                 problem = ('output_limit' if isinstance(exc, ModelOutputTruncated) else
                            'invalid_json' if isinstance(exc, json.JSONDecodeError) else 'invalid_schema')
+                detail = str(exc) if isinstance(exc, ResponseSchemaError) else {
+                    'output_limit': 'response exceeded the output token allowance; shorten it',
+                    'invalid_json': 'response must be one complete valid JSON object',
+                    'invalid_schema': 'response must match the requested role schema'}[problem]
                 self.log('model_protocol_error', role=role, model=name,
-                         attempt=attempt + 1, problem=problem, retrying=attempt < 2)
+                         attempt=attempt + 1, problem=problem, detail=detail, retrying=attempt < 2)
                 if attempt == 2:
-                    raise ModelProtocolError(name + ': ' + problem + ' after 3 attempts') from None
-                packet = prompt + ('\n\nPROTOCOL REPAIR: The previous response was invalid. '
+                    raise ModelProtocolError(name + ': ' + problem + ' after 3 attempts (' + role + '): ' + detail) from None
+                packet = prompt + ('\n\nPROTOCOL REPAIR: ' + detail + '. '
                     'Return exactly one complete JSON object matching the requested role schema. '
                     'Do not include prose, markdown or tool-call tags. Use JSON escaping in strings. '
                     'For worker requests emit one small tool action; split large writes into smaller steps. '

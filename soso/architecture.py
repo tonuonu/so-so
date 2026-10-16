@@ -76,8 +76,9 @@ def planning_reply(router, config, intent, storage, cwd, prompt, feedback=()):
         save(record)
     before = path.read_bytes()
     context = ('\nSTRATEGIC GUIDANCE (not permission to change frozen checks):\n' + json.dumps(record['plan']) +
-        '\nYou are the coordinator. Make the next small tactical decision; delegate code to workers. '
-        'Do not reproduce the architecture or write implementation code. If evaluated approaches show a '
+        '\nYou are the coordinator. Fulfill the request above using exactly its requested JSON structure. '
+        'During acceptance setup, write the requested evaluator code; delegate application implementation '
+        'to workers. Do not substitute the architecture schema for the requested response. If evaluated approaches show a '
         'strategic contradiction, optionally include "escalation":{"reason":"specific contradiction"}. '
         'Malformed output or provider failures are not strategic contradictions.')
     reply = router.ask('coordinator', prompt + context, cwd, task=intent)

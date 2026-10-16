@@ -15,7 +15,7 @@ from unittest.mock import patch
 from soso.cli import main
 from soso.delivery import configure_models, load_model_pool, ollama_models, start_goal
 from soso.engine import DEFAULTS, evaluate
-from soso.models import Budget, BudgetExceeded, ModelUnavailable, Router, cli_unavailable, retry_timestamp
+from soso.models import ModelProtocolError, Budget, BudgetExceeded, ModelUnavailable, Router, cli_unavailable, retry_timestamp
 from soso.process import git
 
 
@@ -462,6 +462,22 @@ class DeliveryTests(unittest.TestCase):
         self.assertEqual(resumed['status'], 'waiting')
         self.assertEqual(resumed['next_retry_at'], retry)
         self.assertEqual(json.loads(Path(state['report']).read_text())['status'], 'waiting')
+
+    def test_setup_protocol_failure_is_saved_and_resumable(self):
+        original = self.answer
+        def broken(*args, **kwargs):
+            raise ModelProtocolError('local: invalid_schema after 3 attempts: milestones must be strings')
+        self.answer = broken
+        first = self.start()
+        self.assertEqual(first['status'], 'blocked')
+        self.assertIn('acceptance setup', first['reason'])
+        self.assertIn('milestones must be strings', first['reason'])
+        self.assertEqual(json.loads(Path(first['report']).read_text())['reason'], first['reason'])
+        self.assertIsNone(first['next_retry_at'])
+        self.answer = original
+        second = self.start(resume_goal=first['goal_id'])
+        self.assertEqual(second['goal_id'], first['goal_id'])
+        self.assertEqual(second['status'], 'incomplete')
 
     def test_contract_generation_quota_can_resume(self):
         original = self.answer
