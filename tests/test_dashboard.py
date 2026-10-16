@@ -18,6 +18,43 @@ class DashboardTests(unittest.TestCase):
         report.write_text(json.dumps({'best':90,'baseline':{'score':100},'rounds':[]}))
         return managed,project,report
 
+    def test_setup_calls_are_visible_before_launcher_has_goal_id(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root=Path(tmp); managed,project,report=self.fixture(root)
+            pool=managed/'pool.json'
+            pool.write_text(json.dumps({'models': {'main': {'model': 'Qwen-large', 'url': 'http://192.0.2.1:8091/v1'}}}))
+            (managed/'active.json').write_text(json.dumps({'project':str(project), 'status':'running',
+                'goal_id':None, 'title':'Create game tetris', 'models_path':str(pool)}))
+            folder=project/'.git/soso/goals/20261016-071941-abcdef12';folder.mkdir(parents=True)
+            (folder/'state.json').write_text(json.dumps({'source':str(project), 'goal_id':folder.name, 'status':'running'}))
+            events=[{'event':'call_started','call_id':'a','role':'architect','model':'main','time':10,'prompt_bytes':369},
+                    {'event':'call_finished','call_id':'a','model':'main','time':12,'seconds':2,'status':'returned','input_tokens':124,'output_tokens':343},
+                    {'event':'architecture','plan':{'milestones':['Implement game loop']},'time':13},
+                    {'event':'model_request','role':'reviewer','model':'main','time':14},
+                    {'event':'call_started','call_id':'b','role':'reviewer','model':'main','time':14,'prompt_bytes':800}]
+            (folder/'setup-events.jsonl').write_text('\n'.join(json.dumps(e) for e in events))
+            with patch.object(Monitor,'running',return_value=True), patch('soso.dashboard.time.time',return_value=20):
+                state=Monitor(root).snapshot()
+            self.assertEqual(state['intent_title'],'Create game tetris')
+            self.assertEqual(state['calls'][0]['host'],'192.0.2.1:8091')
+            self.assertEqual(state['calls'][0]['elapsed_seconds'],6)
+            self.assertEqual(state['calls'][0]['purpose'],'Review acceptance criteria')
+            self.assertEqual(state['models'][0]['input_tokens'],124)
+            self.assertEqual(state['models'][0]['output_tokens'],343)
+            self.assertEqual(state['plan'],['Proposed: Implement game loop'])
+            self.assertEqual([s['id'] for s in state['roadmap'] if s['state']=='active'],['plan'])
+            self.assertIsNone(state['percent'])
+            # Entering an epoch must not resurrect an unfinished setup call.
+            entry=json.loads((managed/'active.json').read_text());entry['report']=str(report)
+            (managed/'active.json').write_text(json.dumps(entry))
+            self.assertEqual(Monitor(root).snapshot()['calls'],[])
+            state_path=folder/'state.json'
+            goal=json.loads(state_path.read_text());goal['active_epoch']=str(report)
+            state_path.write_text(json.dumps(goal))
+            entry['report']=str(state_path)
+            (managed/'active.json').write_text(json.dumps(entry))
+            self.assertEqual(Monitor(root).snapshot()['report'],str(report))
+
     def test_snapshot_pairs_parallel_calls_and_keeps_unknown_tokens_unknown(self):
         with tempfile.TemporaryDirectory() as tmp:
             root=Path(tmp);_,_,report=self.fixture(root)

@@ -38,7 +38,7 @@ def roadmap(events, report, status, live, calls):
             else:
                 stage = {'writing': 'implement', 'testing': 'verify', 'final_acceptance': 'verify'}.get(phase)
         elif kind in ('call_started', 'model_request'):
-            stage = roles.get(event.get('role'))
+            stage = 'plan' if event.get('phase') == 'contract_setup' else roles.get(event.get('role'))
         elif kind == 'plan':
             stage = 'plan'
         elif kind == 'tool_started':
@@ -48,7 +48,7 @@ def roadmap(events, report, status, live, calls):
             current = stage
     if report.get('baseline', {}).get('valid'):
         observed.add('baseline')
-    active = {roles[c['role']] for c in calls if c.get('live') and c.get('role') in roles}
+    active = {'plan' if c.get('phase') == 'contract_setup' else roles[c['role']] for c in calls if c.get('live') and c.get('role') in roles}
     if status in ('complete', 'optimized'):
         current, active = 'outcome', {'outcome'}
         observed.add('outcome')
@@ -122,9 +122,25 @@ class Monitor:
         folder = Path(project).parent if project else self.root
         journal = self.read(folder / 'optimization.json')
         goal = {}
-        if active.get('goal_id') and project:
-            goal = self.read(Path(project) / '.git/soso/goals' / str(active['goal_id']) / 'state.json')
-        report_name = active.get('report') or goal.get('active_epoch')
+        goal_folder = None
+        if project:
+            goals = Path(project) / '.git/soso/goals'
+            if active.get('goal_id'):
+                goal_folder = goals / str(active['goal_id'])
+                goal = self.read(goal_folder / 'state.json')
+            else:
+                # Setup logs exist before the synchronous launcher receives a goal ID.
+                candidates = []
+                for path in goals.glob('*/state.json'):
+                    state = self.read(path)
+                    if state.get('source') == project and state.get('goal_id') == path.parent.name:
+                        candidates.append((path.parent.name, path.parent, state))
+                if candidates:
+                    _, goal_folder, goal = max(candidates, key=lambda item: item[0])
+        report_name = goal.get('active_epoch') or active.get('report')
+        if goal and (not report_name or Path(report_name).name == 'state.json'):
+            report_name = next((epoch.get('report') for epoch in reversed(goal.get('epochs', []))
+                                if isinstance(epoch, dict) and epoch.get('report')), None)
         report = self.read(report_name) if report_name else {}
         paths = []
         for epoch in (journal or goal).get('epochs', [])[-20:]:
@@ -142,8 +158,11 @@ class Monitor:
             events += epoch_events
             if path == report_name:
                 current_events = epoch_events
-        if goal and active.get('goal_id'):
-            events += self.events(Path(project) / '.git/soso/goals' / str(active['goal_id']) / 'setup-events.jsonl')
+        if goal and goal_folder:
+            setup_events = [dict(event, phase='contract_setup') for event in self.events(goal_folder / 'setup-events.jsonl')]
+            events += setup_events
+            if not report_name:
+                current_events = setup_events
         events.sort(key=lambda e: e.get('time', 0) if isinstance(e.get('time', 0), (int, float)) else 0)
         events = events[-4000:]
         pending, models = {}, {}
@@ -195,12 +214,12 @@ class Monitor:
             pending = {key: value for key, value in pending.items() if key in current_ids}
         live = self.running()
         now = time.time()
-        calls = [{k: e.get(k) for k in ('role', 'model', 'prompt_bytes', 'context_tokens', 'context_bytes', 'timeout')}
+        calls = [{k: e.get(k) for k in ('role', 'model', 'phase', 'prompt_bytes', 'context_tokens', 'context_bytes', 'timeout')}
                  | {'elapsed_seconds': max(0, now - e.get('time', now)) if live else None, 'live': live} for e in pending.values()]
         for model in models.values():
             model['active_seconds'] = sum(c['elapsed_seconds'] for c in calls if c['model'] == model['model'] and c['live'])
             model['elapsed_seconds'] = model['seconds'] + model['active_seconds']
-        pool = self.read(active.get('models_path', ''))
+        pool = self.read(active.get('models_path') or goal.get('models_path', ''))
         definitions = pool.get('models', {})
         # Live display labels may change without altering the frozen execution policy.
         labels = {}
@@ -222,6 +241,11 @@ class Monitor:
             if endpoint.port:
                 item['host'] += ':' + str(endpoint.port)
             if item in calls:
+                setup = item.get('phase') == 'contract_setup'
+                item['purpose'] = ({'architect': 'Define the overall strategy', 'coordinator': 'Prepare acceptance criteria and checks',
+                                    'planner': 'Prepare acceptance criteria and checks', 'reviewer': 'Review acceptance criteria'} if setup else
+                                   {'architect': 'Revise the overall strategy', 'coordinator': 'Choose the next implementation step',
+                                    'planner': 'Plan the next step', 'worker': 'Implement the task', 'reviewer': 'Review candidate changes'}).get(item.get('role'), 'Model request')
                 usage = models.get(item['model'], {})
                 item['typical_seconds'] = usage.get('typical_seconds')
                 item['output_tokens_per_second'] = usage.get('output_tokens_per_second')
@@ -249,7 +273,7 @@ class Monitor:
                         evidence = mark.get('evidence', '')
                         if status != 'complete' or (isinstance(evidence, str) and evidence.strip()):
                             milestones[i].update(status=status, evidence=str(evidence)[:1000])
-        status = active.get('status', 'not_started')
+        status = goal.get('status') or active.get('status', 'not_started')
         if status == 'complete':
             for m in milestones:
                 m.update(status='complete', evidence='Final acceptance completed')
@@ -257,6 +281,9 @@ class Monitor:
         percent = round(100 * done / len(milestones)) if milestones and all(m['status'] != 'not_reported' for m in milestones) else None
         latest = events[-1] if events else {}
         plan = next((e.get('tasks', []) for e in reversed(events) if e.get('event') == 'plan'), [])
+        if not plan:
+            strategy = next((e.get('plan', {}) for e in reversed(events) if e.get('event') == 'architecture'), {})
+            plan = ['Proposed: ' + step for step in strategy.get('milestones', []) if isinstance(step, str)]
         schema = next((e.get('monitoring') for e in reversed(events)
                        if e.get('event') == 'plan' and isinstance(e.get('monitoring'), list) and e['monitoring']), [])
         values = {'best_score': report.get('best'), 'baseline_score': (report.get('baseline') or {}).get('score'),
@@ -282,9 +309,9 @@ class Monitor:
         tools = [e for e in events if e.get('event') == 'tool']
         timeline = []
         for e in events[-80:]:
-            timeline.append({k: e[k] for k in ('time', 'event', 'role', 'model', 'phase', 'task', 'tool', 'path', 'seconds', 'status', 'error', 'retry_at', 'round', 'best', 'prompt_bytes', 'input_tokens', 'output_tokens', 'error_kind') if k in e})
+            timeline.append({k: e[k] for k in ('time', 'event', 'role', 'model', 'phase', 'task', 'tool', 'path', 'seconds', 'status', 'error', 'retry_at', 'round', 'best', 'prompt_bytes', 'input_tokens', 'output_tokens', 'error_kind', 'problem', 'attempt', 'retrying') if k in e})
         images = []
-        worktree = active.get('worktree') or (str(Path(report_name).parent / 'result') if report_name else '')
+        worktree = active.get('worktree') or goal.get('worktree') or (str(Path(report_name).parent / 'result') if report_name else '')
         try:
             base = self.path(worktree)
             visited = 0
@@ -301,9 +328,9 @@ class Monitor:
                             images.append({'path': str(path.relative_to(self.root)), 'name': str(path.relative_to(base))})
         except (OSError, ValueError):
             pass
-        return {'project': self.project.name, 'mode': active.get('mode'), 'status': status,
+        return {'project': self.project.name, 'intent_title': active.get('title') or goal.get('intent', '').split('\n')[0], 'mode': active.get('mode'), 'status': status,
                 'runner_active': live, 'phase': active.get('phase'), 'updated_at': active.get('updated_at'),
-                'last_event_at': latest.get('time'), 'next_retry_at': active.get('next_retry_at'),
+                'last_event_at': latest.get('time'), 'next_retry_at': goal.get('next_retry_at') or active.get('next_retry_at'),
                 'reason': (journal.get('reason') or goal.get('reason') or report.get('reason')) if status != 'running' else None,
                 'roadmap': roadmap(current_events, report, status, live, calls),
                 'calls': calls, 'request_count': sum(e.get('event') == 'model_request' for e in events), 'models': list(models.values()), 'telemetry_available': bool(models),
