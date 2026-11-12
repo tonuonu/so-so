@@ -82,7 +82,7 @@ GUARDS = [
     ('soso/engine.py', 'r"filter\\..*|', 'r"', ['test_sandbox_integrity.SandboxIntegrityTests.test_candidate_changing_repository_config_is_invalid_and_config_is_restored']),
     ('soso/engine.py', 'include\\..*|includeif\\..*|', '', ['test_sandbox_integrity.SandboxIntegrityTests.test_filter_behind_an_include_is_invalid_and_restored']),
     ('soso/engine.py', 'extensions\\.worktreeconfig|', '', ['test_sandbox_integrity.SandboxIntegrityTests.test_worktree_config_enabled_by_the_worker_is_invalid_and_restored']),
-    ('soso/engine.py', '"--includes", "--list"', '"--list"',
+    ('soso/engine.py', '"--includes", "--show-origin"', '"--show-origin"',
      ['test_evaluated_tree.EvaluatedTreeTests.test_include_activated_by_an_unwatched_setting_ends_the_candidate_and_blocks_new_runs']),
     ('soso/engine.py', 'guarded = self.config.get("allow_exec")', 'guarded = True',
      ['test_sandbox_integrity.SandboxIntegrityTests.test_user_setting_during_a_run_without_exec_is_left_alone']),
