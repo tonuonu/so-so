@@ -157,12 +157,16 @@ gitlink side counts as absent. A side is binary as Git judges it: a NUL byte in
 its first 8000 bytes, of which at most 8000 bytes are read, within 60 seconds,
 and a failed or stalled read is withheld. The change is also shown as text when a
 side is text and any binary side is at most 32 KiB: a `-diff` from an older Git or
-your own `info/attributes` or `core.attributesFile`, a renamed file, or a NUL byte
-added or removed cannot hide a text change, and a change that adds NUL bytes is
-flagged, since later edits to that file will show only as binary. Larger binaries
+your own `info/attributes` or `core.attributesFile`, or a NUL byte added or removed
+(also in a file Git pairs as renamed or copied) cannot hide a text change, and a
+change that adds NUL bytes is flagged, since later edits to that file will show
+only as binary. A file moved without Git pairing the rename (`diff.renames=false`,
+or a move with heavy edits) is a deletion and an addition, so a NUL byte added in
+the move shows only as binary. Larger binaries
 are never shown as text and never refused, whatever their size. A file binary on
 both sides still shows only "Binary files differ", as before, including a file an
-earlier accepted change made binary with a NUL byte. Text the reviewer would
+earlier accepted change made binary with a NUL byte, and so does a new file with a
+NUL byte in its first 8000 bytes. Text the reviewer would
 receive beyond the 2 MB the runner reads is never shown cut short: the candidate is
 not sent to the reviewer and not approved, with the reason "the diff exceeds 2 MB;
 split the change into smaller ones"; a side that cannot be read, or binary-shown

@@ -108,9 +108,10 @@ def common_dir(root):
 GIT_OUTPUT_LIMIT = 2_000_000  # bytes of Git output the runner reads
 
 
-def blob_head(root, blob, size, timeout=60):
+def blob_head(root, blob, size, whole=False, timeout=60):
     """Exactly the first size bytes of a blob, without reading the rest; None when Git fails, stalls past
-    timeout seconds (its process group is then killed, as execute does) or gives fewer bytes."""
+    timeout seconds (its process group is then killed, as execute does) or gives fewer bytes. With whole (the
+    blob is size bytes long) Git is read to its end, so its own exit code decides."""
     proc = subprocess.Popen(["git", "cat-file", "blob", blob], cwd=root, stdout=subprocess.PIPE,
                             stderr=subprocess.DEVNULL, start_new_session=True,
                             env={**os.environ, "GIT_NO_REPLACE_OBJECTS": "1"})
@@ -121,15 +122,20 @@ def blob_head(root, blob, size, timeout=60):
             proc.kill()
     deadline = threading.Timer(timeout, kill)
     deadline.start()
+    finished = None
     try:
         data = proc.stdout.read(size)
+        if whole:
+            data += proc.stdout.read(1)  # nothing more: the end of the output, then the exit code
+            finished = proc.wait()
     finally:
         deadline.cancel()
         kill()
         code = proc.wait()
         proc.stdout.close()
-    # Done (0), or stopped by us after the bytes we asked for (killed): anything else is a failed read.
-    return data if len(data) == size and code in (0, -signal.SIGKILL) else None
+    # A whole read must end in success; a partial one may also be stopped by us after the bytes asked for.
+    ok = finished == 0 if whole else code in (0, -signal.SIGKILL)
+    return data if len(data) == size and ok else None
 
 
 class OutputLimit(RuntimeError):

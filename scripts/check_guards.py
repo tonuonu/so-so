@@ -347,6 +347,10 @@ GUARDS = [
     ('soso/process.py', 'os.killpg(proc.pid, signal.SIGKILL)  # the whole group', 'proc.kill()  # the whole group',
      ['test_evaluated_tree.EvaluatedTreeTests.test_blob_reads_fail_closed']),
     ('soso/process.py', 'env={**os.environ, "GIT_NO_REPLACE_OBJECTS": "1"}', 'env=os.environ', ['test_evaluated_tree.EvaluatedTreeTests.test_blob_reads_ignore_replace_refs']),
+    ('soso/engine.py', 'if time.monotonic() > stop or any(', 'if False and any(',
+     ['test_evaluated_tree.EvaluatedTreeTests.test_review_of_binary_shown_files_stops_at_its_deadline']),
+    ('soso/process.py', 'ok = finished == 0 if whole else', 'ok = True if whole else',
+     ['test_evaluated_tree.EvaluatedTreeTests.test_blob_read_that_fails_after_its_bytes_is_unreadable']),
 ]
 
 

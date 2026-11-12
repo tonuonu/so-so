@@ -696,9 +696,10 @@ class EvaluatedTreeTests(RepoCase):
 
     def test_review_of_binary_shown_files_stops_at_its_deadline(self):
         base = self.lockfile_change()
-        with self.old_git():
+        with self.old_git(), patch('soso.engine.blob_head') as read:
             self.assertEqual(engine.review_diff(self.root, base, 'HEAD', 0),
                              (None, 'could not show every binary-shown file in time; split the change'))
+        read.assert_not_called()  # the deadline stops the reads themselves, not only what follows them
 
     def test_blob_reads_fail_closed(self):
         from soso import process
@@ -715,6 +716,15 @@ class EvaluatedTreeTests(RepoCase):
             reader.join(10)
         self.assertFalse(reader.is_alive())
         self.assertEqual(result, [None])
+
+    def test_blob_read_that_fails_after_its_bytes_is_unreadable(self):
+        # Git prints the whole (short) blob and then fails: read to the end, and the exit code decides.
+        from soso import process
+        fake = Path(tempfile.mkdtemp(dir=self.tmp.name)) / 'git'
+        fake.write_text('#!/bin/sh\nprintf abc\nexit 3\n')
+        fake.chmod(0o755)
+        with patch.dict(os.environ, {'PATH': f'{fake.parent}{os.pathsep}{os.environ["PATH"]}'}):
+            self.assertIsNone(process.blob_head(self.root, 'a' * 40, 3, whole=True))
 
     def test_blob_reads_ignore_replace_refs(self):
         from soso import process

@@ -210,16 +210,20 @@ def supports_attr_source(root, tree):
 RENDER_BINARY = 32 * 1024  # a binary side up to this size is still shown as text next to a text side
 
 
-def blob_kinds(root, blobs):
+def blob_kinds(root, blobs, stop):
     """{blob: (kind, size)} for the blobs that can be read, sizes from one cat-file --batch-check. As Git judges
-    it, kind is "empty", "binary" (a NUL byte in the first 8000 bytes) or "text"."""
+    it, kind is "empty", "binary" (a NUL byte in the first 8000 bytes) or "text"; "late" once time.monotonic()
+    passes stop, when no more blobs are read."""
     kinds = {}
     listing = git(root, "cat-file", "--batch-check", stdin="".join(blob + "\n" for blob in blobs), quiet=True)
     for line in listing.splitlines():
         blob, kind, *size = line.split() + [""]
         if kind == "blob" and size[0].isdigit():
             size = int(size[0])
-            head = blob_head(root, blob, min(size, 8000)) if size else b""
+            if time.monotonic() > stop:
+                kinds[blob] = ("late", size)
+                continue
+            head = blob_head(root, blob, min(size, 8000), whole=size <= 8000) if size else b""
             if head is not None:
                 kinds[blob] = ("empty" if not size else "binary" if b"\0" in head else "text", size)
     return kinds
@@ -268,7 +272,7 @@ def review_diff(root, base, commit, seconds=300):
     try:
         diff = git(root, *options, "diff", "--no-ext-diff", "--no-textconv", base, commit)
         # The same files, paired by the same rename and copy detection, in the same order as the diff above.
-        changes = list(listed_changes(git(root, "diff", "--raw", "-z", "--no-abbrev", base, commit, quiet=True)))
+        changes = list(listed_changes(git(root, *options, "diff", "--raw", "-z", "--no-abbrev", base, commit, quiet=True)))
         binaries = list(listed_binaries(git(root, *options, "diff", "--numstat", "-z", "--no-ext-diff", "--no-textconv",
                                             base, commit, quiet=True)))
         if len(changes) != len(binaries):
@@ -277,11 +281,11 @@ def review_diff(root, base, commit, seconds=300):
         shown = [[(mode, blob if blob.strip("0") and mode != "160000" else None) for mode, blob in
                   ((old_mode, old), (new_mode, new))] + [name]
                  for (old_mode, new_mode, old, new, name), binary in zip(changes, binaries) if binary]
-        kinds = blob_kinds(root, sorted({blob for *sides, _ in shown for _, blob in sides if blob})) if shown else {}
+        kinds = blob_kinds(root, sorted({blob for *sides, _ in shown for _, blob in sides if blob}), stop) if shown else {}
         for *sides, name in shown:
-            if time.monotonic() > stop:
-                return None, "could not show every binary-shown file in time; split the change"
             found = [("absent", 0) if blob is None else kinds.get(blob) for _, blob in sides]
+            if time.monotonic() > stop or any(kind == "late" for kind, _ in filter(None, found)):
+                return None, "could not show every binary-shown file in time; split the change"
             if None in found:
                 return None, f"could not read {name} to show it"
             (old_kind, old_size), (new_kind, new_size) = found
