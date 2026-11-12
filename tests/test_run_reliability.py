@@ -229,5 +229,45 @@ class OptimizationEpochTests(unittest.TestCase):
         self.assertEqual(report['best'], 100)
 
 
+EXIT_CODES = {'plateau': 0, 'round_limit': 0, 'execution_failed': 1, 'budget_exhausted': 1, 'error': 1,
+              'invalid_baseline': 1, 'waiting': 2, 'interrupted': 2}
+
+
+class ExitCodeTests(unittest.TestCase):
+    def test_run_command_exits_zero_only_for_completed_runs(self):
+        from unittest.mock import Mock
+        from soso.cli import main
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            (root / 'INTENT.md').write_text('Improve')
+            (root / 'soso.json').write_text(json.dumps({'models': {'m': {'kind': 'command', 'command': ['false']}},
+                                                        'routes': {'worker': ['m']}, 'evaluate': ['true']}))
+            for status, code in EXIT_CODES.items():
+                runner = Mock(report_path=root / 'report.json')
+                runner.run.return_value = {'status': status, 'baseline': {}}
+                with self.subTest(status=status), patch('soso.cli.Run', return_value=runner), \
+                     contextlib.redirect_stdout(io.StringIO()):
+                    self.assertEqual(main(['run', '--repo', folder]), code)
+
+    def test_bootstrap_exits_zero_only_for_completed_runs(self):
+        import importlib.util
+        from unittest.mock import Mock
+        spec = importlib.util.spec_from_file_location('host_bootstrap', Path(__file__).parents[1] / 'bootstrap.py')
+        bootstrap = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(bootstrap)
+        with tempfile.TemporaryDirectory() as folder:
+            repo = Path(folder) / 'self'
+            repo.mkdir()
+            (repo / 'INTENT.md').write_text('Improve')
+            for status, code in EXIT_CODES.items():
+                runner = Mock(report_path=repo / 'report.json')
+                runner.run.return_value = {'status': status, 'baseline': {'valid': False}}
+                with self.subTest(status=status), patch.object(bootstrap, 'self_project', return_value=repo), \
+                     patch.object(bootstrap, 'command'), patch('soso.engine.load_config', return_value={'checks': []}), \
+                     patch('soso.delivery.configure_models', side_effect=lambda c, **k: c), \
+                     patch('soso.engine.Run', return_value=runner), contextlib.redirect_stdout(io.StringIO()):
+                    self.assertEqual(bootstrap.main(['--workspace', folder]), code)
+
+
 if __name__ == '__main__':
     unittest.main()

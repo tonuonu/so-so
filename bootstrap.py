@@ -124,7 +124,7 @@ def main(argv=None):
         print(json.dumps(result, indent=2))
         if result['status'] in ('waiting', 'incomplete', 'interrupted'):
             return 2
-        return 1 if result['status'] in ('error', 'invalid_baseline', 'failed', 'blocked') else 0
+        return 0 if result['status'] in ('complete', 'plateau', 'round_limit') else 1
     except (ValueError, RuntimeError, OSError, subprocess.SubprocessError) as exc:
         print('soso bootstrap:', str(exc), file=sys.stderr)
         return 1
