@@ -128,7 +128,7 @@ def _snapshot(cwd, managed, intent):
             if _digest(destination) != item['sha256']:
                 raise ValueError('source changed while preparing snapshot; rerun the command')
         git(target, 'init', '-b', 'main')
-        _identity(target)
+        _identity(target, persist=True)  # the managed snapshot is runner-owned
         git(target, 'add', '--force', '--all')
         git(target, '-c', 'commit.gpgsign=false', 'commit', '--allow-empty', '-m', 'Snapshot project inputs')
         atomic_json(temporary / 'manifest.json', {'fingerprint': digest, 'files': manifest,

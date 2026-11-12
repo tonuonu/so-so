@@ -19,7 +19,7 @@ from urllib.parse import urlsplit
 from .architecture import planning_reply
 from .engine import DEFAULTS, Run, atomic_json, evaluate, fingerprint, load_config, resources
 from .models import ModelProtocolError, Budget, BudgetExceeded, HTTP_TRANSPORT, ModelUnavailable, Router, redact
-from .process import execute, git
+from .process import IDENTITY, execute, git
 from .workspace import Workspace
 
 
@@ -141,11 +141,16 @@ def configure_models(config, backend='auto', model=None):
     return config
 
 
-def _identity(repo):
-    for key, value in (('user.name', 'Local Builder'), ('user.email', 'builder@localhost')):
-        result = execute(['git', 'config', '--get', key], repo)
+def _identity(repo, persist=False):
+    """Fallback commit identity. Only a runner-owned repository persists it; for a
+    user's repository it reaches only the runner's own Git commands."""
+    for key, value in (('name', 'Local Builder'), ('email', 'builder@localhost')):
+        result = execute(['git', 'config', '--get', 'user.' + key], repo)
         if result['returncode'] or not result['output'].strip():
-            git(repo, 'config', '--local', key, value)
+            if persist:
+                git(repo, 'config', '--local', 'user.' + key, value)
+            else:
+                IDENTITY.update({'GIT_AUTHOR_' + key.upper(): value, 'GIT_COMMITTER_' + key.upper(): value})
 
 
 def _storage(repo):

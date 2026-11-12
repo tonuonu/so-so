@@ -89,9 +89,14 @@ def execute(argv, cwd, timeout=60, stdin=None, limit=16000, env=None):
             "seconds": round(time.monotonic() - started, 3)}
 
 
+# Fallback commit identity for the runner's own Git commands in a repository that
+# has none; it is passed per command and never written to the user's Git config.
+IDENTITY = {}
+
+
 def git(root, *args):
     result = execute(["git", "-c", "core.hooksPath=/dev/null", *args], root, timeout=60,
-                     limit=2_000_000)
+                     limit=2_000_000, env={**os.environ, **IDENTITY} if IDENTITY else None)
     if result["returncode"] or result["timed_out"]:
         raise RuntimeError("git " + args[0] + ": " + result["output"][-4000:])
     if result["truncated"]:

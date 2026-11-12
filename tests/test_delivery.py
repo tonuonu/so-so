@@ -16,7 +16,7 @@ from soso.cli import main
 from soso.delivery import configure_models, load_model_pool, ollama_models, start_goal
 from soso.engine import DEFAULTS, evaluate
 from soso.models import ModelProtocolError, Budget, BudgetExceeded, ModelUnavailable, Router, cli_unavailable, retry_timestamp
-from soso.process import git
+from soso.process import execute, git
 
 
 EVALUATOR = '''import json
@@ -793,6 +793,20 @@ print(json.dumps({'score':100 if ok else 0,'complete':ok}))
         self.assertEqual(resumed['models_path'], str(pool_path.resolve()))
         self.assertEqual(config_path.read_text(), json.dumps(frozen, indent=2) + '\n')
 
+
+    def test_fallback_identity_is_not_written_to_source_git_config(self):
+        # A host without any Git identity: the runner must commit without editing the user's config.
+        no_identity = {'GIT_CONFIG_GLOBAL': os.devnull, 'GIT_CONFIG_SYSTEM': os.devnull, 'GIT_CONFIG_COUNT': '1',
+                       'GIT_CONFIG_KEY_0': 'user.useConfigOnly', 'GIT_CONFIG_VALUE_0': 'true'}
+        with patch.dict(os.environ, no_identity), patch.dict('soso.process.IDENTITY', clear=True):
+            first = self.start()
+            self.assertEqual(first['status'], 'incomplete')
+            with patch('soso.delivery.time.time', return_value=time.time() + 5):
+                second = self.start(resume_goal=first['goal_id'])
+            self.assertEqual(second['status'], 'complete')
+            for key in ('user.name', 'user.email'):
+                self.assertNotEqual(execute(['git', 'config', '--get', key], self.repo)['returncode'], 0)
+            self.assertEqual(git(Path(second['worktree']), 'log', '-1', '--format=%an <%ae>'), 'Local Builder <builder@localhost>')
 
     def test_model_pool_replaces_project_routing_destinations(self):
         git(self.repo, 'init', '-b', 'main')
