@@ -36,3 +36,14 @@ review and evaluation rules still apply. The architect's response is intentional
 short, but CPU inference can still take substantial time: output limits do not
 eliminate prompt processing or internal reasoning. Delivery contract setup uses
 the configured time budget, including the initial architect call.
+
+## Where invariants are enforced
+
+One line per invariant from `AGENTS.md`; `scripts/check_guards.py` lists the guard lines and the tests that prove them.
+
+- **Source-checkout isolation:** `engine.py` `Run._run` (clean source, separate result worktree) and `Run.experiment` (fresh detached worktree per candidate, "worker changed Git history"); `workspace.py` `Workspace.path` (no absolute, `..`, any-case `.git` or escaping symlink); `launch.py` `_snapshot` (managed copy of the checkout).
+- **Protected evaluation policy:** `workspace.py` `Workspace.is_protected` and `Workspace.tool` (write-time refusal); `engine.py` `fingerprint`, checked around the worker and evaluation in `Run.experiment`; evaluator and check programs are protected in `cli.py` `main`, `delivery.py` `_contract` and `optimize.py` `optimize_project`; frozen goal policy in `delivery.py` `start_goal`.
+- **Bounded I/O:** `process.py` `execute` (deadline, output tail, process-group kill); `workspace.py` `Workspace.tool` (read and search caps); `models.py` `Router.ask` (`context_bytes`); `dashboard.py` `Monitor` (tail, size and directory limits).
+- **Explicit model routes:** `models.py` `Router._validate_policy`, `Router._select` and `Router.ask`; pool choice in `intent.py` `resolve_pool`.
+- **Strict improvement acceptance:** `engine.py` `evaluate` (score parsing), `Run.experiment` (ignored files removed before scoring), `Run.accept` (`min_delta` comparison) and `Run.review`; `delivery.py` `DeliveryEpoch.run_epoch` (score must not drop, reviewer approval) and `DeliveryEpoch.completion`.
+- **Durable run evidence:** `engine.py` `atomic_json`, `Run.checkpoint`, `Run.log` and the resume checks in `Run._run` (`config_sha256`, result HEAD; pinned by `tests/test_resume_digest.py`); `models.py` `redact_value`; `delivery.py` `_save`.
