@@ -119,6 +119,17 @@ class IntentCompilerReviewTests(unittest.TestCase):
         self.assertEqual((review['compiled_by'], review['reviewed_by']), ('small', 'small2'))
         self.assertFalse(review['independent'])
 
+    def test_review_skips_aliases_of_the_compiler_when_ordering_reviewers(self):
+        # small2 is another key for the compiler's model; the review must go to the distinct model.
+        inventory = {'models': {'small': INVENTORY['models']['small'],
+                                'small2': {**INVENTORY['models']['small'], 'timeout': 61},
+                                'large': INVENTORY['models']['large']},
+                     'routes': {'worker': ['small', 'small2', 'large']}}
+        calls, reviews = self.compile_and_review(inventory, TEXT)
+        self.assertEqual(calls, [('tiny', False), ('capable', True)])
+        self.assertEqual((reviews[0]['compiled_by'], reviews[0]['reviewed_by']), ('small', 'large'))
+        self.assertTrue(reviews[0]['independent'])
+
     def check_repair(self, settings):
         bad = {**POLICY, 'settings': settings}
         with tempfile.TemporaryDirectory() as folder, \

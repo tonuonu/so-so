@@ -85,6 +85,8 @@ GUARDS = [
      ['test_launch.LauncherTests.test_malformed_active_record_is_a_clear_resume_error']),
     ('soso/intent.py', 'routes = [names for names in ([n for n in preferred if n not in same], same) if names] if same else [preferred]',
      'routes = [preferred]', ['test_review_intent.IntentCompilerReviewTests.test_policy_review_runs_on_a_model_other_than_the_compiler']),
+    ('soso/intent.py', 'compiler is not None and identity(n) == identity(compiler)', 'compiler is not None and n == compiler',
+     ['test_review_intent.IntentCompilerReviewTests.test_review_skips_aliases_of_the_compiler_when_ordering_reviewers']),
     ('soso/intent.py', 'if names is routes[-1]:', 'if True:', ['test_review_intent.IntentCompilerReviewTests.test_off_protocol_independent_reviewer_falls_back_to_compiler']),
     ('soso/intent.py', 'temporary.unlink(missing_ok=True)  # never leave an unreviewed policy behind', 'pass',
      ['test_review_intent.IntentCompilerReviewTests.test_failed_policy_review_leaves_no_pending_policy']),
