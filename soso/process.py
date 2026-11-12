@@ -92,12 +92,24 @@ def execute(argv, cwd, timeout=60, stdin=None, limit=16000, env=None):
 # Fallback commit identity for the runner's own Git commands in a repository that
 # has none; it is passed per command and never written to the user's Git config.
 # An identity the user exported in GIT_AUTHOR_*/GIT_COMMITTER_* still takes precedence.
+# "scope" holds the Git common directories it was derived for: environment beats
+# repository config, so any other repository keeps its own identity.
 IDENTITY = {}
 
 
+def common_dir(root):
+    result = execute(["git", "rev-parse", "--git-common-dir"], root, timeout=60)
+    if result["returncode"] or result["timed_out"]:
+        return None
+    return os.path.realpath(os.path.join(root, result["output"].strip()))
+
+
 def git(root, *args):
+    env = None
+    if IDENTITY and ("scope" not in IDENTITY or common_dir(root) in IDENTITY["scope"]):
+        env = {**{k: v for k, v in IDENTITY.items() if k != "scope"}, **os.environ}
     result = execute(["git", "-c", "core.hooksPath=/dev/null", *args], root, timeout=60,
-                     limit=2_000_000, env={**IDENTITY, **os.environ} if IDENTITY else None)
+                     limit=2_000_000, env=env)
     if result["returncode"] or result["timed_out"]:
         raise RuntimeError("git " + args[0] + ": " + result["output"][-4000:])
     if result["truncated"]:

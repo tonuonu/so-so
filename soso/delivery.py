@@ -19,7 +19,7 @@ from urllib.parse import urlsplit
 from .architecture import planning_reply
 from .engine import DEFAULTS, Run, atomic_json, evaluate, fingerprint, load_config, resources
 from .models import ModelProtocolError, Budget, BudgetExceeded, HTTP_TRANSPORT, ModelUnavailable, Router, redact, redact_value
-from .process import IDENTITY, execute, git
+from .process import IDENTITY, common_dir, execute, git
 from .workspace import Workspace
 
 
@@ -151,6 +151,7 @@ def _identity(repo, persist=False):
                 git(repo, 'config', '--local', 'user.' + key, value)
             else:
                 IDENTITY.update({'GIT_AUTHOR_' + key.upper(): value, 'GIT_COMMITTER_' + key.upper(): value})
+                IDENTITY['scope'] = {*IDENTITY.get('scope', ()), common_dir(repo)}
 
 
 def _storage(repo):

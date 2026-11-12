@@ -54,6 +54,10 @@ GUARDS = [
      ['test_intent.MarkdownPoolTests.test_setup_events_redact_environment_secrets']),
     ('soso/delivery.py', "self.report.update(status='blocked', reason=str(exc)[:2000])", 'pass',
      ['test_delivery.DeliveryTests.test_terminal_planning_or_review_error_is_recorded_in_epoch_report']),
+    ('soso/process.py', 'common_dir(root) in IDENTITY["scope"]', 'True',
+     ['test_core.IdentityTests.test_fallback_identity_stays_in_the_repository_it_was_derived_for']),
+    ('soso/delivery.py', "IDENTITY['scope'] = {*IDENTITY.get('scope', ()), common_dir(repo)}", 'pass',
+     ['test_core.IdentityTests.test_fallback_identity_stays_in_the_repository_it_was_derived_for']),
 ]
 
 
