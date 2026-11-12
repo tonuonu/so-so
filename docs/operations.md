@@ -63,8 +63,32 @@ Persistent delivery instead opens bounded new epochs while preserving its goal.
 Only one run owns a repository at a time (POSIX file lock in the common Git directory).
 Source must be clean. Worktrees and configuration are pinned to committed source;
 ignored caches are not copied into candidate worktrees. Submodule and large-data
-setup are the caller's responsibility. Git hooks are disabled for runner-managed
-Git commands; do not rely on hooks as your evaluator.
+setup are the caller's responsibility. With command execution, settings that change
+how content is staged or checked out (`filter.*`, `core.attributesFile`,
+`core.autocrlf`, `core.eol`, `core.safecrlf`, `core.fsmonitor`, `core.worktree`,
+`core.sparseCheckout*`, `index.*`, and the `include.*`, `includeIf.*` and
+`extensions.worktreeConfig` settings that can bring such settings in), read with
+includes expanded from the repository config and each worktree's
+`config.worktree`, and `info/attributes` are recorded when a run's first
+candidate worktree is created; the record is kept in the run folder for resume.
+After each worker they are restored, under the run lock that also covers staging
+and the commit, and again before evaluation; each restore is logged as
+`repository_config_restored` with the key names, and the old and new values are
+kept in the candidate's record. This includes watched changes you make yourself
+during a run with command execution enabled; without it a worker cannot change
+config, so nothing is restored. Other config, such as remotes and branch
+tracking, is never touched. Before evaluation the files on disk are also compared
+with the commit through a fresh index, so a stat cache left by a worker's own
+`git add` cannot hide a difference. A candidate is rejected when it changed its
+own worktree-scope settings, changed shared ones while it was the only candidate
+running, was committed while a watched setting changed, has files that differ
+from its commit, adds or changes a gitlink (nested repository or submodule), sets
+skip-worktree or assume-unchanged index flags its fresh worktree did not have,
+leaves files inside a submodule directory, or
+creates an entry named `.git` below the worktree root. Worker tools
+cannot write inside a submodule directory. Runner-managed Git commands run without
+hooks or an fsmonitor hook (`core.hooksPath=/dev/null`, `core.fsmonitor=false`);
+do not rely on hooks as your evaluator, and expect no fsmonitor speed-up in them.
 
 A run retains its result branch/worktree and candidate commit refs. Successful
 candidate commits are kept under `refs/soso/RUN_ID/`, including measured rejected

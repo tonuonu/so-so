@@ -47,7 +47,10 @@ def resolve_pool(text, cwd):
     models = dict(discovered['models'])
     if shutil.which('kimi'):
         models['kimi'] = {'kind': 'kimi', 'context_bytes': 60000, 'timeout': 180}
+    answered = {}  # role -> model that produced its latest reply
     def log(event, **data):
+        if event == 'model':
+            answered[data['role']] = data['model']
         with (folder / 'setup-events.jsonl').open('a') as stream:
             stream.write(json.dumps(redact_value({'time': time.time(), 'event': event, **data})) + '\n')
     # Inventory explicitly supplied Ollama endpoints, without downloading weights.
@@ -168,17 +171,36 @@ INVENTORY:
             'omitted, reordered or misinterpreted; do not approve merely because the JSON is structurally valid. '
             '\nUSER MARKDOWN:\n' + text + '\nVERIFIED INVENTORY:\n' + json.dumps(models) +
             '\nCOMPILED POLICY:\n' + json.dumps(pool))
+        # Review on another model when one answers; the compiler (and its aliases) is only the last fallback.
+        # A failing or off-protocol other reviewer is a failed route, not a failed setup.
+        def identity(name):
+            return {k: models[name][k] for k in adapter_keys if k in models[name]}
+        compiler = answered.pop('configuration', None)
+        same = [n for n in preferred if compiler is not None and identity(n) == identity(compiler)]
+        routes = [names for names in ([n for n in preferred if n not in same], same) if names] if same else [preferred]
         try:
-            review = router.ask('configuration_review', review_prompt, cwd,
-                                task='Review model policy fidelity to user Markdown')
-        except (BudgetExceeded, ModelUnavailable) as exc:
-            temporary.unlink(missing_ok=True)
+            for names in routes:
+                router.routes['configuration_review'] = names
+                try:
+                    review = router.ask('configuration_review', review_prompt, cwd,
+                                        task='Review model policy fidelity to user Markdown')
+                    break
+                except BudgetExceeded:
+                    raise
+                except RuntimeError as exc:
+                    if names is routes[-1]:
+                        raise
+                    log('policy_review_fallback', models=names, error=type(exc).__name__)
+        except BaseException as exc:
+            temporary.unlink(missing_ok=True)  # never leave an unreviewed policy behind
             if isinstance(exc, BudgetExceeded):
                 raise ModelUnavailable(reason='model setup epoch exhausted; retry after a pause') from None
             raise
         approved = type(review.get('approve')) is bool and review['approve']
         reason = str(review.get('reason', 'review must explicitly approve with a boolean'))[:2000]
-        log('policy_review', attempt=attempt, approve=approved, reason=reason,
+        reviewer = answered.pop('configuration_review', None)
+        log('policy_review', attempt=attempt, approve=approved, reason=reason, compiled_by=compiler, reviewed_by=reviewer,
+            independent=None not in (compiler, reviewer) and identity(reviewer) != identity(compiler),
             policy_sha256=hashlib.sha256(json.dumps(pool, sort_keys=True).encode()).hexdigest())
         if not approved:
             temporary.unlink(missing_ok=True)

@@ -173,17 +173,28 @@ def _resume_snapshot(managed, task_id):
         active = managed / 'active.json'
         if not active.is_file() or active.is_symlink():
             raise ValueError('no previous task to resume')
-        task_id = json.loads(active.read_text()).get('fingerprint', '')
-    if not task_id or '/' in task_id or '\\' in task_id or task_id in ('.', '..'):
+        try:
+            saved = json.loads(active.read_text())
+        except ValueError:
+            saved = None
+        if not isinstance(saved, dict):
+            raise ValueError('previous task record is unreadable; resume by task ID from .so-so/README.md')
+        task_id = saved.get('fingerprint', '')
+    if not isinstance(task_id, str) or not task_id or '/' in task_id or '\\' in task_id or task_id in ('.', '..'):
         raise ValueError('invalid saved task ID')
     matches = []
     for folder in (managed / 'projects').iterdir():
         path = folder / 'entry.json'
         if folder.is_symlink() or not path.is_file() or path.is_symlink():
             continue
-        entry = json.loads(path.read_text())
+        try:
+            entry = json.loads(path.read_text())
+        except ValueError:
+            entry = None
+        if not isinstance(entry, dict):
+            continue  # One malformed snapshot entry must not block resuming another, as in history.py.
         fingerprint = entry.get('fingerprint', '')
-        if task_id in (folder.name, entry.get('goal_id')) or (len(task_id) >= 8 and fingerprint.startswith(task_id)):
+        if task_id in (folder.name, entry.get('goal_id')) or (len(task_id) >= 8 and isinstance(fingerprint, str) and fingerprint.startswith(task_id)):
             matches.append((folder, entry))
     if len(matches) != 1:
         raise ValueError('saved task ID is ambiguous' if matches else 'saved task not found; see .so-so/README.md')

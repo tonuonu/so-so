@@ -116,6 +116,74 @@ class DeliveryTests(unittest.TestCase):
         self.assertFalse(report['completion_review']['approve'])
         self.assertEqual((Path(second['worktree']) / 'stage.txt').read_text(), '2')
 
+    def use_evaluator(self, source):
+        original = self.answer
+        def answer(router, role, prompt, cwd, **kwargs):
+            reply = original(router, role, prompt, cwd, **kwargs)
+            if role == 'planner' and 'Create a small acceptance contract' in prompt:
+                reply['evaluator'] = source
+            return reply
+        self.answer = answer
+
+    def test_baseline_ignores_files_left_by_earlier_evaluator_runs(self):
+        # The goal worktree is long-lived; the contract-time evaluator run leaves an ignored marker there.
+        # A slow machine must not run out of the 15 s epoch budget before the candidate is accepted.
+        self.config['max_seconds'] = 600
+        self.repo.joinpath('.gitignore').write_text('cache/\n')
+        self.use_evaluator('''import json
+from pathlib import Path
+p=Path('stage.txt')
+stage=int(p.read_text()) if p.exists() else 0
+marker=Path('cache/marker')
+stale=marker.exists()
+marker.parent.mkdir(exist_ok=True)
+marker.write_text('1')
+print(json.dumps({'score':min(100,10*stage+(50 if stale else 0)),'complete':stage>=2}))
+''')
+        first = self.start()
+        report = json.loads(Path(first['epochs'][0]['report']).read_text())
+        self.assertEqual(report['status'], 'round_limit', report.get('reason'))
+        self.assertEqual(report['baseline']['score'], 0)
+        self.assertEqual(first['epochs'][0]['best'], 10)
+        self.assertEqual((Path(first['worktree']) / 'stage.txt').read_text(), '1')
+
+    def test_candidate_ignored_shadow_files_do_not_raise_accepted_score(self):
+        self.config['max_seconds'] = 600  # as above: the result must not depend on machine speed
+        self.repo.joinpath('.gitignore').write_text('cache/\n')
+        self.use_evaluator('''import json
+from pathlib import Path
+p=Path('stage.txt')
+stage=(int(p.read_text()) if p.exists() else 0)+Path('cache/bonus').exists()
+print(json.dumps({'score':100 if stage>=2 else 0,'complete':stage>=2}))
+''')
+        def work(router, task, path, config, log, index):
+            (Path(path) / 'cache').mkdir()
+            (Path(path) / 'cache/bonus').write_text('shadow')
+            (Path(path) / 'stage.txt').write_text('1')
+            return {'finished': True}
+        with patch('soso.engine.worker', side_effect=work):
+            first = self.start()
+        report = json.loads(Path(first['epochs'][0]['report']).read_text())
+        candidate = report['rounds'][0]['experiments'][0]
+        self.assertEqual(candidate['evaluation']['score'], 0)
+        self.assertEqual(first['status'], 'incomplete')
+        self.assertEqual(first['epochs'][0]['best'], 0)
+
+    def test_configured_python_m_evaluator_and_its_packages_are_protected(self):
+        git(self.repo, 'init', '-b', 'main')
+        git(self.repo, 'config', 'user.name', 'Tester')
+        git(self.repo, 'config', 'user.email', 'test@example.invalid')
+        (self.repo / 'bench').mkdir()
+        (self.repo / 'bench/__init__.py').write_text('')
+        (self.repo / 'bench/score.py').write_text(EVALUATOR)
+        (self.repo / 'soso.json').write_text(json.dumps({**self.config, 'evaluate': [sys.executable, '-B', '-m', 'bench.score']}))
+        git(self.repo, 'add', '--all')
+        git(self.repo, '-c', 'commit.gpgsign=false', 'commit', '-m', 'configured policy')
+        state = self.start()
+        config = json.loads((Path(state['report']).parent / 'config.json').read_text())
+        self.assertIn('bench/score.py', config['protected'])
+        self.assertIn('bench/__init__.py', config['protected'])
+
     def resume_paused_worker(self, error, status):
         calls = []
         first = None

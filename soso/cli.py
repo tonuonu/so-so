@@ -3,7 +3,7 @@ import argparse
 import json
 from pathlib import Path
 import sys
-from .engine import Run, load_config, resources
+from .engine import Run, load_config, local_programs, resources
 from .models import Budget, Router
 
 
@@ -70,8 +70,7 @@ def main(argv=None):
                 config["protected"].append(str(path.relative_to(root)))
         # Freeze in-repo evaluator and check programs, as goal and optimization runs do.
         # Append only new names: an unchanged list keeps the digest that resume checks.
-        programs = [str(Path(arg)) for command in [config["evaluate"]] + config.get("checks", [])
-                    for arg in command if not Path(arg).is_absolute() and (root / arg).is_file()]
+        programs = local_programs(root, [config["evaluate"]] + config.get("checks", []))
         config["protected"] += [name for name in dict.fromkeys(programs) if name not in config["protected"]]
         if not intent.strip() or len(intent.encode()) > 8000:
             raise ValueError("intent must contain 1..8000 bytes; move detail into source files")

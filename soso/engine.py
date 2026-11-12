@@ -2,10 +2,12 @@
 import concurrent.futures
 import contextlib
 import fcntl
+import base64
 import hashlib
 import json
 import math
 import os
+import re
 from pathlib import Path
 import statistics
 import shutil
@@ -14,7 +16,7 @@ import time
 import uuid
 from .models import Budget, BudgetExceeded, ModelProtocolError, ModelUnavailable, Router, redact_value
 from .process import execute, git
-from .workspace import Workspace, worker
+from .workspace import Workspace, gitlinks, worker
 from .skills import prelude
 from .architecture import planning_reply
 
@@ -86,12 +88,147 @@ def fingerprint(root, patterns):
     ws = Workspace(root, patterns)
     values = {}
     for name in ws.files():
-        if ws.is_protected(name) or Path(name).name == "AGENTS.md":
+        if ws.is_protected(name) or Path(name).name.casefold() == "agents.md":
             file = ws.path(name)
             if file.is_symlink():
                 raise ValueError("protected files cannot be symlinks")
             values[name] = hashlib.sha256(file.read_bytes()).hexdigest()
     return values
+
+
+def index_flags(root):
+    """Index entries marked skip-worktree ("S") or assume-unchanged (lowercase); Git ignores their on-disk edits."""
+    return {x for x in git(root, "ls-files", "-v", "-z").split("\0") if x[:1] == "S" or x[:1].islower()}
+
+
+# Settings that change how content is staged or checked out, and the include and worktree-config
+# switches that can bring such settings in; other config (remotes, branches, user edits) is never touched.
+WATCHED = re.compile(r"filter\..*|include\..*|includeif\..*|extensions\.worktreeconfig|"
+                     r"core\.(attributesfile|autocrlf|eol|safecrlf|fsmonitor|worktree|sparsecheckout.*)|index\..*", re.I)
+
+
+def watched_config(path, source, file):
+    """Watched settings of --local or one config file, includes expanded, in file order: ([(key, value)]
+    written in that file itself, [(key, value)] in effect, {key: [files]} that supply included values)."""
+    if source != "--local" and not source.is_file():
+        return [], [], {}
+    where = ["--local"] if source == "--local" else ["--file", str(source)]
+    parts = git(path, "config", *where, "--includes", "--show-origin", "--list", "-z", ok=(0, 1)).split("\0")
+    direct, effective, included = [], [], {}
+    for origin, entry in zip(parts[::2], parts[1::2]):
+        key, _, value = entry.partition("\n")
+        if WATCHED.fullmatch(key):
+            value = value if "\n" in entry else "true"
+            origin = os.path.realpath(os.path.join(path, origin.removeprefix("file:")))
+            effective.append((key, value))
+            if origin == file:
+                direct.append((key, value))
+            else:
+                included.setdefault(key, []).append(origin)
+    return direct, effective, included
+
+
+def differs_from_commit(path, commit, flagged):
+    """Tracked files whose content on disk differs from the commit under Git's own conversion rules.
+
+    A fresh index has no stat cache, so every file is hashed again; a worker's own git add with a
+    filter cannot carry its blob past this check. Skip-worktree entries the fresh worktree had are not on disk."""
+    index = Path(git(path, "rev-parse", "--absolute-git-dir")) / "soso-check-index"
+    env = {"GIT_INDEX_FILE": str(index)}
+    try:
+        git(path, "read-tree", commit, env=env)
+        git(path, "update-index", "-q", "--refresh", env=env, ok=(0, 1))
+        names = git(path, "diff-files", "--name-only", "-z", env=env).split("\0")
+    finally:
+        index.unlink(missing_ok=True)
+    skipped = {entry[2:] for entry in flagged if entry[:1] == "S"}
+    return [name for name in names if name and name not in skipped]
+
+
+def nested_git(root):
+    """Entries named .git below the worktree root: Git skips them and everything inside them."""
+    found, top = set(), os.fspath(root)
+    for folder, dirs, files in os.walk(top):
+        for name in dirs + files:
+            if name.casefold() == ".git" and not (folder == top and name == ".git"):
+                found.add(os.path.relpath(os.path.join(folder, name), top))
+        dirs[:] = [d for d in dirs if d.casefold() != ".git"]
+    return found
+
+
+PYTHON = re.compile(r"(python|pypy)[0-9.]*[tw]?(\.exe)?", re.I)  # interpreter names, not python-dateutil
+VALUE_OPTIONS = {"--python", "-p", "--with", "--interpreter"}  # wrapper options whose value may look like python
+
+
+def _python_entry(command):
+    """("-m", module) or ("path", arg) that python runs, also behind wrappers such as env, uv run or
+    poetry run, or through coverage run -m and uv run -m; None for -c, stdin or a command without python."""
+    for i, arg in enumerate(command):
+        if PYTHON.fullmatch(Path(arg).name) and (i == 0 or command[i - 1] not in VALUE_OPTIONS):
+            return _python_options(command[i + 1:])
+    for i, arg in enumerate(command[:-1]):
+        if Path(arg).name.casefold() in ("coverage", "uv") and command[i + 1] == "run":
+            # These run a module themselves; an -m anywhere after "run" is treated as one.
+            for j, flag in enumerate(command[i + 2:], i + 2):
+                if flag in ("-m", "--module"):
+                    return ("-m", command[j + 1]) if j + 1 < len(command) else None
+                if flag.startswith("-m"):
+                    return ("-m", flag[2:])
+            return None
+    return None
+
+
+def _python_options(args):
+    """Python's own options: what -m, -c, a script path or a directory after them runs."""
+    i = 0
+    while i < len(args):
+        arg = args[i]
+        if arg == "--":
+            return ("path", args[i + 1]) if i + 1 < len(args) else None
+        if arg == "-" or not arg.startswith("-"):
+            return None if arg == "-" else ("path", arg)
+        if not arg.startswith("--"):
+            for j, flag in enumerate(arg[1:], 2):
+                if flag in "cmWX":  # takes a value: the rest of this argument, or the next one
+                    value = arg[j:] or (args[i + 1] if i + 1 < len(args) else "")
+                    if flag in "cm":
+                        return ("-m", value) if flag == "m" else None
+                    if not arg[j:]:
+                        i += 1
+                    break
+        i += 1
+    return None
+
+
+def local_programs(root, commands):
+    """Repository-relative names of in-repo files that evaluator and check commands run.
+
+    Existing argument files are named as written and as resolved through symlinks. For python3 -m a.b,
+    every file that could supply a or a.b is named even before it exists, as is the __main__.py of a
+    python3 directory argument, so creating one changes the fingerprint.
+    """
+    root = os.path.realpath(root)
+    names = [(arg, True) for command in commands for arg in command]
+    for command in commands:
+        kind, target = _python_entry(command) or (None, "")
+        parts = target.split(".")
+        if kind == "-m" and all(parts):
+            for i in range(1, len(parts)):
+                names += [("/".join(parts[:i]) + "/__init__.py", False), ("/".join(parts[:i]) + ".py", False)]
+            module = "/".join(parts)
+            names += [(module + ".py", False), (module + "/__init__.py", False), (module + "/__main__.py", False)]
+        elif kind == "path" and os.path.isdir(os.path.join(root, target)):
+            names.append((target + "/__main__.py", False))
+    programs = []
+    for name, existing in names:
+        try:
+            written = os.path.normpath(os.path.join(root, name))  # "a/../b" and "../<repo>/b" name "b"
+            for path in (written, os.path.realpath(written)):
+                if os.path.commonpath([root, path]) == root and (not existing or os.path.isfile(path)):
+                    programs.append(os.path.relpath(path, root).replace(os.sep, "/"))
+        except (OSError, ValueError):
+            continue  # e.g. a -c program text that is no usable file name
+    return list(dict.fromkeys(programs))
 
 
 def evaluate(root, config, budget):
@@ -151,6 +288,10 @@ class Run:
         if not common.is_absolute():
             common = (self.root / common).resolve()
         self.storage = common / "soso"
+        # Watched shared settings and info/attributes, recorded when the first candidate worktree is created.
+        self.attributes, self.watched = common / "info" / "attributes", None
+        self.config_file = os.path.realpath(common / "config")
+        self.started_experiments = self.active_experiments = 0
         self.storage.mkdir(exist_ok=True)
         self.lock = threading.Lock()
         self.run_id = resume or time.strftime("%Y%m%d-%H%M%S-") + uuid.uuid4().hex[:8]
@@ -158,6 +299,11 @@ class Run:
             raise ValueError("invalid run id")
         self.folder = self.storage / self.run_id
         self.folder.mkdir(exist_ok=bool(resume))
+        saved = self.folder / "watched-config.json"
+        if resume and saved.is_file():  # a change left by a killed worker must not become the baseline
+            baseline = json.loads(saved.read_text())
+            self.watched = (tuple([tuple(entry) for entry in entries] for entries in baseline["local"]),
+                            None if baseline["attributes"] is None else base64.b64decode(baseline["attributes"]))
         self.integration = self.folder / "result"
         self.report_path = self.folder / "report.json"
         self.router = Router(config, self.budget, self.log)
@@ -362,8 +508,58 @@ class Run:
         candidate["review"] = reply
         return reply.get("approve") is True
 
+    def restore_watched(self, path, own, restored):
+        """Put back watched settings (shared, and this worktree's config.worktree) and info/attributes as
+        recorded; call with self.lock held. Only entries written in those files themselves are rewritten,
+        never values that come from an included file. Each change is added to restored with its old and new
+        values; return the changed names. A difference that cannot be restored raises after the rest is done."""
+        changed, problems = [], []
+        for source, file, recorded, scope in (("--local", self.config_file, self.watched[0], "local"),
+                                              (own[0], own[1], own[2], "worktree")):
+            where = ["--local"] if source == "--local" else ["--file", str(source)]
+            direct, effective, _ = watched_config(path, source, file)
+            if (direct, effective) == recorded:
+                continue
+            for key in dict.fromkeys(k for k, _ in recorded[0] + direct):
+                before, after = [v for k, v in recorded[0] if k == key], [v for k, v in direct if k == key]
+                if before != after:
+                    changed.append(scope + ":" + key)
+                    restored.append({"key": scope + ":" + key, "restored": before, "found": after})
+                    git(path, "config", *where, "--unset-all", key, ok=(0, 5))
+                    for value in before:
+                        git(path, "config", *where, "--add", key, value)
+            direct, effective, included = watched_config(path, source, file)
+            if direct != recorded[0]:
+                problems.append(f"could not restore the {scope} Git configuration; see config_restored")
+            elif effective != recorded[1]:
+                keys = sorted(k for k in dict.fromkeys(k for k, _ in recorded[1] + effective)
+                              if [v for x, v in recorded[1] if x == k] != [v for x, v in effective if x == k])
+                files = sorted({f for k in keys for f in included.get(k, [])}) or ["an included file"]
+                problems.append(f"{scope} settings {', '.join(keys)} changed in {', '.join(files)}; "
+                                "repair them there, the runner does not edit included files")
+        attributes = self.attributes.read_bytes() if self.attributes.is_file() else None
+        if attributes != self.watched[1]:
+            changed.append("info/attributes")
+            restored.append({"key": "info/attributes",
+                             "restored": None if self.watched[1] is None else self.watched[1].decode(errors="replace")[:4000],
+                             "found": None if attributes is None else attributes.decode(errors="replace")[:4000]})
+            if self.watched[1] is None:
+                self.attributes.unlink()
+            else:
+                self.attributes.parent.mkdir(exist_ok=True)
+                self.attributes.write_bytes(self.watched[1])  # in place: keeps its mode
+        if problems:
+            raise RuntimeError("; ".join(problems))
+        return changed
+
     def experiment(self, task, round_number, index, continuation=None):
         name = f"r{round_number}-c{index}-{uuid.uuid4().hex[:6]}"
+        with self.lock:  # a shared change is attributable only to a candidate that ran alone
+            sequence, alone = self.started_experiments, self.active_experiments == 0
+            self.started_experiments += 1
+            self.active_experiments += 1
+        own, recorded, restored = None, False, []
+        guarded = self.config.get("allow_exec")  # without command execution a worker cannot change config
         path = self.folder / name
         result = {"candidate": index, "task": task}
         preserve = getattr(self, 'retain_candidate', None)
@@ -385,18 +581,41 @@ class Run:
                     raise ValueError('candidate continuation requires delivery mode')
                 expected = continuation['commit']
             git(self.root, "worktree", "add", "--detach", str(path), expected)
+            flagged = index_flags(path)  # e.g. skip-worktree entries a sparse checkout gives every worktree
+            nested = nested_git(path)
+            own_file = Path(git(path, "rev-parse", "--absolute-git-dir")) / "config.worktree"
+            with self.lock:
+                if self.watched is None:
+                    self.watched = (watched_config(path, "--local", self.config_file)[:2],
+                                    self.attributes.read_bytes() if self.attributes.is_file() else None)
+                    atomic_json(self.folder / "watched-config.json", {
+                        "local": self.watched[0],
+                        "attributes": None if self.watched[1] is None else base64.b64encode(self.watched[1]).decode()})
+                own_real = os.path.realpath(own_file)  # read even if the extension is off
+                own = (own_file, own_real, watched_config(path, own_file, own_real)[:2])
+                recorded = guarded
             if continuation and fingerprint(path, self.config['protected']) != self.pinned:
                 raise ValueError('retained candidate policy changed')
             if not continuation or continuation['phase'] == 'worker':
                 result["worker"] = worker(self.router, task, path, self.config, self.log, index)
-            if fingerprint(path, self.config["protected"]) != self.pinned:
-                raise ValueError("protected files changed")
-            if git(path, "rev-parse", "HEAD") != expected:
-                raise ValueError("worker changed Git history")
-            if git(path, "status", "--porcelain"):
-                git(path, "add", "--all")
-                git(path, "-c", "commit.gpgsign=false", "commit", "-m", f"Experiment {round_number}.{index}")
-            elif expected == base:
+            # Under the lock no sibling restores or commits, and a watched change that appears before the
+            # re-check came from elsewhere while this commit was made.
+            with self.lock:
+                changed = self.restore_watched(path, own, restored) if guarded else []
+                alone = alone and self.started_experiments == sequence + 1
+                if fingerprint(path, self.config["protected"]) != self.pinned:
+                    raise ValueError("protected files changed")
+                if git(path, "rev-parse", "HEAD") != expected:
+                    raise ValueError("worker changed Git history")
+                staged = bool(git(path, "status", "--porcelain"))
+                if staged:
+                    git(path, "add", "--all")
+                    git(path, "-c", "commit.gpgsign=false", "commit", "-m", f"Experiment {round_number}.{index}")
+                foreign = self.restore_watched(path, own, restored) if guarded else []
+            # Its own worktree settings, or shared ones it changed alone, are the worker's doing.
+            reconfigured = (bool(foreign) and staged or any(key.startswith("worktree:") for key in changed)
+                            or bool(changed and alone))
+            if not staged and expected == base:
                 result["evaluation"] = {"valid": False, "reason": "no changes"}
                 if result.get('worker', {}).get('finished') is False:
                     result.update(error='Worker exhausted its step budget without producing a candidate', error_kind='worker_incomplete')
@@ -409,11 +628,33 @@ class Run:
             # Score exactly the committed tree, as the baseline was: experiment worktrees start
             # fresh, so every ignored file here is uncommitted worker output.
             git(path, "clean", "-ffdqX")
-            result["evaluation"] = evaluate(path, self.config, self.budget)
-            if (git(path, "rev-parse", "HEAD") != result["commit"]
-                    or fingerprint(path, self.config["protected"]) != self.pinned
-                    or git(path, "status", "--porcelain")):
-                raise ValueError("evaluation modified source or protected files")
+            # A sibling may have changed watched settings since; check and evaluate with the repository's own,
+            # and compare the files on disk with the commit without trusting the index's stat cache.
+            with self.lock:
+                if guarded:
+                    self.restore_watched(path, own, restored)
+                drift = differs_from_commit(path, result["commit"], flagged)
+            # A nested repository commits only as a gitlink: its files stay on disk, unrecorded and uncleaned.
+            if any(line.split()[1] == "160000" for line in git(path, "diff-tree", "-r", base, result["commit"]).splitlines()):
+                result["evaluation"] = {"valid": False, "reason": "embedded repositories are not allowed"}
+            elif reconfigured:
+                result["evaluation"] = {"valid": False, "reason": "worker changed repository configuration"}
+            # Index flags the worker set keep its on-disk edits out of the commit.
+            elif index_flags(path) != flagged:
+                result["evaluation"] = {"valid": False, "reason": "index flags hide worktree changes"}
+            elif nested_git(path) != nested:
+                result["evaluation"] = {"valid": False, "reason": "nested .git entries hide files from Git"}
+            # Git neither records nor cleans files in a submodule directory; fresh worktrees leave it empty.
+            elif any(any((path / link).iterdir()) for link in gitlinks(path) if (path / link).is_dir()):
+                result["evaluation"] = {"valid": False, "reason": "files inside a submodule directory"}
+            elif drift:
+                result["evaluation"] = {"valid": False, "reason": "evaluated files differ from the commit"}
+            else:
+                result["evaluation"] = evaluate(path, self.config, self.budget)
+                if (git(path, "rev-parse", "HEAD") != result["commit"]
+                        or fingerprint(path, self.config["protected"]) != self.pinned
+                        or git(path, "status", "--porcelain")):
+                    raise ValueError("evaluation modified source or protected files")
             # Retain accepted/rejected commits beyond Git's dangling-object grace period.
             git(self.root, "update-ref", f"refs/soso/{self.run_id}/{name}", result["commit"])
         except (ModelUnavailable, BudgetExceeded, KeyboardInterrupt, SystemExit) as exc:
@@ -435,6 +676,15 @@ class Run:
             result["error_kind"] = type(exc).__name__
             result["evaluation"] = {"valid": False, "reason": type(exc).__name__}
         finally:
+            with self.lock:
+                self.active_experiments -= 1
+                if recorded:  # also after early returns and errors; never mask the original error
+                    with contextlib.suppress(RuntimeError):
+                        self.restore_watched(path, own, restored)
+            if restored:  # logged on every path, including errors, with names only; values stay in the result
+                restored = list({change["key"]: change for change in reversed(restored)}.values())[::-1]  # first per key
+                result["config_restored"] = redact_value(restored)
+                self.log("repository_config_restored", candidate=index, keys=[change["key"] for change in restored])
             if cleanup and path.exists():
                 with contextlib.suppress(RuntimeError):
                     git(self.root, "worktree", "remove", "--force", str(path))

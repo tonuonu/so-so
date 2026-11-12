@@ -17,7 +17,7 @@ import uuid
 from urllib.parse import urlsplit
 
 from .architecture import planning_reply
-from .engine import DEFAULTS, Run, atomic_json, evaluate, fingerprint, load_config, resources
+from .engine import DEFAULTS, Run, atomic_json, evaluate, fingerprint, load_config, local_programs, resources
 from .models import ModelProtocolError, Budget, BudgetExceeded, HTTP_TRANSPORT, ModelUnavailable, Router, redact, redact_value
 from .process import IDENTITY, common_dir, execute, git
 from .workspace import Workspace
@@ -209,6 +209,8 @@ def _source_snapshot(root):
 
 
 def _bound(root, config, budget):
+    # The goal worktree is long-lived: drop ignored leftovers so it is scored as fresh candidate worktrees are.
+    git(root, 'clean', '-ffdqX')
     head = git(root, 'rev-parse', 'HEAD')
     before = _source_snapshot(root)
     status = git(root, 'status', '--porcelain')
@@ -223,8 +225,7 @@ def _contract(root, config, intent, router, folder, previous_feedback=''):
     policy = root / POLICY
     policy.mkdir(exist_ok=True)
     supplied_evaluate = config.get('evaluate')
-    protected_commands = [str(Path(arg)) for cmd in [supplied_evaluate] + config.get('checks', []) if cmd
-                          for arg in cmd if not Path(arg).is_absolute() and (root / arg).is_file()]
+    protected_commands = local_programs(root, [cmd for cmd in [supplied_evaluate] + config.get('checks', []) if cmd])
     config.update(delivery=True, direction='max', evaluate=supplied_evaluate or [sys.executable, '-B', f'{POLICY}/evaluate.py'],
                   protected=list(dict.fromkeys(config['protected'] + [f'{POLICY}/*'] + protected_commands)))
     inventory = Workspace(root, []).files()[:120]
