@@ -231,10 +231,16 @@ def launch(cwd: Path, goal: str | None = None, intent_file: str | None = None, r
         settings = goal if use_file or source_intent is None else source_intent + '\n\nCurrent assignment (overrides the task above):\n' + goal
     managed = _managed(cwd)
     with (managed / 'launch.lock').open('w') as lock:
-        try:
-            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
-        except BlockingIOError:
-            raise RuntimeError('another so-so process owns this project') from None
+        # An attached dashboard probes this lock for microseconds; a real owner keeps it.
+        deadline = time.monotonic() + 1
+        while True:
+            try:
+                fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                break
+            except BlockingIOError:
+                if time.monotonic() >= deadline:
+                    raise RuntimeError('another so-so process owns this project') from None
+                time.sleep(.05)
         if resume is not None:
             fingerprint, folder, project, goal, entry = _resume_snapshot(managed, resume)
             source = Path(entry['source'])

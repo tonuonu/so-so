@@ -308,3 +308,21 @@ class LauncherTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertTrue(result.stdout.startswith('usage: so-so '), result.stdout)
         self.assertFalse((self.root / '.so-so').exists())
+
+    def test_brief_monitor_lock_probe_does_not_fail_start_but_owner_does(self):
+        import fcntl, threading
+        self.root.joinpath('.so-so').mkdir(mode=0o700)
+        (self.root / '.so-so/owner.json').write_text('{"owner": "so-so", "version": 1}')
+        with (self.root / '.so-so/launch.lock').open('w') as probe:
+            # An attached dashboard briefly takes this lock to test whether a launcher runs.
+            fcntl.flock(probe, fcntl.LOCK_EX)
+            release = threading.Timer(.2, fcntl.flock, (probe, fcntl.LOCK_UN))
+            release.start()
+            try:
+                with self.assertRaisesRegex(ValueError, 'no previous task'):
+                    launch(self.root, resume='')
+            finally:
+                release.join()
+            fcntl.flock(probe, fcntl.LOCK_EX)
+            with self.assertRaisesRegex(RuntimeError, 'another so-so process owns this project'):
+                launch(self.root, resume='')
