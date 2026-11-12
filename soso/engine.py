@@ -207,9 +207,6 @@ def supports_attr_source(root, tree):
     return ATTR_SOURCE["probed"]
 
 
-RENDER_BINARY = 32 * 1024  # a binary side up to this size is still shown as text next to a text side
-
-
 def blob_kinds(root, blobs, stop):
     """{blob: (kind, size)} for the blobs that can be read, sizes from one cat-file --batch-check. As Git judges
     it, kind is "empty", "binary" (a NUL byte in the first 8000 bytes) or "text"; "late" once time.monotonic()
@@ -255,18 +252,35 @@ def size_text(size):
     return f"{size} B" if size < 1000 else f"{size / 1000:.1f} kB" if size < 1_000_000 else f"{size / 1_000_000:.1f} MB"
 
 
+def quoted(name):
+    """name as Git quotes it in diff headers with core.quotePath=true: a name with a control character, a
+    double quote, a backslash or a non-ASCII byte is put in double quotes with C escapes, so it cannot break
+    a line of what the reviewer reads."""
+    data = name.encode()
+    if all(32 <= byte < 127 and byte not in b'"\\' for byte in data):
+        return name
+    escapes = {7: "a", 8: "b", 9: "t", 10: "n", 11: "v", 12: "f", 13: "r", 34: '"', 92: "\\"}
+    return '"' + "".join("\\" + escapes[byte] if byte in escapes else chr(byte) if 32 <= byte < 127
+                         else f"\\{byte:03o}" for byte in data) + '"'
+
+
 def review_diff(root, base, commit, seconds=300):
     """(diff, None) for a reviewer, or (None, reason) when the change cannot be shown in full.
 
-    No external diff program or textconv, and, where Git accepts --attr-source, attributes from an empty tree,
-    so no -diff, binary or diff driver in the repository's .gitattributes hides a change. Each file Git still
-    shows only as binary gets a line with both sides' kinds and sizes, read by blob id (a gitlink side counts as
-    absent). It is shown again as text when a side is text and any binary side is small: an older Git, the
-    user's own attributes, or a NUL byte added or removed cannot hide a text change, and larger binaries are
-    never dumped as text or refused. Only rendered text over 2 MB, a side that cannot be read, or binary-shown
-    files beyond the seconds allowed are withheld."""
-    empty = git(root, "mktree", stdin="", quiet=True)  # ids are used as arguments: no stderr in them
-    options = ["--attr-source=" + empty] if supports_attr_source(root, empty) else []
+    No external diff program or textconv, and, where Git accepts --attr-source, attributes from the base
+    commit, so a -diff, binary or diff driver the candidate commits cannot hide its change, while the
+    user's own attributes still apply. Each file Git still shows only as binary gets a line with both sides'
+    kinds and sizes, read by blob id (a gitlink side counts as absent), and its text sides in full: both
+    sides as a text diff when neither is binary, otherwise the one text side alone (its old text removed or
+    its new text added). A binary side is never shown as text. So attributes, an older Git, or a NUL byte
+    added or removed cannot hide text: the reviewer sees all of it, and a change to binary is flagged.
+    Withheld: text over 2 MB (UTF-8 bytes of what the reviewer would receive), a side that cannot be read,
+    or binary-shown files beyond the seconds allowed."""
+    # Attributes as the base commit holds them: the user's own (e.g. "diff" forcing text) apply, while
+    # attributes the candidate commits do not. Without --attr-source Git reads them from root's worktree,
+    # which both reviewers keep at the base. Ids are used as arguments: no stderr in them.
+    base = git(root, "rev-parse", "--verify", "--end-of-options", base + "^{commit}", quiet=True)
+    options = ["--attr-source=" + base] if supports_attr_source(root, base) else []
     too_large = f"the diff exceeds {GIT_OUTPUT_LIMIT // 1_000_000} MB; split the change into smaller ones"
     stop = time.monotonic() + seconds
     try:
@@ -282,24 +296,29 @@ def review_diff(root, base, commit, seconds=300):
                   ((old_mode, old), (new_mode, new))] + [name]
                  for (old_mode, new_mode, old, new, name), binary in zip(changes, binaries) if binary]
         kinds = blob_kinds(root, sorted({blob for *sides, _ in shown for _, blob in sides if blob}), stop) if shown else {}
+        nothing = git(root, "hash-object", "-w", "-t", "blob", "--stdin", stdin="", quiet=True) if shown else None
+        sent = len(diff.encode())  # what the reviewer receives, in bytes
         for *sides, name in shown:
             found = [("absent", 0) if blob is None else kinds.get(blob) for _, blob in sides]
             if time.monotonic() > stop or any(kind == "late" for kind, _ in filter(None, found)):
                 return None, "could not show every binary-shown file in time; split the change"
             if None in found:
-                return None, f"could not read {name} to show it"
+                return None, f"could not read {quoted(name)} to show it"
             (old_kind, old_size), (new_kind, new_size) = found
-            diff += f"\n({name}: {old_kind} {size_text(old_size)} \u2192 {new_kind} {size_text(new_size)}"
+            note = f"\n({quoted(name)}: {old_kind} {size_text(old_size)} \u2192 {new_kind} {size_text(new_size)}"
             if old_kind == "text" and new_kind == "binary":
-                diff += "; this change adds NUL bytes; later edits to this file will show only as binary"
-            diff += ")"
-            if "text" in (old_kind, new_kind) and all(kind != "binary" or size <= RENDER_BINARY for kind, size in found):
-                nothing = git(root, "hash-object", "-w", "-t", "blob", "--stdin", stdin="", quiet=True)
-                diff += ("\n(Git shows it as binary; the change as text:)\n"
-                         + git(root, "diff", "--text", "--no-ext-diff", "--no-textconv",
-                               *(blob or nothing for _, blob in sides)))
-                if len(diff) > GIT_OUTPUT_LIMIT:
-                    return None, too_large
+                note += "; this change adds NUL bytes; later edits to this file will show only as binary"
+            note += ")"
+            # Text sides only: an empty, absent or binary side is diffed as the empty blob.
+            text = [blob if kind == "text" else nothing for (_, blob), (kind, _) in zip(sides, found)]
+            if text != [nothing, nothing]:
+                note += ("\n(Git shows it as binary; the change as text:)\n" if "binary" not in (old_kind, new_kind)
+                         else "\n(Git shows it as binary; its text side as text, the binary side not shown:)\n")
+                note += git(root, "diff", "--text", "--no-ext-diff", "--no-textconv", *text)
+            sent += len(note.encode())
+            if sent > GIT_OUTPUT_LIMIT:
+                return None, too_large
+            diff += note
     except OutputLimit:
         return None, too_large
     return diff, None

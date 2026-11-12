@@ -148,30 +148,39 @@ whatever `status.showUntrackedFiles` says (so a repository with untracked files
 is not clean enough to start a run, even if you set it to `no`), and run without replace refs
 (`GIT_NO_REPLACE_OBJECTS=1`) and without advice messages (`GIT_ADVICE=0`, Git
 2.46 or newer). The reviewer's diff is built with `--no-ext-diff --no-textconv`
-and with attributes from an empty tree (`--attr-source`, where a probe shows Git accepts it), so
-no `-diff`, `binary` or diff driver in the repository's `.gitattributes` hides a
-change. Each file Git still shows only as binary gets a line with both sides' kinds
-and sizes (for example `pointer.dat: text 44 B → binary 3.1 MB`), read by blob id,
-never through the file name, and sized with one `cat-file --batch-check`; a
+and with attributes from the base commit (`--attr-source=<base>`, where a probe
+shows Git accepts it; an older Git reads them from the integration worktree,
+which the reviewer keeps at the base), so a `-diff`, `binary` or diff driver a
+candidate commits in `.gitattributes` cannot hide its change, while your own
+committed attributes, such as `diff` forcing text, still apply. Each file Git
+still shows only as binary gets a line with both sides' kinds and sizes (for
+example `pointer.dat: text 44 B → binary 3.1 MB`), its name quoted as Git
+quotes names in diff headers (C escapes, non-ASCII bytes in octal), read by blob
+id, never through the file name, and sized with one `cat-file --batch-check`; a
 gitlink side counts as absent. A side is binary as Git judges it: a NUL byte in
 its first 8000 bytes, of which at most 8000 bytes are read, within 60 seconds,
-and a failed or stalled read is withheld. The change is also shown as text when a
-side is text and any binary side is at most 32 KiB: a `-diff` from an older Git or
-your own `info/attributes` or `core.attributesFile`, or a NUL byte added or removed
-(also in a file Git pairs as renamed or copied) cannot hide a text change, and a
-change that adds NUL bytes is flagged, since later edits to that file will show
-only as binary. A file moved without Git pairing the rename (`diff.renames=false`,
-or a move with heavy edits) is a deletion and an addition, so a NUL byte added in
-the move shows only as binary. Larger binaries
-are never shown as text and never refused, whatever their size. A file binary on
-both sides still shows only "Binary files differ", as before, including a file an
-earlier accepted change made binary with a NUL byte, and so does a new file with a
-NUL byte in its first 8000 bytes. Text the reviewer would
-receive beyond the 2 MB the runner reads is never shown cut short: the candidate is
-not sent to the reviewer and not approved, with the reason "the diff exceeds 2 MB;
-split the change into smaller ones"; a side that cannot be read, or binary-shown
-files that cannot all be read within the review's time (at most 300 seconds, less
-when the run's budget is nearly spent), are withheld the same way, each with its
+and a failed or stalled read is withheld. Its text sides are then shown in full
+and its binary sides never are: a file text on both sides (a `-diff` in your
+base or your own `info/attributes`) is shown as a text diff; a file that turns
+from binary into text shows its whole new text as added lines; a file that turns
+from text into binary shows its whole old text as removed lines and is flagged,
+since its new content and later edits to it will show only as binary. So a NUL
+byte added or removed, at any file size and also in a file Git pairs as renamed
+or copied, cannot hide a text change: all of the text is shown, and content that
+became binary is flagged as binary instead of shown. A file moved without Git pairing the rename (`diff.renames=false`, or a
+move with heavy edits) is a deletion and an addition, and each side is shown by
+the same rule. A file binary on both sides shows only "Binary files differ" and
+its sizes, as before, including a file an earlier accepted change made binary
+with a NUL byte, and so does a new file with a NUL byte in its first 8000 bytes;
+binary files are never refused, whatever their size. Text the reviewer would
+receive beyond 2 MB (counted in UTF-8 bytes, the main diff and every text side
+together) is never shown cut short: the candidate is not sent to the reviewer
+and not approved, with the reason "the diff exceeds 2 MB; split the change into
+smaller ones". That includes a text file over 2 MB replaced by a binary, whose
+old text counts as a deletion of that text would. A side that cannot be read,
+or binary-shown files that cannot all be read within the review's time (at most
+300 seconds, less when the run's budget is nearly spent), are withheld the same
+way, each with its
 own reason. In persistent delivery such a reason goes back to the worker as repair
 feedback. Do not rely on hooks as your evaluator, and
 expect no fsmonitor speed-up in them.
