@@ -116,6 +116,55 @@ class DeliveryTests(unittest.TestCase):
         self.assertFalse(report['completion_review']['approve'])
         self.assertEqual((Path(second['worktree']) / 'stage.txt').read_text(), '2')
 
+    def use_evaluator(self, source):
+        original = self.answer
+        def answer(router, role, prompt, cwd, **kwargs):
+            reply = original(router, role, prompt, cwd, **kwargs)
+            if role == 'planner' and 'Create a small acceptance contract' in prompt:
+                reply['evaluator'] = source
+            return reply
+        self.answer = answer
+
+    def test_baseline_ignores_files_left_by_earlier_evaluator_runs(self):
+        # The goal worktree is long-lived; the contract-time evaluator run leaves an ignored marker there.
+        self.repo.joinpath('.gitignore').write_text('cache/\n')
+        self.use_evaluator('''import json
+from pathlib import Path
+p=Path('stage.txt')
+stage=int(p.read_text()) if p.exists() else 0
+marker=Path('cache/marker')
+stale=marker.exists()
+marker.parent.mkdir(exist_ok=True)
+marker.write_text('1')
+print(json.dumps({'score':min(100,10*stage+(50 if stale else 0)),'complete':stage>=2}))
+''')
+        first = self.start()
+        report = json.loads(Path(first['epochs'][0]['report']).read_text())
+        self.assertEqual(report['baseline']['score'], 0)
+        self.assertEqual(first['epochs'][0]['best'], 10)
+        self.assertEqual((Path(first['worktree']) / 'stage.txt').read_text(), '1')
+
+    def test_candidate_ignored_shadow_files_do_not_raise_accepted_score(self):
+        self.repo.joinpath('.gitignore').write_text('cache/\n')
+        self.use_evaluator('''import json
+from pathlib import Path
+p=Path('stage.txt')
+stage=(int(p.read_text()) if p.exists() else 0)+Path('cache/bonus').exists()
+print(json.dumps({'score':100 if stage>=2 else 0,'complete':stage>=2}))
+''')
+        def work(router, task, path, config, log, index):
+            (Path(path) / 'cache').mkdir()
+            (Path(path) / 'cache/bonus').write_text('shadow')
+            (Path(path) / 'stage.txt').write_text('1')
+            return {'finished': True}
+        with patch('soso.engine.worker', side_effect=work):
+            first = self.start()
+        report = json.loads(Path(first['epochs'][0]['report']).read_text())
+        candidate = report['rounds'][0]['experiments'][0]
+        self.assertEqual(candidate['evaluation']['score'], 0)
+        self.assertEqual(first['status'], 'incomplete')
+        self.assertEqual(first['epochs'][0]['best'], 0)
+
     def resume_paused_worker(self, error, status):
         calls = []
         first = None

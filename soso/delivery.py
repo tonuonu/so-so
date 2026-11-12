@@ -208,6 +208,8 @@ def _source_snapshot(root):
 
 
 def _bound(root, config, budget):
+    # The goal worktree is long-lived: drop ignored leftovers so it is scored as fresh candidate worktrees are.
+    git(root, 'clean', '-ffdqX')
     head = git(root, 'rev-parse', 'HEAD')
     before = _source_snapshot(root)
     status = git(root, 'status', '--porcelain')
