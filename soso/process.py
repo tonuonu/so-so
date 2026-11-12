@@ -3,6 +3,7 @@ import os
 import selectors
 import signal
 import subprocess
+import threading
 import time
 
 
@@ -107,13 +108,17 @@ def common_dir(root):
 GIT_OUTPUT_LIMIT = 2_000_000  # bytes of Git output the runner reads
 
 
-def blob_head(root, blob, size=8000):
-    """The first size bytes of a blob, without reading the rest: where Git looks for a NUL byte."""
+def blob_head(root, blob, size=8000, timeout=60):
+    """The first size bytes of a blob, without reading the rest: where Git looks for a NUL byte. Killed after
+    timeout seconds, as git() is, should Git stall."""
     proc = subprocess.Popen(["git", "cat-file", "blob", blob], cwd=root, stdout=subprocess.PIPE,
                             stderr=subprocess.DEVNULL, env={**os.environ, "GIT_NO_REPLACE_OBJECTS": "1"})
+    deadline = threading.Timer(timeout, proc.kill)
+    deadline.start()
     try:
         return proc.stdout.read(size)
     finally:
+        deadline.cancel()
         proc.kill()
         proc.wait()
         proc.stdout.close()

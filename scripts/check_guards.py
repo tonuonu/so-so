@@ -328,6 +328,8 @@ GUARDS = [
     ('soso/process.py', 'stderr=not quiet)', 'stderr=True)', ['test_evaluated_tree.EvaluatedTreeTests.test_stderr_never_mixes_into_parsed_listings']),
     ('soso/delivery.py', "'useful': True, 'reason': withheld", "'useful': False, 'reason': withheld",
      ['test_evaluated_tree.EvaluatedTreeTests.test_delivery_withholds_an_oversized_diff_and_tells_the_worker_why']),
+    ('soso/engine.py', 'stdin="", quiet=True)  # ids', 'stdin="")  # ids', ['test_evaluated_tree.EvaluatedTreeTests.test_stderr_never_mixes_into_ids_on_this_git']),
+    ('soso/engine.py', '"--stdin", stdin="", quiet=True)', '"--stdin", stdin="")', ['test_evaluated_tree.EvaluatedTreeTests.test_stderr_never_mixes_into_ids_on_this_git']),
 ]
 
 

@@ -704,6 +704,38 @@ class EvaluatedTreeTests(RepoCase):
         self.assertIsNone(reason)
         self.assertIn('+version = 2', diff)
 
+    def test_stderr_never_mixes_into_ids_on_this_git(self):
+        # An added file the user's attributes mark -diff: shown against the empty blob, after a fresh probe.
+        (self.common_dir() / 'info/attributes').write_text('*.lock -diff\n')
+        base = git(self.root, 'rev-parse', 'HEAD')
+        (self.root / 'new.lock').write_text('version = 1\n')
+        self.commit('added', 'new.lock')
+        with patch.dict(engine.ATTR_SOURCE, clear=True), patch.dict(os.environ, {'GIT_TRACE': '1'}):
+            diff, reason = self.reviewed(base)
+            self.assertTrue(engine.ATTR_SOURCE['probed'])
+        self.assertIsNone(reason)
+        self.assertIn('+version = 1', diff)
+
+    def test_ordinary_change_shapes_are_matched_and_shown(self):
+        # --raw and --numstat must list the same entries in the same order for every kind of change.
+        (self.root / 'tool.sh').write_text('echo 1\n')
+        (self.root / 'gone.txt').write_text('bye\n')
+        (self.root / 'moved.txt').write_text('line\n' * 20)
+        (self.root / 'link').write_text('plain\n')
+        self.commit('shapes', 'tool.sh', 'gone.txt', 'moved.txt', 'link')
+        base = git(self.root, 'rev-parse', 'HEAD')
+        git(self.root, 'update-index', '--chmod=+x', 'tool.sh')  # mode only
+        git(self.root, 'rm', '-q', 'gone.txt')  # deletion
+        git(self.root, 'mv', 'moved.txt', 'renamed.txt')  # rename with an edit
+        (self.root / 'renamed.txt').write_text('line\n' * 19 + 'edited\n')
+        (self.root / 'link').unlink()
+        (self.root / 'link').symlink_to('tool.sh')  # file to symlink
+        self.commit('changed', 'renamed.txt', 'link')
+        diff, reason = self.reviewed(base)
+        self.assertIsNone(reason)
+        for text in ('new mode 100755', 'deleted file mode', '+edited', 'new file mode 120000'):
+            self.assertIn(text, diff)
+
     def test_file_name_that_is_not_utf8_is_never_shown_only_as_binary(self):
         # Built from raw ids, so no checkout is needed (macOS cannot write this name).
         (self.common_dir() / 'info/attributes').write_text('*.py -diff\n')  # applies whatever --attr-source says
@@ -741,6 +773,7 @@ class EvaluatedTreeTests(RepoCase):
         report, prompts = self.two_round_review()
         self.assertEqual(len(prompts), 2)
         self.assertIn('+999', prompts[1])
+        self.assertNotIn('as binary', prompts[1])  # --attr-source: the plain diff already shows it
         self.assertEqual(report['best'], 999)
 
     def test_without_attr_source_a_text_file_shown_as_binary_is_shown_as_text(self):

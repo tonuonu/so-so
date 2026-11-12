@@ -155,7 +155,12 @@ change. A file Git still shows only as binary (with an older Git, through your o
 removed) is shown again as text when either side is text as Git judges it: no NUL
 byte in its first 8000 bytes, and not empty. Both sides are read by blob id, never
 through the file name, so binary files of any size stay approvable and are never
-read whole. A diff the reviewer would receive larger than the 2 MB the runner reads
+read whole (at most 8000 bytes of each, within 60 seconds). A file that is binary
+on both sides still shows only "Binary files differ", as before, including a file
+an earlier accepted change made binary with a NUL byte, and so does a new file with
+a NUL byte in its first 8000 bytes. A text file replaced by a binary larger than
+2 MB (for example a Git LFS pointer by its content) is shown as text and so
+withheld as too large. A diff the reviewer would receive larger than the 2 MB the runner reads
 is never shown cut short: the candidate is not sent to the reviewer and not
 approved, with the reason "the diff exceeds 2 MB; split the change into smaller
 ones"; a side that cannot be read is withheld the same way, with its own reason. In

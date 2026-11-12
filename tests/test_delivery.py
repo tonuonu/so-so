@@ -578,6 +578,24 @@ print(json.dumps({'score':10*stage+(50 if expanded else 0),'complete':False}))
         self.assertEqual(third['status'], 'complete')
         self.assertEqual((Path(third['worktree']) / 'stage.txt').read_text(), '2')
 
+    def test_withheld_review_reason_reaches_the_worker(self):
+        # A diff too large to show is not reviewed; the draft is kept and the next worker learns why.
+        self.config['max_seconds'] = 600
+        tasks = []
+        def work(router, task, path, config, log, index):
+            tasks.append(task)
+            if len(tasks) == 1:
+                (Path(path) / 'big.py').write_text('x = 1  # padding\n' * 150000)
+                (Path(path) / 'stage.txt').write_text('1')
+            return {'finished': True}
+        with patch('soso.engine.worker', side_effect=work):
+            first = self.start()
+            with patch('soso.delivery.time.time', return_value=time.time() + 5):
+                self.start(resume_goal=first['goal_id'])
+        self.assertEqual(len(tasks), 2)
+        self.assertIn('REVIEW REPAIR REQUIRED', tasks[1])
+        self.assertIn('exceeds 2 MB', tasks[1])
+
     def test_interrupt_around_merge_preserves_or_reconciles_reviewed_draft(self):
         for after_merge in (False, True):
             with self.subTest(after_merge=after_merge):

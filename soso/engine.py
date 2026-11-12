@@ -227,7 +227,7 @@ def review_diff(root, base, commit):
     only as binary (an older Git, the user's own attributes, a NUL byte added or removed) is shown again as text
     whenever either side is text; sides are read by blob id from --raw, never through a file name. Only a diff
     larger than the runner reads, or a side that cannot be read, is withheld."""
-    empty = git(root, "mktree", stdin="")
+    empty = git(root, "mktree", stdin="", quiet=True)  # ids are used as arguments: no stderr in them
     options = ["--attr-source=" + empty] if supports_attr_source(root, empty) else []
     too_large = f"the diff exceeds {GIT_OUTPUT_LIMIT // 1_000_000} MB; split the change into smaller ones"
     try:
@@ -247,7 +247,7 @@ def review_diff(root, base, commit):
             if None in kinds:
                 return None, f"could not read {name} to show it"
             if "text" in kinds:  # e.g. -diff, an older Git or one NUL byte added: show the bytes as text
-                nothing = git(root, "hash-object", "-w", "-t", "blob", "--stdin", stdin="")
+                nothing = git(root, "hash-object", "-w", "-t", "blob", "--stdin", stdin="", quiet=True)
                 diff += (f"\n(Git shows {name} as binary; the change as text:)\n"
                          + git(root, "diff", "--text", "--no-ext-diff", "--no-textconv",
                                *(blob if blob.strip("0") else nothing for blob in blobs)))
