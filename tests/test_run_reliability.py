@@ -290,10 +290,13 @@ class DeterministicRouteFailureTests(unittest.TestCase):
                 self.assertNotIsInstance(raised.exception, ModelUnavailable)
                 self.assertIn('all routes failed', str(raised.exception))
 
-    def test_failed_cli_process_still_waits_in_delivery(self):
+    def test_failed_cli_process_and_server_error_still_wait_in_delivery(self):
         from soso.models import ModelUnavailable
         with self.assertRaises(ModelUnavailable):
             self.router({'kind': 'command', 'command': ['false']}).ask('worker', 'prompt', Path.cwd())
+        router = self.router({'kind': 'openai', 'url': 'http://127.0.0.1:9/v1', 'model': 'x'})
+        with patch('soso.models.execute', return_value=self.envelope({'status': 522})), self.assertRaises(ModelUnavailable):
+            router.ask('worker', 'prompt', Path.cwd())
 
     def test_unusable_success_body_is_bounded_protocol_failure(self):
         import http.server

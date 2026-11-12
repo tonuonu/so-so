@@ -73,8 +73,8 @@ class ModelUnavailable(RuntimeError):
         self.retry_at = retry_at
 
 
-class ModelProcessFailed(RuntimeError):
-    """A CLI model process failed without a recognized cause; it may be transient."""
+class RetryableModelFailure(RuntimeError):
+    """A CLI process or HTTP 5xx failure without a recognized cause; it may be transient."""
 
 
 def cli_unavailable(output):
@@ -424,7 +424,7 @@ class Router:
                 self.budget.remaining()
                 # Avoid storing URLs/headers/credentials from raw transport exceptions.
                 errors.append(name + ": " + type(exc).__name__)
-                retryable = retryable or isinstance(exc, ModelProcessFailed)
+                retryable = retryable or isinstance(exc, RetryableModelFailure)
                 self.log("model_error", role=role, model=name, error=type(exc).__name__)
             finally:
                 self.slots[name].release()
@@ -432,7 +432,8 @@ class Router:
             explicit = [e.retry_at for e in unavailable if e.retry_at is not None]
             raise ModelUnavailable(min(explicit) if explicit else None, str(unavailable[-1]))
         if self.validate and retryable:
-            # Delivery waits out failed CLI processes; context, credential and HTTP 4xx failures are terminal.
+            # Delivery waits out failed CLI processes and HTTP 5xx; context, credential, HTTP 4xx
+            # and malformed-reply failures are terminal.
             raise ModelUnavailable(reason="all model routes temporarily unavailable")
         raise RuntimeError("all routes failed: " + "; ".join(errors))
 
@@ -552,7 +553,7 @@ class Router:
                        'KIMI_MODEL_MAX_COMPLETION_TOKENS': str(model.get('max_tokens', 8192))}
                 result = execute(argv + ['--agent-file', str(profile)] + model.get('args', []), cwd, timeout, limit=256000, env=env)
             if result['returncode'] or result['timed_out'] or result['truncated']:
-                raise cli_unavailable(result['output']) or ModelProcessFailed('kimi model failed')
+                raise cli_unavailable(result['output']) or RetryableModelFailure('kimi model failed')
             answers = []
             for line in result['output'].splitlines():
                 try:
@@ -567,14 +568,14 @@ class Router:
                 except ValueError:
                     continue
             if not answers:
-                raise cli_unavailable(result['output']) or ModelProcessFailed('kimi returned no assistant answer')
+                raise cli_unavailable(result['output']) or RetryableModelFailure('kimi returned no assistant answer')
             return answers[-1]
         if kind == "command":
             argv = [x.replace("{cwd}", str(cwd)).replace("{prompt}", prompt) for x in model["command"]]
             stdin = None if any("{prompt}" in x for x in model["command"]) else prompt
             result = execute(argv, cwd, timeout, stdin=stdin, limit=128000)
             if result["returncode"] or result["timed_out"] or result["truncated"]:
-                raise cli_unavailable(result["output"]) or ModelProcessFailed("command model failed")
+                raise cli_unavailable(result["output"]) or RetryableModelFailure("command model failed")
             return result["output"]
         if kind == "codex":
             # Final message lives separately from progress/diagnostics.
@@ -589,7 +590,7 @@ class Router:
                 argv += model.get("args", []) + ["-"]
                 result = execute(argv, cwd, timeout, stdin=prompt)
                 if result["returncode"] or result["timed_out"] or not out.exists():
-                    raise cli_unavailable(result["output"]) or ModelProcessFailed("codex model failed")
+                    raise cli_unavailable(result["output"]) or RetryableModelFailure("codex model failed")
                 if out.stat().st_size > 128000:
                     raise ValueError("model response too large")
                 return out.read_text()
@@ -640,7 +641,7 @@ class Router:
             raise ModelUnavailable(retry_timestamp(envelope.get("retry_after")), reason + " (" + host + ")")
         if envelope["status"] != 200:
             self.telemetry.usage = {"error_kind": "http_status_" + str(envelope["status"])}
-            raise RuntimeError("HTTP model failed")
+            raise (RetryableModelFailure if envelope["status"] >= 500 else RuntimeError)("HTTP model failed")
         reply = envelope["data"]
         if kind == "ollama":
             self.telemetry.usage = {'input_tokens': reply.get('prompt_eval_count'),
