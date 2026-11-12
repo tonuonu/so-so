@@ -9,7 +9,8 @@ from pathlib import Path
 from unittest.mock import patch
 import test_core
 from test_core import RepoCase
-from soso.engine import Run
+from soso.engine import Run, fingerprint
+from soso.process import git
 from soso.models import Budget, BudgetExceeded, Router
 from soso.workspace import worker
 
@@ -59,6 +60,37 @@ print(json.dumps({'score':9 if n else 0}))
             with self.assertRaises(BudgetExceeded):
                 worker(router,'test',self.root,config,lambda *a,**kw:None)
         self.assertLess(time.monotonic()-started,.8)
+
+
+    def test_worker_cannot_commit_candidate_history(self):
+        def work(router, task, path, config, log, index):
+            (Path(path)/'value.txt').write_text('5')
+            git(path,'add','value.txt')
+            git(path,'-c','commit.gpgsign=false','commit','-m','worker-owned commit')
+            return {'finished': True}
+        runner=Run(self.root,self.config(rounds=1),'Improve')
+        with patch('soso.engine.worker',side_effect=work),contextlib.redirect_stdout(io.StringIO()):
+            report=runner.run()
+        experiments=report['rounds'][0]['experiments']
+        self.assertTrue(experiments and all(e.get('error')=='worker changed Git history' for e in experiments))
+        self.assertEqual(report['best'],0)
+        self.assertEqual((runner.integration/'value.txt').read_text(),'0')
+
+    def test_protected_file_replaced_by_identical_symlink_is_rejected(self):
+        (self.root/'copy.py').write_text((self.root/'evaluate.py').read_text())
+        (self.root/'evaluate.py').unlink()
+        (self.root/'evaluate.py').symlink_to('copy.py')
+        with self.assertRaisesRegex(ValueError,'protected files cannot be symlinks'):
+            fingerprint(self.root,['evaluate.py'])
+
+    def test_resume_rejects_result_head_moved_since_checkpoint(self):
+        config=self.config(rounds=1)
+        runner=Run(self.root,config,'Improve')
+        with patch.object(Router,'ask',test_core.EngineTests.actions),contextlib.redirect_stdout(io.StringIO()):
+            runner.run()
+        git(runner.integration,'-c','commit.gpgsign=false','commit','--allow-empty','-m','moved after checkpoint')
+        with self.assertRaisesRegex(ValueError,'result HEAD changed since checkpoint'):
+            Run(self.root,config,'Improve',resume=runner.run_id).run()
 
 
 class WorkerMemoryTests(RepoCase):

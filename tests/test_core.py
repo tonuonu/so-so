@@ -40,6 +40,18 @@ class WorkspaceTests(RepoCase):
     def test_symlink_escape(self):
         (self.root/'escape').symlink_to('/tmp')
         with self.assertRaises(ValueError): Workspace(self.root,[]).path('escape/file')
+    def test_internal_symlink_is_not_writable(self):
+        (self.root/'link.txt').symlink_to('value.txt')
+        (self.root/'real').mkdir()
+        (self.root/'alias').symlink_to('real')
+        ws=Workspace(self.root,[])
+        for action in ({'tool':'write','path':'link.txt','content':'9'},{'tool':'replace','path':'link.txt','old':'0','new':'9'},
+                       {'tool':'delete','path':'link.txt'},{'tool':'write','path':'alias/new.txt','content':'9'}):
+            with self.subTest(action=action), self.assertRaisesRegex(PermissionError,'writes through symlinks are forbidden'):
+                ws.tool(action)
+        self.assertEqual((self.root/'value.txt').read_text(),'0')
+        self.assertTrue((self.root/'link.txt').is_symlink())
+        self.assertFalse((self.root/'real/new.txt').exists())
     def test_protection(self):
         ws=Workspace(self.root,['evaluate.py'])
         with self.assertRaises(PermissionError): ws.tool({'tool':'write','path':'evaluate.py','content':''})
@@ -85,10 +97,26 @@ class ProcessTests(unittest.TestCase):
         self.assertEqual(result['returncode'],3)
         self.assertIn('hello',result['output'])
     def test_descendant_cleanup(self):
-        start=time.monotonic()
-        result=execute([sys.executable,'-c','import subprocess; subprocess.Popen(["sleep","10"])'],'.',timeout=2)
-        self.assertEqual(result['returncode'],0)
-        self.assertLess(time.monotonic()-start,3)
+        # A surviving descendant would create the marker; this also holds where killed orphans stay zombies.
+        with tempfile.TemporaryDirectory() as tmp:
+            marker=Path(tmp)/'descendant-survived'
+            start=time.monotonic()
+            result=execute([sys.executable,'-c','import subprocess,sys; subprocess.Popen(["sh","-c","sleep 1; touch \\"$0\\"",sys.argv[1]])',str(marker)],'.',timeout=2)
+            self.assertEqual(result['returncode'],0)
+            self.assertLess(time.monotonic()-start,3)
+            time.sleep(1.5)
+            self.assertFalse(marker.exists(),'descendant process survived its command')
+
+class IdentityTests(RepoCase):
+    def test_fallback_identity_never_overrides_exported_identity(self):
+        import os
+        fallback={'GIT_AUTHOR_NAME':'Local Builder','GIT_COMMITTER_NAME':'Local Builder'}
+        with patch.dict('soso.process.IDENTITY',fallback,clear=True):
+            git(self.root,'commit','--allow-empty','-m','fallback')
+            self.assertEqual(git(self.root,'log','-1','--format=%an'),'Local Builder')
+            with patch.dict(os.environ,{'GIT_AUTHOR_NAME':'Exported'}):
+                git(self.root,'commit','--allow-empty','-m','exported')
+            self.assertEqual(git(self.root,'log','-1','--format=%an'),'Exported')
 
 class ModelTests(unittest.TestCase):
     def test_json(self):

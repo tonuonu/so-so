@@ -301,3 +301,49 @@ class LauncherTests(unittest.TestCase):
         self.assertIn('INTENT.md', result.stdout)
         self.assertNotIn('--backend', result.stdout)
         self.assertNotIn('--models', result.stdout)
+
+    def test_root_executable_help_names_program_and_leaves_no_state(self):
+        script = Path(__file__).resolve().parents[1] / 'so-so'
+        result = subprocess.run([str(script), '--help'], cwd=self.root, capture_output=True, text=True, timeout=10)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertTrue(result.stdout.startswith('usage: so-so '), result.stdout)
+        self.assertFalse((self.root / '.so-so').exists())
+
+    def test_brief_monitor_lock_probe_does_not_fail_start_but_owner_does(self):
+        import fcntl, threading
+        self.root.joinpath('.so-so').mkdir(mode=0o700)
+        (self.root / '.so-so/owner.json').write_text('{"owner": "so-so", "version": 1}')
+        with (self.root / '.so-so/launch.lock').open('w') as probe:
+            # An attached dashboard briefly takes this lock to test whether a launcher runs.
+            fcntl.flock(probe, fcntl.LOCK_EX)
+            release = threading.Timer(.2, fcntl.flock, (probe, fcntl.LOCK_UN))
+            release.start()
+            try:
+                with self.assertRaisesRegex(ValueError, 'no previous task'):
+                    launch(self.root, resume='')
+            finally:
+                release.join()
+            fcntl.flock(probe, fcntl.LOCK_EX)
+            with self.assertRaisesRegex(RuntimeError, 'another so-so process owns this project'):
+                launch(self.root, resume='')
+
+    def test_malformed_saved_entry_does_not_block_history(self):
+        from soso.history import update_history
+        managed = self.root / '.so-so'
+        for name, entry in (('list', []), ('text-time', {'updated_at': 'yesterday'}), ('huge-time', {'updated_at': 1e300}),
+                            ('number-title', {'updated_at': 1, 'title': 7}), ('good', {'updated_at': 2, 'title': 'Good'})):
+            (managed / 'projects' / name).mkdir(parents=True)
+            (managed / 'projects' / name / 'entry.json').write_text(json.dumps(entry))
+        update_history(managed, managed / 'projects/good', {'updated_at': 3, 'title': 'Good', 'status': 'running'})
+        index = (managed / 'README.md').read_text()
+        self.assertIn('[Good](projects/good/README.md)', index)
+        self.assertIn('[7](projects/number-title/README.md)', index)
+        self.assertNotIn('text-time', index)
+
+    def test_saved_task_lookup_used_by_shell_launcher_returns_assignment(self):
+        # ./so-so resume reads the saved assignment through _resume_snapshot(...)[3].
+        from soso.launch import _resume_snapshot
+        first = self.run_goal('First task')
+        self.run_goal('Second task')
+        self.assertEqual(_resume_snapshot(self.root / '.so-so', '')[3], 'Second task')
+        self.assertEqual(_resume_snapshot(self.root / '.so-so', first['resume_id'])[3], 'First task')
