@@ -97,6 +97,16 @@ def redact(text):
     return text
 
 
+def redact_value(value):
+    """Redact decoded JSON strings and keys before encoding; numbers stay numbers."""
+    if isinstance(value, str):
+        return redact(value)
+    if isinstance(value, dict):
+        return {redact(k) if isinstance(k, str) else k: redact_value(v) for k, v in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [redact_value(v) for v in value]
+    return value
+
 
 class BudgetExceeded(RuntimeError):
     pass

@@ -6,7 +6,7 @@ import time
 
 from .delivery import configure_models, load_model_pool
 from .engine import BudgetExceeded, Run, atomic_json, load_config
-from .models import ModelUnavailable, redact
+from .models import ModelUnavailable, redact_value
 from .process import git
 
 
@@ -57,7 +57,7 @@ def optimize_project(project: Path, intent: str, folder: Path, models_path=None,
         raise ValueError('frozen optimization configuration changed')
 
     def checkpoint():
-        atomic_json(path, json.loads(redact(json.dumps(state))))
+        atomic_json(path, redact_value(state))
         if save:
             save(state)
 

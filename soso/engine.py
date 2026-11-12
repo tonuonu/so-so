@@ -12,7 +12,7 @@ import shutil
 import threading
 import time
 import uuid
-from .models import Budget, BudgetExceeded, ModelProtocolError, ModelUnavailable, Router, redact
+from .models import Budget, BudgetExceeded, ModelProtocolError, ModelUnavailable, Router, redact_value
 from .process import execute, git
 from .workspace import Workspace, worker
 from .skills import prelude
@@ -166,13 +166,14 @@ class Run:
     def log(self, event, **data):
         with self.lock:
             with (self.folder / "events.jsonl").open("a") as stream:
-                stream.write(redact(json.dumps({"time": time.time(), "event": event, **data}, default=str)) + "\n")
+                record = json.loads(json.dumps({"time": time.time(), "event": event, **data}, default=str))
+                stream.write(json.dumps(redact_value(record)) + "\n")
 
     def checkpoint(self):
         self.report["elapsed"] = self.elapsed_before + time.monotonic() - self.started
         self.report["calls"] = self.budget.calls
         self.report["head"] = git(self.integration, "rev-parse", "HEAD")
-        atomic_json(self.report_path, json.loads(redact(json.dumps(self.report))))
+        atomic_json(self.report_path, redact_value(self.report))
 
     def run(self):
         with (self.storage / "lock").open("w") as lock:

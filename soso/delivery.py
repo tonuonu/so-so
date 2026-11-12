@@ -18,7 +18,7 @@ from urllib.parse import urlsplit
 
 from .architecture import planning_reply
 from .engine import DEFAULTS, Run, atomic_json, evaluate, fingerprint, load_config, resources
-from .models import ModelProtocolError, Budget, BudgetExceeded, HTTP_TRANSPORT, ModelUnavailable, Router, redact
+from .models import ModelProtocolError, Budget, BudgetExceeded, HTTP_TRANSPORT, ModelUnavailable, Router, redact, redact_value
 from .process import execute, git
 from .workspace import Workspace
 
@@ -185,7 +185,7 @@ def _config(repo, config_path, ignore_project_config=False):
 
 
 def _save(folder, state):
-    atomic_json(folder / 'state.json', json.loads(redact(json.dumps(state))))
+    atomic_json(folder / 'state.json', redact_value(state))
 
 
 def _source_snapshot(root):
@@ -297,7 +297,7 @@ def _contract(root, config, intent, router, folder, previous_feedback=''):
             acceptance_review = {'attempt': attempt + 1, 'evaluator_sha256': hashlib.sha256(evaluator.encode()).hexdigest(),
                                  'location': str(policy / 'evaluate.py'), 'cwd': str(root), 'baseline': result,
                                  'review': review, 'time': time.time()}
-            safe_review = json.loads(redact(json.dumps(acceptance_review)))
+            safe_review = redact_value(acceptance_review)
             with (folder / 'contract-reviews.jsonl').open('a') as stream:
                 stream.write(json.dumps(safe_review) + '\n')
             atomic_json(latest_review, safe_review)
@@ -311,7 +311,7 @@ def _contract(root, config, intent, router, folder, previous_feedback=''):
                     'limitation': 'Generated operational oracle; not proof of human correctness.'}
         if acceptance_review is not None:
             contract['acceptance_review'] = acceptance_review
-        atomic_json(policy / 'contract.json', json.loads(redact(json.dumps(contract))))
+        atomic_json(policy / 'contract.json', redact_value(contract))
         atomic_json(folder / 'config.json', config)  # prepared transaction, before moving HEAD
         (root / 'INTENT.md').write_text(intent + '\n')
         if not (root / '.gitignore').exists():
