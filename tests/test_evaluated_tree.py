@@ -673,6 +673,7 @@ class EvaluatedTreeTests(RepoCase):
         diff, reason = self.reviewed(base)
         self.assertIsNone(reason)
         self.assertIn('rename to b.cfg', diff)
+        self.assertIn('(b.cfg: text', diff)  # named as the diff names it
         self.assertIn('+EVIL', diff)
 
     def test_submodule_replaced_by_a_minus_diff_text_file_is_shown(self):
@@ -734,7 +735,8 @@ class EvaluatedTreeTests(RepoCase):
             with self.subTest(name=name):
                 diff, reason = self.reviewed(self.change(name, before, after))
                 self.assertIsNone(reason)
-                self.assertIn(name, diff)
+                self.assertIn('empty 0 B', diff)  # no content, not text: nothing to render, no NUL bytes "added"
+                self.assertNotIn('adds NUL bytes', diff)
 
     def test_conversion_to_text_and_a_removed_nul_are_shown_as_text(self):
         for name, before, after, line in (('notes.txt', 'hello\n'.encode('utf-16'), b'hello\n', '+hello'),
