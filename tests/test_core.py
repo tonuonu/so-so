@@ -97,23 +97,26 @@ class ProcessTests(unittest.TestCase):
         self.assertEqual(result['returncode'],3)
         self.assertIn('hello',result['output'])
     def test_descendant_cleanup(self):
-        import os, signal
-        start=time.monotonic()
-        result=execute([sys.executable,'-c','import subprocess; print(subprocess.Popen(["sleep","10"]).pid, flush=True)'],'.',timeout=2)
-        self.assertEqual(result['returncode'],0)
-        self.assertLess(time.monotonic()-start,3)
-        pid=int(result['output'].split()[-1])
-        def kill_survivor():
-            try: os.kill(pid,signal.SIGKILL)
-            except ProcessLookupError: pass
-        self.addCleanup(kill_survivor)
-        deadline=time.monotonic()+3
-        while time.monotonic()<deadline:
-            try: os.kill(pid,0)
-            except ProcessLookupError: break
-            time.sleep(.05)
-        else:
-            self.fail('descendant process survived its command')
+        # A surviving descendant would create the marker; this also holds where killed orphans stay zombies.
+        with tempfile.TemporaryDirectory() as tmp:
+            marker=Path(tmp)/'descendant-survived'
+            start=time.monotonic()
+            result=execute([sys.executable,'-c','import subprocess,sys; subprocess.Popen(["sh","-c","sleep 1; touch \\"$0\\"",sys.argv[1]])',str(marker)],'.',timeout=2)
+            self.assertEqual(result['returncode'],0)
+            self.assertLess(time.monotonic()-start,3)
+            time.sleep(1.5)
+            self.assertFalse(marker.exists(),'descendant process survived its command')
+
+class IdentityTests(RepoCase):
+    def test_fallback_identity_never_overrides_exported_identity(self):
+        import os
+        fallback={'GIT_AUTHOR_NAME':'Local Builder','GIT_COMMITTER_NAME':'Local Builder'}
+        with patch.dict('soso.process.IDENTITY',fallback,clear=True):
+            git(self.root,'commit','--allow-empty','-m','fallback')
+            self.assertEqual(git(self.root,'log','-1','--format=%an'),'Local Builder')
+            with patch.dict(os.environ,{'GIT_AUTHOR_NAME':'Exported'}):
+                git(self.root,'commit','--allow-empty','-m','exported')
+            self.assertEqual(git(self.root,'log','-1','--format=%an'),'Exported')
 
 class ModelTests(unittest.TestCase):
     def test_json(self):
