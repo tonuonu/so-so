@@ -23,13 +23,17 @@ request = urllib.request.Request(payload["url"], data, payload.get("headers", {}
 try:
     with urllib.request.urlopen(request, timeout=payload["timeout"]) as response:
         data = response.read(1_000_001)
-    if len(data) > 1_000_000:
-        raise ValueError("model response too large")
-    print(json.dumps({"status":200,"data":json.loads(data)}))
 except urllib.error.HTTPError as exc:
     print(json.dumps({"status":exc.code,"retry_after":exc.headers.get("Retry-After")}))
 except Exception:
     print(json.dumps({"status":0}))
+else:
+    try:
+        if len(data) > 1_000_000:
+            raise ValueError("model response too large")
+        print(json.dumps({"status":200,"data":json.loads(data)}))
+    except ValueError:
+        print(json.dumps({"status":-1}))  # complete but unusable body, not a connection failure
 '''
 
 
@@ -69,6 +73,14 @@ class ModelUnavailable(RuntimeError):
         self.retry_at = retry_at
 
 
+class InvalidProviderResponse(ValueError):
+    """A transport reply that is no model response at all, such as a proxy page or an oversized body."""
+
+
+class RetryableModelFailure(RuntimeError):
+    """A CLI process or HTTP 5xx failure without a recognized cause; it may be transient."""
+
+
 def cli_unavailable(output):
     """Recognize quota failures conservatively; never retain CLI diagnostics."""
     if not re.search(r"(?i)(rate.?limit|quota|usage limit|budget (?:exhausted|exceeded)|too many requests)", output):
@@ -96,6 +108,16 @@ def redact(text):
     text = re.sub(r"(?i)(Bearer\s+)[A-Za-z0-9._~+/-]{8,}", r"\1[REDACTED]", text)
     return text
 
+
+def redact_value(value):
+    """Redact decoded JSON strings and keys before encoding; numbers stay numbers."""
+    if isinstance(value, str):
+        return redact(value)
+    if isinstance(value, dict):
+        return {redact(k) if isinstance(k, str) else k: redact_value(v) for k, v in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [redact_value(v) for v in value]
+    return value
 
 
 class BudgetExceeded(RuntimeError):
@@ -234,12 +256,21 @@ class Router:
             self.failures[name] = failures
             until = max(time.time() + 1, retry_at) if retry_at is not None else time.time() + min(900, 30 * 2 ** min(failures - 1, 5))
             self.cooldowns[name] = until
-            if self.state_path:
-                self.state_path.parent.mkdir(parents=True, exist_ok=True)
-                temporary = self.state_path.with_suffix('.tmp')
-                temporary.write_text(json.dumps({'cooldowns': self.cooldowns, 'failures': self.failures}))
-                temporary.replace(self.state_path)
+            self._persist()
             return until
+
+    def _recovered(self, name):
+        # A provider that answered starts its next failure backoff from the beginning.
+        with self.state_lock:
+            if self.failures.pop(name, None) is not None:
+                self._persist()
+
+    def _persist(self):
+        if self.state_path:
+            self.state_path.parent.mkdir(parents=True, exist_ok=True)
+            temporary = self.state_path.with_suffix('.tmp')
+            temporary.write_text(json.dumps({'cooldowns': self.cooldowns, 'failures': self.failures}))
+            temporary.replace(self.state_path)
 
     def _select(self, role, task, cwd):
         text = task.casefold()
@@ -357,6 +388,7 @@ class Router:
             names = names[min(attempt, len(names) - 1):]
         errors = []
         unavailable = []
+        retryable = False
         for name in names:
             model = self.models[name]
             until = self.cooldowns.get(name, 0)
@@ -396,13 +428,16 @@ class Router:
                 self.budget.remaining()
                 # Avoid storing URLs/headers/credentials from raw transport exceptions.
                 errors.append(name + ": " + type(exc).__name__)
+                retryable = retryable or isinstance(exc, RetryableModelFailure)
                 self.log("model_error", role=role, model=name, error=type(exc).__name__)
             finally:
                 self.slots[name].release()
         if unavailable:
             explicit = [e.retry_at for e in unavailable if e.retry_at is not None]
             raise ModelUnavailable(min(explicit) if explicit else None, str(unavailable[-1]))
-        if self.validate:
+        if self.validate and retryable:
+            # Delivery waits out failed CLI processes and HTTP 5xx; context, credential, HTTP 4xx
+            # and malformed-reply failures are terminal.
             raise ModelUnavailable(reason="all model routes temporarily unavailable")
         raise RuntimeError("all routes failed: " + "; ".join(errors))
 
@@ -466,13 +501,8 @@ class Router:
                 response = self._measured_call(role, name, model, packet, cwd,
                     min(model.get('timeout', 180), self.budget.remaining()))
                 self.budget.remaining()
-                try:
-                    return self._role_response(role, response)
-                except ValueError:
-                    unavailable = cli_unavailable(response) if isinstance(response, str) and model['kind'] in ('command', 'codex', 'kimi') else None
-                    if unavailable is not None:
-                        raise unavailable
-                    raise
+                # Quota text is recognized only in failed-process diagnostics, never in a returned answer.
+                return self._role_response(role, response)
             except (ValueError, IndexError) as exc:
                 self.budget.remaining()
                 # Only safe structural diagnostics, never response excerpts.
@@ -484,6 +514,9 @@ class Router:
                     'invalid_schema': 'response must match the requested role schema'}[problem]
                 self.log('model_protocol_error', role=role, model=name,
                          attempt=attempt + 1, problem=problem, detail=detail, retrying=attempt < 2)
+                if attempt == 2 and isinstance(exc, InvalidProviderResponse):
+                    # The provider, not the model, failed: the next route may still answer.
+                    raise RuntimeError(name + ': provider returned no usable response after 3 attempts') from None
                 if attempt == 2:
                     raise ModelProtocolError(name + ': ' + problem + ' after 3 attempts (' + role + '): ' + detail) from None
                 packet = prompt + ('\n\nPROTOCOL REPAIR: ' + detail + '. '
@@ -503,6 +536,7 @@ class Router:
         try:
             response = self._call(model, prompt, cwd, timeout)
             status = 'returned'
+            self._recovered(name)
             return response
         finally:
             self.log('call_finished', call_id=call_id, role=role, model=name,
@@ -526,7 +560,7 @@ class Router:
                        'KIMI_MODEL_MAX_COMPLETION_TOKENS': str(model.get('max_tokens', 8192))}
                 result = execute(argv + ['--agent-file', str(profile)] + model.get('args', []), cwd, timeout, limit=256000, env=env)
             if result['returncode'] or result['timed_out'] or result['truncated']:
-                raise cli_unavailable(result['output']) or RuntimeError('kimi model failed')
+                raise cli_unavailable(result['output']) or RetryableModelFailure('kimi model failed')
             answers = []
             for line in result['output'].splitlines():
                 try:
@@ -541,14 +575,14 @@ class Router:
                 except ValueError:
                     continue
             if not answers:
-                raise cli_unavailable(result['output']) or RuntimeError('kimi returned no assistant answer')
+                raise cli_unavailable(result['output']) or RetryableModelFailure('kimi returned no assistant answer')
             return answers[-1]
         if kind == "command":
             argv = [x.replace("{cwd}", str(cwd)).replace("{prompt}", prompt) for x in model["command"]]
             stdin = None if any("{prompt}" in x for x in model["command"]) else prompt
             result = execute(argv, cwd, timeout, stdin=stdin, limit=128000)
             if result["returncode"] or result["timed_out"] or result["truncated"]:
-                raise cli_unavailable(result["output"]) or RuntimeError("command model failed")
+                raise cli_unavailable(result["output"]) or RetryableModelFailure("command model failed")
             return result["output"]
         if kind == "codex":
             # Final message lives separately from progress/diagnostics.
@@ -563,7 +597,7 @@ class Router:
                 argv += model.get("args", []) + ["-"]
                 result = execute(argv, cwd, timeout, stdin=prompt)
                 if result["returncode"] or result["timed_out"] or not out.exists():
-                    raise cli_unavailable(result["output"]) or RuntimeError("codex model failed")
+                    raise cli_unavailable(result["output"]) or RetryableModelFailure("codex model failed")
                 if out.stat().st_size > 128000:
                     raise ValueError("model response too large")
                 return out.read_text()
@@ -603,15 +637,18 @@ class Router:
             reason = f"inference request timed out after {timeout:g}s" if result["timed_out"] else "inference transport exited unexpectedly"
             raise ModelUnavailable(reason=reason + " (" + host + ")")
         if result["truncated"]:
-            raise ValueError("inference response exceeds size limit")
+            raise InvalidProviderResponse("inference response exceeds size limit")
         envelope = json.loads(result["output"])
+        if envelope["status"] == -1:
+            self.telemetry.usage = {"error_kind": "invalid_response"}
+            raise InvalidProviderResponse("inference response is not JSON within the size limit")
         if envelope["status"] in (0, 408, 425, 429, 500, 502, 503, 504):
             reason = "inference connection failed or timed out" if envelope["status"] == 0 else "inference service returned HTTP " + str(envelope["status"])
             self.telemetry.usage = {"error_kind": "temporary_provider_failure"}
             raise ModelUnavailable(retry_timestamp(envelope.get("retry_after")), reason + " (" + host + ")")
         if envelope["status"] != 200:
             self.telemetry.usage = {"error_kind": "http_status_" + str(envelope["status"])}
-            raise RuntimeError("HTTP model failed")
+            raise (RetryableModelFailure if envelope["status"] >= 500 else RuntimeError)("HTTP model failed")
         reply = envelope["data"]
         if kind == "ollama":
             self.telemetry.usage = {'input_tokens': reply.get('prompt_eval_count'),

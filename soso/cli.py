@@ -80,7 +80,8 @@ def main(argv=None):
         print(json.dumps({"status": report["status"], "branch": report.get("branch"),
                           "baseline": report.get("baseline", {}).get("score"),
                           "best": report.get("best"), "report": str(runner.report_path)}, indent=2))
-        return 1 if report["status"] in ("error", "invalid_baseline") else 0
+        # Only a stopping rule is success; waiting and interrupted runs can resume.
+        return 0 if report["status"] in ("plateau", "round_limit") else 2 if report["status"] in ("waiting", "interrupted") else 1
     except (ValueError, OSError, RuntimeError, KeyError) as exc:
         print("soso: " + str(exc), file=sys.stderr)
         return 1
