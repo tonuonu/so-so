@@ -10,7 +10,7 @@ import unittest
 from unittest.mock import patch
 from test_core import RepoCase
 from soso.cli import main
-from soso.engine import Run, fingerprint, local_programs
+from soso.engine import Run, fingerprint, local_programs, watched_config
 from soso.models import Router
 from soso.process import git
 from soso.workspace import Workspace
@@ -304,8 +304,8 @@ class SandboxIntegrityTests(RepoCase):
         self.assertEqual(self.config_value('include.path'), '')
 
     def test_change_inside_an_existing_included_file_is_not_accepted(self):
-        # The user's include.path is unchanged, so only an includes-expanded read sees the filter the
-        # worker adds to the included file; it cannot be restored, so the candidate must not be scored.
+        # The user's include.path is unchanged, so no watched key in .git/config changes; the included
+        # file's recorded bytes are put back, and the candidate that changed it is not scored.
         included = self.common_dir() / 'user-include'
         included.write_text('')
         git(self.root, 'config', 'include.path', str(included))
@@ -313,8 +313,9 @@ class SandboxIntegrityTests(RepoCase):
                   f'printf "[filter \\"x\\"]\\n\\tclean = {self.STUB_FILTER}\\n[core]\\n\\tattributesFile = $(cd "$c" && pwd)/attrs\\n" >> "$c/user-include" && '
                   'echo 999 > value.txt')
         evaluation = self.hidden_score_run(change)
-        self.assertFalse(evaluation['valid'])
-        self.assertIn('could not restore', self.events('experiment')[0]['error'])
+        self.assertEqual(evaluation, {'valid': False, 'reason': 'worker changed repository configuration'})
+        self.assertEqual(included.read_text(), '')
+        self.assertEqual(self.restored_keys(self.events('experiment')[0]), ['included:' + str(included)])
 
     def test_user_setting_during_a_run_without_exec_is_left_alone(self):
         # Without command execution a worker cannot change config, so nothing is blamed or restored.
@@ -349,11 +350,13 @@ class SandboxIntegrityTests(RepoCase):
     def test_resumed_run_keeps_the_recorded_baseline(self):
         # A worker change left behind by a hard kill must not become the baseline after resume.
         config = self.config(parallel=1, rounds=1)
+        recorded = watched_config(self.root, '--local')  # e.g. core.filemode, which git init writes
         self.improving_run()
         run_id = sorted(p.name for p in self.common_dir().glob('soso/*-*') if p.is_dir())[-1]
         git(self.root, 'config', 'core.autocrlf', 'true')
         resumed = Run(self.root, {**config, 'allow_exec': True}, 'Improve', allow_exec=True, resume=run_id)
-        self.assertEqual(resumed.watched[0], [])
+        self.assertEqual(resumed.watched[0], recorded)
+        self.assertNotIn(('core.autocrlf', 'true'), resumed.watched[0])
         self.assertIsNone(resumed.watched[1])
 
     def test_failed_restore_ends_the_candidate_with_an_error(self):
