@@ -173,8 +173,14 @@ def _resume_snapshot(managed, task_id):
         active = managed / 'active.json'
         if not active.is_file() or active.is_symlink():
             raise ValueError('no previous task to resume')
-        task_id = json.loads(active.read_text()).get('fingerprint', '')
-    if not task_id or '/' in task_id or '\\' in task_id or task_id in ('.', '..'):
+        try:
+            saved = json.loads(active.read_text())
+        except ValueError:
+            saved = None
+        if not isinstance(saved, dict):
+            raise ValueError('previous task record is unreadable; resume by task ID from .so-so/README.md')
+        task_id = saved.get('fingerprint', '')
+    if not isinstance(task_id, str) or not task_id or '/' in task_id or '\\' in task_id or task_id in ('.', '..'):
         raise ValueError('invalid saved task ID')
     matches = []
     for folder in (managed / 'projects').iterdir():

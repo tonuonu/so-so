@@ -351,6 +351,15 @@ class LauncherTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, 'saved task not found'):
             _resume_snapshot(managed, 'list')
 
+    def test_malformed_active_record_is_a_clear_resume_error(self):
+        from soso.launch import _resume_snapshot
+        managed = self.root / '.so-so'
+        (managed / 'projects').mkdir(parents=True)
+        for text in ('[]', '"entry"', '{"fingerprint": 7}', '{'):
+            (managed / 'active.json').write_text(text)
+            with self.subTest(text=text), self.assertRaisesRegex(ValueError, 'previous task record is unreadable|invalid saved task ID'):
+                _resume_snapshot(managed, '')
+
     def test_saved_task_lookup_used_by_shell_launcher_returns_assignment(self):
         # ./so-so resume reads the saved assignment through _resume_snapshot(...)[3].
         from soso.launch import _resume_snapshot
