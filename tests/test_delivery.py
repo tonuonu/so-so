@@ -756,6 +756,22 @@ print(json.dumps({'score':100 if ok else 0,'complete':ok}))
                 self.assertNotIn(json.dumps(secret)[1:-1], sent)
                 self.assertEqual(sent, 'data={"value": "[REDACTED]"}')
 
+    def test_setup_events_redact_environment_secrets(self):
+        secret = 'setup"secret\\value'
+        original = self.answer
+        def answer(router, role, prompt, cwd, attempt=0, task=None):
+            if 'Create a small acceptance contract' in prompt:
+                router.log('activity', task='uses ' + secret, **{'key ' + secret: 1})
+            return original(router, role, prompt, cwd, attempt)
+        self.answer = answer
+        with patch.dict(os.environ, {'SOSO_TEST_SECRET': secret}):
+            state = self.start()
+        text = (Path(state['report']).parent / 'setup-events.jsonl').read_text()
+        record = next(json.loads(line) for line in text.splitlines() if json.loads(line)['event'] == 'activity')
+        self.assertNotIn(json.dumps(secret)[1:-1], text)
+        self.assertEqual(record['task'], 'uses [REDACTED]')
+        self.assertEqual(record['key [REDACTED]'], 1)
+
     def test_interrupted_epoch_recovers_accepted_head(self):
         first = self.start()
         state_path = Path(first['report'])

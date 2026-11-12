@@ -8,7 +8,7 @@ import shlex
 import time
 
 from .delivery import configure_models, load_model_pool, ollama_models
-from .models import Budget, BudgetExceeded, Router, ModelUnavailable
+from .models import Budget, BudgetExceeded, Router, ModelUnavailable, redact_value
 
 
 def resolve_pool(text, cwd):
@@ -49,7 +49,7 @@ def resolve_pool(text, cwd):
         models['kimi'] = {'kind': 'kimi', 'context_bytes': 60000, 'timeout': 180}
     def log(event, **data):
         with (folder / 'setup-events.jsonl').open('a') as stream:
-            stream.write(json.dumps({'time': time.time(), 'event': event, **data}) + '\n')
+            stream.write(json.dumps(redact_value({'time': time.time(), 'event': event, **data})) + '\n')
     # Inventory explicitly supplied Ollama endpoints, without downloading weights.
     # Sentence punctuation after a URL in prose is not part of the endpoint.
     for url in dict.fromkeys(match.rstrip('.,;:!?\'*_]') for match in re.findall(r'https?://[^\s`<>"\)]+', text)):

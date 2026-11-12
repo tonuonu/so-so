@@ -688,7 +688,7 @@ def start_goal(repo: Path, intent: str | None = None, *, backend='auto', model=N
                 if not state.get('policy'):
                     def setup_log(event, **data):
                         with (folder / 'setup-events.jsonl').open('a') as stream:
-                            stream.write(json.dumps({'time': time.time(), 'event': event, **data}) + '\n')
+                            stream.write(json.dumps(redact_value({'time': time.time(), 'event': event, **data})) + '\n')
                     router = Router(config, Budget(min(config['max_calls'], 8), config['max_seconds']), setup_log)
                     contract = _contract(root, config, state['intent'], router, folder, state.get('setup_repair_reason', ''))
                     state.pop('setup_repair_reason', None)

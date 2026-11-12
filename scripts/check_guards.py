@@ -46,6 +46,12 @@ GUARDS = [
     ('soso/models.py', 'text = text.replace(json.dumps(value)[1:-1], "[REDACTED]").replace(value, "[REDACTED]")',
      'text = text.replace(value, "[REDACTED]")',
      ['test_delivery.DeliveryTests.test_prompt_redacts_secret_escaped_by_embedded_json']),
+    ('soso/delivery.py', "json.dumps(redact_value({'time': time.time(), 'event': event, **data}))",
+     "json.dumps({'time': time.time(), 'event': event, **data})",
+     ['test_delivery.DeliveryTests.test_setup_events_redact_environment_secrets']),
+    ('soso/intent.py', "json.dumps(redact_value({'time': time.time(), 'event': event, **data}))",
+     "json.dumps({'time': time.time(), 'event': event, **data})",
+     ['test_intent.MarkdownPoolTests.test_setup_events_redact_environment_secrets']),
 ]
 
 
