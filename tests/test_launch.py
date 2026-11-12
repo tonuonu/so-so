@@ -339,3 +339,11 @@ class LauncherTests(unittest.TestCase):
         self.assertIn('[Good](projects/good/README.md)', index)
         self.assertIn('[7](projects/number-title/README.md)', index)
         self.assertNotIn('text-time', index)
+
+    def test_saved_task_lookup_used_by_shell_launcher_returns_assignment(self):
+        # ./so-so resume reads the saved assignment through _resume_snapshot(...)[3].
+        from soso.launch import _resume_snapshot
+        first = self.run_goal('First task')
+        self.run_goal('Second task')
+        self.assertEqual(_resume_snapshot(self.root / '.so-so', '')[3], 'Second task')
+        self.assertEqual(_resume_snapshot(self.root / '.so-so', first['resume_id'])[3], 'First task')
