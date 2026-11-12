@@ -63,7 +63,8 @@ Persistent delivery instead opens bounded new epochs while preserving its goal.
 Only one run owns a repository at a time (POSIX file lock in the common Git directory).
 Source must be clean. Worktrees and configuration are pinned to committed source;
 ignored caches are not copied into candidate worktrees. Submodule and large-data
-setup are the caller's responsibility. Git hooks are disabled for runner-managed
+setup are the caller's responsibility; a candidate that adds or changes a gitlink
+(nested repository or submodule) is rejected before evaluation. Git hooks are disabled for runner-managed
 Git commands; do not rely on hooks as your evaluator.
 
 A run retains its result branch/worktree and candidate commit refs. Successful
