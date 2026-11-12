@@ -808,6 +808,19 @@ print(json.dumps({'score':100 if ok else 0,'complete':ok}))
                 self.assertNotEqual(execute(['git', 'config', '--get', key], self.repo)['returncode'], 0)
             self.assertEqual(git(Path(second['worktree']), 'log', '-1', '--format=%an <%ae>'), 'Local Builder <builder@localhost>')
 
+    def test_losing_concurrent_start_leaves_no_orphan_goal(self):
+        import fcntl
+        git(self.repo, 'init', '-b', 'main')
+        git(self.repo, '-c', 'user.name=T', '-c', 'user.email=t@example.invalid', 'commit', '--allow-empty', '-m', 'base')
+        (self.repo / '.git/soso').mkdir()
+        with (self.repo / '.git/soso/lock').open('w') as owner:
+            fcntl.flock(owner, fcntl.LOCK_EX)
+            with self.assertRaisesRegex(RuntimeError, 'another soso controller owns this repository'):
+                self.start()
+        self.assertEqual(list((self.repo / '.git/soso/goals').glob('*')), [])
+        self.assertEqual(git(self.repo, 'branch', '--list', 'soso/*'), '')
+        self.assertEqual(git(self.repo, 'worktree', 'list', '--porcelain').count('worktree '), 1)
+
     def test_model_pool_replaces_project_routing_destinations(self):
         git(self.repo, 'init', '-b', 'main')
         (self.repo / 'evaluate.py').write_text(EVALUATOR)

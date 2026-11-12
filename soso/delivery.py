@@ -582,40 +582,41 @@ def start_goal(repo: Path, intent: str | None = None, *, backend='auto', model=N
     if not goal_id.replace('-', '').isalnum():
         raise ValueError('invalid goal id')
     folder = goals / goal_id
-    if resume_goal:
-        state = json.loads((folder / 'state.json').read_text())
-        if state['source'] != str(repo):
-            raise ValueError('resume goal belongs to another source repository')
-        state['allow_exec'] = state.get('allow_exec', True) and allow_exec
-    else:
-        if (repo / POLICY).exists():
-            raise ValueError('reserved .soso-delivery directory already exists in source')
-        if git(repo, 'status', '--porcelain'):
-            raise ValueError('source is dirty; commit or move pending changes before starting a goal')
-        if intent is None or intent.strip().lower() == 'read intent.md':
-            intent = (repo / 'INTENT.md').read_text()
-        if not intent.strip() or len(intent.encode()) > 8000:
-            raise ValueError('intent must contain 1..8000 bytes')
-        requested_pool = models_path or os.environ.get('SOSO_MODELS_FILE')
-        model_pool = load_model_pool(requested_pool) if requested_pool else None
-        folder.mkdir()
-        if model_pool is not None:
-            atomic_json(folder / 'model-pool.json', model_pool)
-        state = {'goal_id': goal_id, 'source': str(repo), 'intent': redact(intent), 'status': 'starting',
-                 'branch': 'soso/goal-' + goal_id, 'worktree': str(folder / 'worktree'), 'epochs': [],
-                 'next_retry_at': None, 'failures': 0, 'backend': backend, 'model': model,
-                 'allow_exec': allow_exec, 'config_path': config_path,
-                 'models_path': str(Path(requested_pool).resolve()) if requested_pool else None,
-                 'ignore_project_config': ignore_project_config}
-        git(repo, 'worktree', 'add', '-b', state['branch'], state['worktree'], 'HEAD')
-        state['head'] = git(Path(state['worktree']), 'rev-parse', 'HEAD')
-        _save(folder, state)
-    root = Path(state['worktree'])
+    # Lock before creating a goal folder, branch or worktree: a losing start leaves none.
     with (storage / 'lock').open('w') as lock:
         try:
             fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
         except BlockingIOError:
             raise RuntimeError('another soso controller owns this repository') from None
+        if resume_goal:
+            state = json.loads((folder / 'state.json').read_text())
+            if state['source'] != str(repo):
+                raise ValueError('resume goal belongs to another source repository')
+            state['allow_exec'] = state.get('allow_exec', True) and allow_exec
+        else:
+            if (repo / POLICY).exists():
+                raise ValueError('reserved .soso-delivery directory already exists in source')
+            if git(repo, 'status', '--porcelain'):
+                raise ValueError('source is dirty; commit or move pending changes before starting a goal')
+            if intent is None or intent.strip().lower() == 'read intent.md':
+                intent = (repo / 'INTENT.md').read_text()
+            if not intent.strip() or len(intent.encode()) > 8000:
+                raise ValueError('intent must contain 1..8000 bytes')
+            requested_pool = models_path or os.environ.get('SOSO_MODELS_FILE')
+            model_pool = load_model_pool(requested_pool) if requested_pool else None
+            folder.mkdir()
+            if model_pool is not None:
+                atomic_json(folder / 'model-pool.json', model_pool)
+            state = {'goal_id': goal_id, 'source': str(repo), 'intent': redact(intent), 'status': 'starting',
+                     'branch': 'soso/goal-' + goal_id, 'worktree': str(folder / 'worktree'), 'epochs': [],
+                     'next_retry_at': None, 'failures': 0, 'backend': backend, 'model': model,
+                     'allow_exec': allow_exec, 'config_path': config_path,
+                     'models_path': str(Path(requested_pool).resolve()) if requested_pool else None,
+                     'ignore_project_config': ignore_project_config}
+            git(repo, 'worktree', 'add', '-b', state['branch'], state['worktree'], 'HEAD')
+            state['head'] = git(Path(state['worktree']), 'rev-parse', 'HEAD')
+            _save(folder, state)
+        root = Path(state['worktree'])
         if not state.get('policy') and (folder / 'config.json').exists() and (root / POLICY / 'contract.json').exists():
             recovered = json.loads((folder / 'config.json').read_text())
             contract = json.loads((root / POLICY / 'contract.json').read_text())
