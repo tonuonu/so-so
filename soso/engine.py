@@ -94,6 +94,11 @@ def fingerprint(root, patterns):
     return values
 
 
+def index_flags(root):
+    """Index entries marked skip-worktree ("S") or assume-unchanged (lowercase); Git ignores their on-disk edits."""
+    return {x for x in git(root, "ls-files", "-v", "-z").split("\0") if x[:1] == "S" or x[:1].islower()}
+
+
 def _python_entry(command):
     """("-m", module) or ("path", arg) that a python argv runs; None for -c, stdin or another program."""
     if not command or not Path(command[0]).name.startswith("python"):
@@ -440,6 +445,7 @@ class Run:
                     raise ValueError('candidate continuation requires delivery mode')
                 expected = continuation['commit']
             git(self.root, "worktree", "add", "--detach", str(path), expected)
+            flagged = index_flags(path)  # e.g. skip-worktree entries a sparse checkout gives every worktree
             if continuation and fingerprint(path, self.config['protected']) != self.pinned:
                 raise ValueError('retained candidate policy changed')
             if not continuation or continuation['phase'] == 'worker':
@@ -467,8 +473,8 @@ class Run:
             # A nested repository commits only as a gitlink: its files stay on disk, unrecorded and uncleaned.
             if any(line.split()[1] == "160000" for line in git(path, "diff-tree", "-r", base, result["commit"]).splitlines()):
                 result["evaluation"] = {"valid": False, "reason": "embedded repositories are not allowed"}
-            # skip-worktree ("S") and assume-unchanged (lowercase) entries keep on-disk edits out of the commit.
-            elif any(x[:1] == "S" or x[:1].islower() for x in git(path, "ls-files", "-v", "-z").split("\0")):
+            # Index flags the worker set keep its on-disk edits out of the commit.
+            elif index_flags(path) != flagged:
                 result["evaluation"] = {"valid": False, "reason": "index flags hide worktree changes"}
             # Git neither records nor cleans files in a submodule directory; fresh worktrees leave it empty.
             elif any(any((path / link).iterdir()) for link in gitlinks(path) if (path / link).is_dir()):

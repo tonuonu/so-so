@@ -32,6 +32,8 @@ GUARDS = [
      ['test_sandbox_integrity.SandboxIntegrityTests.test_candidate_adding_embedded_repository_is_invalid']),
     ('soso/engine.py', 'elif any(any((path / link).iterdir()) for link in gitlinks(path) if (path / link).is_dir()):', 'elif False:',
      ['test_sandbox_integrity.SandboxIntegrityTests.test_candidate_with_files_inside_a_submodule_directory_is_invalid']),
+    ('soso/engine.py', 'flagged = index_flags(path)', 'flagged = set()',
+     ['test_sandbox_integrity.SandboxIntegrityTests.test_sparse_checkout_flags_inherited_by_worktrees_do_not_invalidate_candidates']),
     ('soso/engine.py', 'x[:1] == "S" or x[:1].islower()', 'False',
      ['test_sandbox_integrity.SandboxIntegrityTests.test_candidate_hiding_worktree_changes_with_index_flags_is_invalid']),
     ('soso/engine.py', 'git(path, "clean", "-ffdqX")', 'pass',
