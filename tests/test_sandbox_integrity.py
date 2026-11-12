@@ -8,6 +8,7 @@ from test_core import RepoCase
 from soso.cli import main
 from soso.engine import Run, fingerprint
 from soso.models import Router
+from soso.process import git
 from soso.workspace import Workspace
 
 
@@ -44,6 +45,27 @@ class SandboxIntegrityTests(RepoCase):
         experiment = report['rounds'][0]['experiments'][0]
         self.assertTrue(experiment.get('commit'), experiment)
         self.assertEqual(experiment['evaluation']['score'], 0)
+        self.assertEqual(report['best'], 0)
+
+    def test_candidate_adding_embedded_repository_is_invalid(self):
+        # A nested repository commits as a gitlink; its files stay on disk and could feed the evaluator.
+        code = ("import json\nfrom pathlib import Path\nbonus=Path('sub/bonus.txt')\n"
+                "print(json.dumps({'score':int(Path('value.txt').read_text())+(int(bonus.read_text()) if bonus.exists() else 0)}))\n")
+        nested = ('git init -q sub && echo 999 > sub/bonus.txt && git -C sub add bonus.txt && git -C sub '
+                  '-c user.name=t -c user.email=t@example.invalid -c commit.gpgsign=false commit -qm nested')
+        steps = iter([{'tool': 'run', 'argv': ['sh', '-c', nested]}, {'tool': 'done', 'summary': 'done'}])
+        def answer(router, role, prompt, cwd, attempt=0, task=None):
+            router.budget.claim()
+            if role == 'reviewer': return {'approve': True}
+            return next(steps)
+        runner = Run(self.root, self.config(evaluate=[sys.executable, '-c', code], parallel=1, rounds=1), 'Improve',
+                     allow_exec=True)
+        with patch.object(Router, 'ask', answer), contextlib.redirect_stdout(io.StringIO()):
+            report = runner.run()
+        experiment = report['rounds'][0]['experiments'][0]
+        self.assertTrue(experiment.get('commit'), experiment)
+        self.assertIn('160000', git(self.root, 'ls-tree', experiment['commit'], 'sub'))
+        self.assertEqual(experiment['evaluation'], {'valid': False, 'reason': 'embedded repositories are not allowed'})
         self.assertEqual(report['best'], 0)
 
     def test_protection_ignores_case(self):

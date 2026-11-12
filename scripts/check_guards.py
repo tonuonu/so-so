@@ -24,6 +24,8 @@ GUARDS = [
      ['test_sandbox_integrity.SandboxIntegrityTests.test_agents_md_name_check_ignores_case']),
     ('soso/engine.py', 'Path(name).name.casefold() == "agents.md"', 'Path(name).name == "AGENTS.md"',
      ['test_sandbox_integrity.SandboxIntegrityTests.test_agents_md_name_check_ignores_case']),
+    ('soso/engine.py', 'if any(line.split()[1] == "160000"', 'if False and any(line.split()[1] == "160000"',
+     ['test_sandbox_integrity.SandboxIntegrityTests.test_candidate_adding_embedded_repository_is_invalid']),
     ('soso/process.py', 'os.killpg(proc.pid, signal.SIGKILL)', 'proc.kill()',
      ['test_core.ProcessTests.test_descendant_cleanup']),
     ('soso/engine.py', 'git(path, "clean", "-ffdqX")', 'pass',

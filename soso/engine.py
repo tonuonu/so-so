@@ -409,7 +409,11 @@ class Run:
             # Score exactly the committed tree, as the baseline was: experiment worktrees start
             # fresh, so every ignored file here is uncommitted worker output.
             git(path, "clean", "-ffdqX")
-            result["evaluation"] = evaluate(path, self.config, self.budget)
+            # A nested repository commits only as a gitlink: its files stay on disk, unrecorded and uncleaned.
+            if any(line.split()[1] == "160000" for line in git(path, "diff-tree", "-r", base, result["commit"]).splitlines()):
+                result["evaluation"] = {"valid": False, "reason": "embedded repositories are not allowed"}
+            else:
+                result["evaluation"] = evaluate(path, self.config, self.budget)
             if (git(path, "rev-parse", "HEAD") != result["commit"]
                     or fingerprint(path, self.config["protected"]) != self.pinned
                     or git(path, "status", "--porcelain")):
