@@ -506,6 +506,36 @@ print(json.dumps({'score':100 if stage>=2 else 0,'complete':stage>=2}))
         self.assertEqual(resumed['status'], 'complete')
         self.assertEqual(worker.call_count, 1)
 
+    def test_goal_worktree_is_checked_out_again_before_the_next_baseline(self):
+        # merge --ff-only rewrites only changed files, so id.txt keeps "$Id$" although the accepted
+        # .gitattributes now expands it; the next epoch's baseline must score the commit as checked out.
+        self.config['max_seconds'] = 600
+        git(self.repo, 'init', '-b', 'main')
+        git(self.repo, 'config', 'user.name', 'Tester')
+        git(self.repo, 'config', 'user.email', 'test@example.invalid')
+        self.repo.joinpath('id.txt').write_text('$Id$\n')
+        git(self.repo, 'add', 'id.txt')
+        git(self.repo, '-c', 'commit.gpgsign=false', 'commit', '-m', 'base')
+        self.use_evaluator('''import json
+from pathlib import Path
+p=Path('stage.txt')
+stage=int(p.read_text()) if p.exists() else 0
+expanded='$Id' + ':' in Path('id.txt').read_text()
+print(json.dumps({'score':10*stage+(50 if expanded else 0),'complete':False}))
+''')
+        def work(router, task, path, config, log, index):
+            (Path(path) / '.gitattributes').write_text('id.txt ident\n')
+            (Path(path) / 'stage.txt').write_text('1')
+            return {'finished': True}
+        with patch('soso.engine.worker', side_effect=work):
+            first = self.start()
+        self.assertEqual(first['epochs'][0]['best'], 60)
+        with patch('soso.delivery.time.time', return_value=time.time() + 5), \
+                patch('soso.engine.worker', return_value={'finished': True}):
+            second = self.start(resume_goal=first['goal_id'])
+        report = json.loads(Path(second['epochs'][-1]['report']).read_text())
+        self.assertEqual(report['baseline']['score'], 60)
+
     def test_interrupt_around_merge_preserves_or_reconciles_reviewed_draft(self):
         for after_merge in (False, True):
             with self.subTest(after_merge=after_merge):

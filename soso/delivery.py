@@ -17,7 +17,8 @@ import uuid
 from urllib.parse import urlsplit
 
 from .architecture import planning_reply
-from .engine import DEFAULTS, Run, atomic_json, evaluate, fingerprint, load_config, local_programs, resources
+from .engine import (DEFAULTS, Run, atomic_json, checkout, evaluate, fingerprint, index_flags, load_config,
+                     local_programs, resources, review_diff)
 from .models import ModelProtocolError, Budget, BudgetExceeded, HTTP_TRANSPORT, ModelUnavailable, Router, redact, redact_value
 from .process import IDENTITY, common_dir, execute, git
 from .workspace import Workspace
@@ -435,6 +436,11 @@ class DeliveryEpoch(Run):
 
     def review(self, candidate):
         base = git(self.integration, 'rev-parse', 'HEAD')
+        diff = review_diff(self.integration, base, candidate['commit'])
+        if diff is None:  # never ask a model to approve a change it cannot see
+            candidate['review'] = {'approve': False, 'useful': False, 'reason': 'the diff shows a text file as binary',
+                                   'head': candidate['commit']}
+            return False
         reply = self.router.ask('reviewer', 'Independently review this increment. This is NOT final acceptance. '
                     'Approve a useful nonregressing partial increment even when the goal is incomplete or milestones '
                     'remain unmet. Compare against the baseline and distinguish new defects introduced by this change '
@@ -444,7 +450,7 @@ class DeliveryEpoch(Run):
                     'break an established interface or invalidate existing evidence. '
                     'Return JSON {"approve":boolean,"useful":boolean,"reason":"...","milestone_statuses":[{"index":0,"status":"complete|in_progress|not_started","evidence":"specific test evidence"}]}. Report zero-based contract milestones; complete requires concrete evidence.\nGOAL:\n' + self.intent +
                     '\nCONTRACT:\n' + json.dumps(self.contract) + '\nBASELINE:\n' + json.dumps(self.report['baseline']) +
-                    '\nDIFF:\n' + git(self.integration, 'diff', '--no-ext-diff', '--no-textconv', base, candidate['commit']) + '\nEVALUATION:\n' +
+                    '\nDIFF:\n' + diff + '\nEVALUATION:\n' +
                     json.dumps(candidate['evaluation']), self.integration, task=self.intent)
         if git(self.integration, 'rev-parse', 'HEAD') != base:
             raise ValueError('review changed accepted HEAD')
@@ -485,6 +491,9 @@ class DeliveryEpoch(Run):
         try:
             self.checkpoint()
             self.log('activity', phase='baseline', task='Baseline acceptance checks')
+            # merge --ff-only rewrites only changed files: check HEAD out again so it is scored as committed.
+            if checkout(self.integration, git(self.integration, 'rev-parse', 'HEAD'), index_flags(self.integration)):
+                raise ValueError('goal worktree holds files Git cannot remove; inspect it before resuming')
             baseline = _bound(self.integration, self.config, self.budget)
             self.report.update(baseline=baseline, best=baseline.get('score'))
             if not baseline['valid']:

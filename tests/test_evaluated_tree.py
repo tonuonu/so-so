@@ -6,6 +6,7 @@ has none of the worker's leftovers and only Git's default configuration.
 import contextlib
 import io
 import json
+import os
 from pathlib import Path
 import re
 import sys
@@ -189,9 +190,11 @@ class EvaluatedTreeTests(RepoCase):
         return prompts[0].split('\nDIFF:\n', 1)[1].split('\nEVALUATION:\n', 1)[0]
 
     def test_replace_objects_do_not_hide_the_change_from_the_reviewer(self):
-        replace = 'git replace "$(git hash-object -w value.txt)" "$(git rev-parse HEAD:value.txt)"'
-        diff = self.reviewed_diff([{'tool': 'write', 'path': 'value.txt', 'content': '999'},
-                                   {'tool': 'run', 'argv': ['sh', '-c', replace]}])
+        # A replace ref already in the repository (one a worker adds is removed, see below) shows the base
+        # value.txt as 999, so a diff that honoured it would show no change at all.
+        replaced = git(self.root, 'hash-object', '-w', '--stdin', stdin='999')
+        git(self.root, 'replace', git(self.root, 'rev-parse', 'HEAD:value.txt'), replaced)
+        diff = self.reviewed_diff([{'tool': 'write', 'path': 'value.txt', 'content': '999'}])
         self.assertIn('+999', diff)
 
     # A worker that sets diff.* is rejected and restored (see below); the user's own external diff
@@ -278,8 +281,52 @@ class EvaluatedTreeTests(RepoCase):
         git(self.root, 'config', 'include.path', str(included))
         report = self.run_candidate([{'tool': 'run', 'argv': ['sh', '-c', f'rm "{included}" && ln -s "{target}" "{included}"']},
                                      {'tool': 'write', 'path': 'value.txt', 'content': '5'}])
-        self.assertIn(f'could not restore {included}; see config_restored', self.experiment(report)['error'])
+        self.assertFalse(included.is_symlink())  # the link itself is replaced by the recorded file
+        self.assertEqual(included.read_text(), '')
         self.assertIn('clean', target.read_text())
+        self.assertEqual(self.experiment(report)['evaluation'], {'valid': False, 'reason': 'worker changed repository configuration'})
+
+    def test_included_file_replaced_by_a_symlink_to_the_same_bytes_is_put_back(self):
+        # The worker would control the link's target later on; a recorded file is never read through a link.
+        included, target = self.common_dir() / 'user-include', self.common_dir() / 'elsewhere'
+        included.write_text('[core]\n\teol = lf\n')
+        target.write_text('[core]\n\teol = lf\n')
+        git(self.root, 'config', 'include.path', str(included))
+        self.run_candidate([{'tool': 'run', 'argv': ['sh', '-c', f'rm "{included}" && ln -s "{target}" "{included}"']},
+                            {'tool': 'write', 'path': 'value.txt', 'content': '5'}])
+        self.assertFalse(included.is_symlink())
+
+    def test_users_symlinked_include_is_recorded_and_restored_at_its_target(self):
+        # e.g. a dotfiles repository: the link stays, its target gets its bytes back.
+        target, included = self.common_dir() / 'dotfiles-include', self.common_dir() / 'user-include'
+        target.write_text('# the user\'s settings\n')
+        included.symlink_to(target)
+        git(self.root, 'config', 'include.path', str(included))
+        report = self.run_candidate([{'tool': 'run', 'argv': ['sh', '-c', self.PLANT]}])
+        self.assertTrue(included.is_symlink())
+        self.assertEqual(target.read_text(), '# the user\'s settings\n')
+        self.assertEqual(self.restored_keys(report), ['included:' + str(target.resolve())])
+
+    def test_included_file_is_put_back_only_when_the_values_it_supplies_change(self):
+        # The worker changes .git/config itself; an unrelated edit in the included file stays.
+        included = self.common_dir() / 'user-include'
+        included.write_text('[core]\n\teol = lf\n')
+        git(self.root, 'config', 'include.path', str(included))
+        change = f'git config core.autocrlf true && printf "[user]\\n\\tname = Someone\\n" >> "{included}"'
+        report = self.run_candidate([{'tool': 'run', 'argv': ['sh', '-c', change]},
+                                     {'tool': 'write', 'path': 'value.txt', 'content': '5'}])
+        self.assertIn('Someone', included.read_text())
+        self.assertEqual(self.restored_keys(report), ['local:core.autocrlf'])
+
+    def test_included_file_that_cannot_be_put_back_blocks_new_runs(self):
+        folder = self.common_dir() / 'conf.d'
+        folder.mkdir()
+        included = folder / 'user-include'
+        included.write_text('[core]\n\teol = lf\n')
+        git(self.root, 'config', 'include.path', str(included))
+        report = self.run_candidate([{'tool': 'run', 'argv': ['sh', '-c', f'rm -r "{folder}"']},
+                                     {'tool': 'write', 'path': 'value.txt', 'content': '5'}])
+        self.assertIn(f'could not restore {included}; see config_restored', self.experiment(report)['error'])
         with self.assertRaisesRegex(ValueError, 'could not restore ' + re.escape(str(included))):
             Run(self.root, self.config(), 'Improve', allow_exec=True)
 
@@ -311,6 +358,188 @@ class EvaluatedTreeTests(RepoCase):
         self.assertIn('filter.x.clean changed in ' + str(included.resolve()), self.experiment(report)['error'])
         with self.assertRaisesRegex(ValueError, 'could not restore ' + re.escape(str(included.resolve()))):
             Run(self.root, self.config(), 'Improve', allow_exec=True)
+
+    # Review follow-ups: the restore record, its repair check and what a restore may touch.
+    def failed_restore(self):
+        """A run whose restore of core.autocrlf fails, leaving soso/unrestored.json behind."""
+        git(self.root, 'config', 'core.autocrlf', 'false')
+        real = engine.git
+        def dropping_add(root, *args, **kwargs):
+            if args[:1] == ('config',) and '--add' in args:
+                return ''
+            return real(root, *args, **kwargs)
+        with patch('soso.engine.git', dropping_add):
+            report = self.run_candidate([{'tool': 'run', 'argv': ['sh', '-c', 'git config core.autocrlf true && echo 5 > value.txt']}])
+        self.assertTrue((self.common_dir() / 'soso/unrestored.json').exists())
+        return report
+
+    def test_included_file_replaced_by_a_fifo_does_not_hang_the_restore(self):
+        included = self.common_dir() / 'user-include'
+        included.write_text('[core]\n\tautocrlf = false\n')
+        git(self.root, 'config', 'include.path', str(included))
+        report = self.run_candidate([{'tool': 'write', 'path': 'value.txt', 'content': '5'},
+                                     {'tool': 'run', 'argv': ['sh', '-c', f'rm "{included}" && mkfifo "{included}"']}])
+        self.assertTrue(included.is_file())
+        self.assertEqual(included.read_text(), '[core]\n\tautocrlf = false\n')
+        self.assertEqual(self.experiment(report)['evaluation'], {'valid': False, 'reason': 'worker changed repository configuration'})
+
+    def test_missing_record_of_a_failed_restore_gives_the_clear_message(self):
+        report = self.failed_restore()
+        os.unlink(self.common_dir() / 'soso' / report['run_id'] / 'watched-config.json')
+        with self.assertRaisesRegex(ValueError, 'delete ' + re.escape(str(self.common_dir() / 'soso/unrestored.json'))):
+            Run(self.root, self.config(), 'Improve', allow_exec=True)
+
+    def test_repair_is_judged_in_the_context_the_record_was_taken_in(self):
+        # Conditional includes that hold in the main worktree but not in a detached candidate worktree.
+        conditions = (('onbranch', 'includeIf.onbranch:main.path'),
+                      ('gitdir', f'includeIf.gitdir:{os.path.realpath(self.root / ".git")}.path'))
+        for name, key in conditions:
+            with self.subTest(condition=name):
+                extra = self.common_dir() / f'{name}-include'
+                extra.write_text('[core]\n\teol = lf\n')
+                git(self.root, 'config', key, str(extra))
+                self.assertEqual(git(self.root, 'config', 'core.eol'), 'lf')  # in effect here, not in candidates
+                self.failed_restore()
+                git(self.root, 'config', 'core.autocrlf', 'false')  # the user repairs it
+                Run(self.root, self.config(), 'Improve', allow_exec=True)
+                self.assertFalse((self.common_dir() / 'soso/unrestored.json').exists())
+                git(self.root, 'config', '--unset', key)
+
+    def test_restore_record_is_private(self):
+        included = self.common_dir() / 'user-include'
+        included.write_text('[http]\n\textraHeader = Authorization: Bearer secret-token\n')
+        included.chmod(0o600)
+        git(self.root, 'config', 'include.path', str(included))
+        report = self.run_candidate([{'tool': 'write', 'path': 'value.txt', 'content': '5'}])
+        record = self.common_dir() / 'soso' / report['run_id'] / 'watched-config.json'
+        self.assertEqual(record.stat().st_mode & 0o777, 0o600)
+
+    def test_included_file_is_restored_by_replacing_it_with_its_mode(self):
+        included = self.common_dir() / 'user-include'
+        included.write_text('# the user\'s settings\n')
+        included.chmod(0o640)
+        inode = included.stat().st_ino
+        git(self.root, 'config', 'include.path', str(included))
+        self.run_candidate([{'tool': 'run', 'argv': ['sh', '-c', self.PLANT]}])
+        self.assertEqual(included.read_text(), '# the user\'s settings\n')
+        self.assertEqual(included.stat().st_mode & 0o777, 0o640)
+        self.assertNotEqual(included.stat().st_ino, inode)  # a new file renamed into place, never half written
+
+    def test_included_file_edit_that_changes_no_watched_setting_is_kept(self):
+        included = self.common_dir() / 'user-include'
+        included.write_text('[core]\n\teol = lf\n')
+        git(self.root, 'config', 'include.path', str(included))
+        report = self.run_candidate([{'tool': 'run', 'argv': ['sh', '-c', f'printf "[user]\\n\\tname = Someone\\n" >> "{included}"']},
+                                     {'tool': 'write', 'path': 'value.txt', 'content': '5'}])
+        self.assertIn('Someone', included.read_text())
+        self.assertEqual(self.experiment(report)['evaluation'].get('score'), 5, self.experiment(report))
+        self.assertNotIn('config_restored', self.experiment(report))
+
+    def test_included_restore_evidence_holds_watched_values_not_file_text(self):
+        included = self.common_dir() / 'user-include'
+        included.write_text('[http]\n\textraHeader = Authorization: Bearer secret-token\n')
+        git(self.root, 'config', 'include.path', str(included))
+        report = self.run_candidate([{'tool': 'run', 'argv': ['sh', '-c', f'printf "[core]\\n\\teol = crlf\\n" >> "{included}"']},
+                                     {'tool': 'write', 'path': 'value.txt', 'content': '5'}])
+        evidence = self.experiment(report)['config_restored']
+        self.assertEqual(evidence, [{'key': 'included:' + str(included.resolve()), 'restored': [], 'found': ['core.eol=crlf']}])
+        self.assertNotIn('secret-token', json.dumps(report))
+
+    # Symlinks, the reviewer's attributes, untracked files and replace refs.
+    def test_symlink_out_of_the_worktree_is_not_scored(self):
+        link = 'mkdir -p ../stash && echo 999 > ../stash/v && rm value.txt && ln -s ../stash/v value.txt'
+        report = self.run_candidate([{'tool': 'run', 'argv': ['sh', '-c', link]}])
+        self.assert_scored_as_committed(report, score_of(VALUE))
+        self.assertEqual(self.experiment(report)['evaluation'], {'valid': False, 'reason': 'symlinks must stay inside the worktree'})
+
+    def test_absolute_symlink_is_not_scored(self):
+        report = self.run_candidate([{'tool': 'run', 'argv': ['sh', '-c', 'ln -s "$PWD/value.txt" alias.txt']},
+                                     {'tool': 'write', 'path': 'value.txt', 'content': '5'}])
+        self.assertEqual(self.experiment(report)['evaluation'], {'valid': False, 'reason': 'symlinks must stay inside the worktree'})
+
+    def two_round_review(self):
+        # Round 1 adds a visible -diff attribute; round 2's change must still reach the reviewer as text.
+        plans = iter([[{'tool': 'write', 'path': '.gitattributes', 'content': 'value.txt -diff\n'},
+                       {'tool': 'write', 'path': 'value.txt', 'content': '5'}],
+                      [{'tool': 'write', 'path': 'value.txt', 'content': '999'}]])
+        steps, prompts = iter(()), []
+        def answer(router, role, prompt, cwd, attempt=0, task=None):
+            nonlocal steps
+            router.budget.claim()
+            if role == 'reviewer':
+                prompts.append(prompt)
+                return {'approve': '+999' in prompt or '+5' in prompt}
+            step = next(steps, None)
+            if step is None:
+                steps = iter(next(plans) + [{'tool': 'done', 'summary': 'done'}])
+                step = next(steps)
+            return step
+        runner = Run(self.root, self.config(parallel=1, rounds=2, patience=2,
+                                            routes={'worker': ['test'], 'reviewer': ['test']}), 'Improve', allow_exec=False)
+        with patch.object(Router, 'ask', answer), contextlib.redirect_stdout(io.StringIO()):
+            report = runner.run()
+        return report, prompts
+
+    def test_attributes_accepted_earlier_do_not_hide_a_later_change_from_the_reviewer(self):
+        report, prompts = self.two_round_review()
+        self.assertEqual(len(prompts), 2)
+        self.assertIn('+999', prompts[1])
+        self.assertEqual(report['best'], 999)
+
+    def test_without_attr_source_a_text_file_shown_as_binary_is_not_approved(self):
+        real = engine.git
+        def old_git(root, *args, **kwargs):
+            if any(str(arg).startswith('--attr-source') for arg in args):
+                raise RuntimeError('git: unknown option')
+            return real(root, *args, **kwargs)
+        with patch('soso.engine.git', old_git):
+            report, prompts = self.two_round_review()
+        self.assertEqual(len(prompts), 1)  # the second candidate never reaches a model with a blind diff
+        self.assertEqual(report['rounds'][1]['experiments'][0]['review']['approve'], False)
+        self.assertEqual(report['best'], 5)
+
+    def test_delivery_reviewer_is_not_asked_about_a_text_file_shown_as_binary(self):
+        (self.root / '.gitattributes').write_text('value.txt -diff\n')
+        self.commit('attributes', '.gitattributes')
+        base = git(self.root, 'rev-parse', 'HEAD')
+        (self.root / 'value.txt').write_text('999')
+        self.commit('candidate', 'value.txt')
+        commit = git(self.root, 'rev-parse', 'HEAD')
+        git(self.root, 'checkout', '-q', '--detach', base)
+        real = engine.git
+        def old_git(root, *args, **kwargs):
+            if any(str(arg).startswith('--attr-source') for arg in args):
+                raise RuntimeError('git: unknown option')
+            return real(root, *args, **kwargs)
+        asked = []
+        epoch = SimpleNamespace(integration=self.root, router=SimpleNamespace(ask=lambda *a, **k: asked.append(a)),
+                                intent='Improve', contract={}, report={'baseline': {}})
+        candidate = {'commit': commit, 'evaluation': {}}
+        with patch('soso.engine.git', old_git):
+            self.assertFalse(DeliveryEpoch.review(epoch, candidate))
+        self.assertEqual(asked, [])
+        self.assertFalse(candidate['review']['approve'])
+
+    def test_untracked_files_are_committed_when_the_worker_hides_them_from_status(self):
+        report = self.run_candidate([{'tool': 'run', 'argv': ['sh', '-c', 'git config status.showUntrackedFiles no']},
+                                     {'tool': 'write', 'path': 'extra.txt', 'content': 'new'}])
+        self.assertIn('extra.txt', git(self.root, 'ls-tree', '--name-only', self.experiment(report)['commit']))
+
+    def test_info_exclude_is_restored(self):
+        exclude = self.common_dir() / 'info/exclude'
+        before = exclude.read_bytes()
+        report = self.run_candidate([{'tool': 'run', 'argv': ['sh', '-c', f'echo "*.txt" >> "{exclude}"']},
+                                     {'tool': 'write', 'path': 'value.txt', 'content': '5'}])
+        self.assertEqual(exclude.read_bytes(), before)
+        self.assertIn('info/exclude', self.restored_keys(report))
+
+    def test_replace_refs_the_worker_adds_are_removed(self):
+        replace = 'git replace "$(git hash-object -w --stdin < /dev/null)" "$(git rev-parse HEAD:value.txt)"'
+        report = self.run_candidate([{'tool': 'run', 'argv': ['sh', '-c', replace]},
+                                     {'tool': 'write', 'path': 'value.txt', 'content': '5'}])
+        self.assertEqual(git(self.root, 'for-each-ref', 'refs/replace/'), '')
+        self.assertTrue(any(key.startswith('refs/replace/') for key in self.restored_keys(report)), report)
+        self.assertEqual(self.experiment(report)['evaluation'], {'valid': False, 'reason': 'worker changed repository configuration'})
 
     # Checks around the checkout itself.
     def test_attributes_that_change_a_protected_file_at_checkout_are_invalid(self):

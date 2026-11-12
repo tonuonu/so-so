@@ -11,6 +11,7 @@ import re
 from pathlib import Path
 import statistics
 import shutil
+import stat
 import threading
 import time
 import uuid
@@ -131,13 +132,77 @@ def watched_config(path, source, file):
     return direct, effective, included
 
 
+IRREGULAR, UNRECORDED = object(), False  # a path that is no regular file; state an older record lacks
+
+
 def config_bytes(name):
-    """A config file's bytes, at most one over MAX_CONFIG_BYTES; None when it does not exist."""
+    """A regular file's bytes, at most one over MAX_CONFIG_BYTES; None when it does not exist. Opened without
+    following a final symlink and without blocking, so a FIFO cannot hang the caller: OSError instead."""
     try:
-        with open(name, "rb") as stream:
-            return stream.read(MAX_CONFIG_BYTES + 1)
+        fd = os.open(name, os.O_RDONLY | os.O_NONBLOCK | os.O_NOFOLLOW)
     except FileNotFoundError:
         return None
+    with os.fdopen(fd, "rb") as stream:
+        if not stat.S_ISREG(os.fstat(fd).st_mode):
+            raise OSError("not a regular file: " + os.fspath(name))
+        return stream.read(MAX_CONFIG_BYTES + 1)
+
+
+def current_bytes(name):
+    """config_bytes, or IRREGULAR for anything that is no regular file (it then differs from any record)."""
+    try:
+        return config_bytes(name)
+    except OSError:
+        return IRREGULAR
+
+
+def replace_file(name, data):
+    """Put data at name through a new file renamed into place, never half written and never through a
+    symlink; a regular file there keeps its mode, anything else becomes owner-only."""
+    try:
+        before = os.lstat(name).st_mode
+        mode = stat.S_IMODE(before) if stat.S_ISREG(before) else 0o600
+    except FileNotFoundError:
+        mode = 0o600
+    temp = f"{name}.soso-{uuid.uuid4().hex[:8]}"
+    with os.fdopen(os.open(temp, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600), "wb") as stream:
+        stream.write(data)
+    try:
+        os.chmod(temp, mode)
+        os.replace(temp, name)
+    finally:
+        with contextlib.suppress(FileNotFoundError):
+            os.unlink(temp)
+
+
+def replace_refs(path):
+    """refs/replace/ entries: replace refs let Git show other content than a commit holds."""
+    listing = git(path, "for-each-ref", "--format=%(refname) %(objectname)", "refs/replace/")
+    return dict(line.split() for line in listing.splitlines())
+
+
+def outside(root, links):
+    """Symlinks among links whose target is absolute or resolves outside the worktree."""
+    top = os.path.realpath(root)
+    return [link for link in links if os.path.islink(os.path.join(top, link)) and (
+        os.path.isabs(os.readlink(os.path.join(top, link)))
+        or os.path.commonpath([top, os.path.realpath(os.path.join(top, link))]) != top)]
+
+
+def review_diff(root, base, commit):
+    """The change as text for a reviewer: no external diff program or textconv, and attributes from an empty
+    tree, so no -diff, binary or diff driver in the repository hides a change. Where Git lacks --attr-source
+    (before 2.40), None when a file without NUL bytes still shows only as binary."""
+    try:
+        return git(root, "--attr-source=" + git(root, "mktree", stdin=""), "diff", "--no-ext-diff", "--no-textconv",
+                   base, commit)
+    except RuntimeError:
+        diff = git(root, "diff", "--no-ext-diff", "--no-textconv", base, commit)
+    for name in re.findall(r"^Binary files (?:a/.*|/dev/null) and b/(.*) differ$", diff, re.M):
+        with contextlib.suppress(RuntimeError):  # e.g. a blob over the output limit: binary enough
+            if "\0" not in git(root, "cat-file", "blob", f"{commit}:{name}"):
+                return None
+    return diff
 
 
 def included(path, config):
@@ -152,25 +217,30 @@ def included(path, config):
             key, _, value = entry.partition("\n")
             if not INCLUDE.fullmatch(key) or not value:
                 continue
-            name = os.path.abspath(os.path.join(os.path.dirname(source), os.path.expanduser(value)))
+            named = os.path.abspath(os.path.join(os.path.dirname(source), os.path.expanduser(value)))
+            name = os.path.realpath(named)  # e.g. a dotfiles symlink: the file itself is recorded and restored
             if name not in found:
                 found[name] = config_bytes(name)
                 if len(found) > MAX_INCLUDED or len(found[name] or b"") > MAX_CONFIG_BYTES:
                     raise ValueError("included Git configuration is too large to record: " + name)
-                pending.append(name)
+                pending.append(named)
     return found
 
 
 def dump_watched(watched):
     encode = lambda data: None if data is None else base64.b64encode(data).decode()
     return {"local": watched[0], "attributes": encode(watched[1]),
-            "included": {name: encode(data) for name, data in watched[2].items()}}
+            "included": {name: encode(data) for name, data in watched[2].items()},
+            "exclude": encode(watched[3]), "replace": watched[4]}
 
 
 def load_watched(saved):
+    """A record as dump_watched wrote it; what an older record lacks is UNRECORDED (included: none) and left alone."""
     decode = lambda text: None if text is None else base64.b64decode(text)
     return (tuple([tuple(entry) for entry in entries] for entries in saved["local"]), decode(saved["attributes"]),
-            {name: decode(text) for name, text in saved.get("included", {}).items()})  # older runs: none recorded
+            {name: decode(text) for name, text in saved.get("included", {}).items()},
+            decode(saved["exclude"]) if "exclude" in saved else UNRECORDED, saved.get("replace", UNRECORDED))
+
 
 def differs_from_commit(path, commit, flagged):
     """Tracked files whose content on disk differs from the commit under Git's own conversion rules.
@@ -328,9 +398,9 @@ def evaluate(root, config, budget):
             "checks": results, "samples": samples}
 
 
-def atomic_json(path, value):
-    temp = path.with_suffix(".tmp")
-    with temp.open("w") as stream:
+def atomic_json(path, value, private=False):
+    temp = path.with_suffix(".tmp")  # private: owner-only, e.g. a record holding the bytes of config files
+    with open(temp, "w", opener=lambda name, flags: os.open(name, flags, 0o600 if private else 0o666)) as stream:
         json.dump(value, stream, indent=2, allow_nan=False)
         stream.write("\n")
         stream.flush()
@@ -353,7 +423,7 @@ class Run:
         self.storage = common / "soso"
         # Watched shared settings, info/attributes and included config files, recorded when the first
         # candidate worktree is created; restores counts restores that changed something.
-        self.attributes, self.watched = common / "info" / "attributes", None
+        self.attributes, self.exclude, self.watched = common / "info" / "attributes", common / "info" / "exclude", None
         self.config_file = os.path.realpath(common / "config")
         self.started_experiments = self.active_experiments = self.restores = 0
         self.storage.mkdir(exist_ok=True)
@@ -364,12 +434,17 @@ class Run:
         self.unrestored = self.storage / "unrestored.json"
         if not resume and self.unrestored.is_file():
             # A setting a worker left in place must not become a new run's baseline.
-            failed = json.loads(self.unrestored.read_text())
-            recorded = load_watched(json.loads((self.storage / failed["run"] / "watched-config.json").read_text()))
-            if self.shared(self.root, recorded[2]) != recorded:
+            keep = f"delete {self.unrestored} to keep the current ones, before starting a new run"
+            try:
+                failed = json.loads(self.unrestored.read_text())
+                record = self.storage / failed["run"] / "watched-config.json"
+                recorded = load_watched(json.loads(record.read_text()))
+            except (OSError, ValueError, KeyError, TypeError, AttributeError):
+                raise ValueError(f"a run could not restore repository settings and its record is gone; check them and "
+                                 + keep) from None
+            if not self.repaired(recorded):
                 raise ValueError(f"run {failed['run']} could not restore {failed['file']}; put back the settings recorded "
-                                 f"in {self.storage / failed['run'] / 'watched-config.json'}, or delete "
-                                 f"{self.unrestored} to keep the current ones, before starting a new run")
+                                 f"in {record}, or " + keep)
             self.unrestored.unlink()
         self.folder = self.storage / self.run_id
         self.folder.mkdir(exist_ok=bool(resume))
@@ -571,8 +646,10 @@ class Run:
     def review(self, candidate):
         if "reviewer" not in self.config["routes"]:
             return True
-        # No external diff program or textconv: either could show the reviewer other text than the change.
-        diff = git(self.integration, "diff", "--no-ext-diff", "--no-textconv", "HEAD", candidate["commit"])
+        diff = review_diff(self.integration, "HEAD", candidate["commit"])
+        if diff is None:  # never ask a model to approve a change it cannot see
+            candidate["review"] = {"approve": False, "reason": "the diff shows a text file as binary"}
+            return False
         # Do not silently review a truncated patch.
         prompt = (prelude('reviewer') + 'Review this measured candidate for correctness, evaluator gaming and scope. '
                   'Return JSON {"approve":true,"reason":"..."}.\nINTENT:\n' + self.intent
@@ -581,11 +658,26 @@ class Run:
         candidate["review"] = reply
         return reply.get("approve") is True
 
-    def shared(self, path, names=None):
-        """Watched shared settings, info/attributes and included config files: those named, or all reached now."""
-        files = included(path, self.config_file) if names is None else {name: config_bytes(name) for name in names}
-        attributes = self.attributes.read_bytes() if self.attributes.is_file() else None
-        return watched_config(path, "--local", self.config_file)[:2], attributes, files
+    def shared(self, path, files=True):
+        """Watched shared state as it is now: settings, info/attributes, included config files (with files),
+        info/exclude and replace refs."""
+        for name in (self.attributes, self.exclude):
+            if len(config_bytes(name) or b"") > MAX_CONFIG_BYTES:
+                raise ValueError(f"{name} is too large to record")
+        return (watched_config(path, "--local", self.config_file)[:2], config_bytes(self.attributes),
+                included(path, self.config_file) if files else {}, config_bytes(self.exclude), replace_refs(path))
+
+    def repaired(self, recorded):
+        """Whether the shared state matches recorded (included files aside: their watched values are part of the
+        settings), read in a detached worktree as candidates are, so includeIf onbranch and gitdir conditions
+        evaluate as they did when it was recorded."""
+        probe = self.storage / ("probe-" + uuid.uuid4().hex[:8])
+        git(self.root, "worktree", "add", "--detach", "--no-checkout", str(probe), "HEAD")
+        try:
+            now = self.shared(probe, files=False)
+        finally:
+            git(self.root, "worktree", "remove", "--force", str(probe))
+        return all(old is UNRECORDED or old == new for i, (old, new) in enumerate(zip(recorded, now)) if i != 2)
 
     def unsettled(self, path, own, restored, restores):
         """Whether a watched setting changed after restores was read, e.g. while files were checked out."""
@@ -600,27 +692,43 @@ class Run:
         included value. Each change is added to restored with its old and new values; return the changed
         names. A difference that cannot be restored raises after the rest is done, and keeps new runs out."""
         changed, problems = [], []
-        text = lambda data: None if data is None else data.decode(errors="replace")[:4000]
-        for name, data in self.watched[2].items():  # first: the expanded settings below read these files
-            found = config_bytes(name)
-            if found == data:
-                continue
-            changed.append("included:" + name)
-            restored.append({"key": "included:" + name, "restored": text(data), "found": text(found)})
+        text = lambda data: None if data is None else "(not a regular file)" if data is IRREGULAR else data.decode(
+            errors="replace")[:4000]
+
+        def put(name, data):  # the recorded bytes, or no file, in place of whatever is there now
             try:
                 if data is None:
-                    os.unlink(name)
-                else:  # in place, keeping its mode; never through a symlink
-                    with os.fdopen(os.open(name, os.O_WRONLY | os.O_CREAT | os.O_TRUNC | os.O_NOFOLLOW, 0o644), "wb") as stream:
-                        stream.write(data)
+                    with contextlib.suppress(FileNotFoundError):
+                        os.unlink(name)
+                else:
+                    replace_file(name, data)
             except OSError:
                 problems.append((name, f"could not restore {name}; see config_restored"))
+
+        def included_files(found, before, after):
+            for name, data in self.watched[2].items():
+                if found(name):
+                    changed.append("included:" + name)
+                    restored.append({"key": "included:" + name, "restored": before, "found": after})
+                    put(name, data)
+
+        # A FIFO or other non-file would block Git or the reads below: the recorded file goes back first.
+        included_files(lambda name: current_bytes(name) is IRREGULAR, "a regular file", "not a regular file")
         for source, file, recorded, scope in (("--local", self.config_file, self.watched[0], "local"),
                                               (own[0], own[1], own[2], "worktree")):
             where = ["--local"] if source == "--local" else ["--file", str(source)]
             direct, effective, _ = watched_config(path, source, file)
             if (direct, effective) == recorded:
                 continue
+            supplied = lambda entries, own_entries: [entry for entry in entries if entry not in own_entries]
+            if scope == "local" and supplied(effective, direct) != supplied(recorded[1], recorded[0]):
+                # Watched values an included file supplies changed: its recorded bytes go back. Other edits to
+                # it are kept, and only the watched values are logged, never the file's other content.
+                keys = {k for k, _ in recorded[1] + effective if [v for x, v in recorded[1] if x == k]
+                        != [v for x, v in effective if x == k]}
+                included_files(lambda name: current_bytes(name) != self.watched[2][name],
+                               [f"{k}={v}" for k, v in recorded[1] if k in keys], [f"{k}={v}" for k, v in effective if k in keys])
+                direct, effective, _ = watched_config(path, source, file)
             for key in dict.fromkeys(k for k, _ in recorded[0] + direct):
                 before, after = [v for k, v in recorded[0] if k == key], [v for k, v in direct if k == key]
                 if before != after:
@@ -638,15 +746,23 @@ class Run:
                 files = sorted({f for k in keys for f in included.get(k, [])}) or ["an included file"]
                 problems.append((", ".join(files), f"{scope} settings {', '.join(keys)} changed in {', '.join(files)}; "
                                  "repair them there, the runner restores only included files it recorded"))
-        attributes = self.attributes.read_bytes() if self.attributes.is_file() else None
-        if attributes != self.watched[1]:
-            changed.append("info/attributes")
-            restored.append({"key": "info/attributes", "restored": text(self.watched[1]), "found": text(attributes)})
-            if self.watched[1] is None:
-                self.attributes.unlink()
-            else:
-                self.attributes.parent.mkdir(exist_ok=True)
-                self.attributes.write_bytes(self.watched[1])  # in place: keeps its mode
+        for label, name, data in (("info/attributes", self.attributes, self.watched[1]),
+                                  ("info/exclude", self.exclude, self.watched[3])):
+            found = current_bytes(name)
+            if data is UNRECORDED or found == data:
+                continue
+            changed.append(label)
+            restored.append({"key": label, "restored": text(data), "found": text(found)})
+            name.parent.mkdir(exist_ok=True)
+            put(name, data)
+        if self.watched[4] is not UNRECORDED:  # replace refs: the runner ignores them, the user's own Git does not
+            refs = replace_refs(path)
+            for ref in dict.fromkeys([*self.watched[4], *refs]):
+                before, after = self.watched[4].get(ref), refs.get(ref)
+                if before != after:
+                    changed.append(ref)
+                    restored.append({"key": ref, "restored": before, "found": after})
+                    git(path, "update-ref", *(["-d", ref] if before is None else [ref, before]))
         self.restores += bool(changed)
         if problems:  # a new run must not adopt them as its baseline: Run() refuses to start until repaired
             atomic_json(self.unrestored, {"run": self.run_id, "file": ", ".join(file for file, _ in problems)})
@@ -689,7 +805,7 @@ class Run:
             with self.lock:
                 if self.watched is None:
                     self.watched = self.shared(path)
-                    atomic_json(self.folder / "watched-config.json", dump_watched(self.watched))
+                    atomic_json(self.folder / "watched-config.json", dump_watched(self.watched), private=True)
                 own_real = os.path.realpath(own_file)  # read even if the extension is off
                 own = (own_file, own_real, watched_config(path, own_file, own_real)[:2])
                 recorded = guarded
@@ -732,7 +848,9 @@ class Run:
                 restores = self.restores
             # The worker's files on disk against its commit, without trusting the index's stat cache.
             drift = differs_from_commit(path, result["commit"], flagged)
-            modes = [line.split()[1] for line in git(path, "diff-tree", "-r", base, result["commit"]).splitlines()]
+            changes = git(path, "diff-tree", "-r", "-z", base, result["commit"]).split("\0")
+            changes = [(meta.split()[1], name) for meta, name in zip(changes[0::2], changes[1::2])]
+            modes, links = [mode for mode, _ in changes], [name for mode, name in changes if mode == "120000"]
             # A nested repository commits only as a gitlink: its files stay on disk, unrecorded and uncleaned.
             if any(mode == "160000" for mode in modes):
                 result["evaluation"] = {"valid": False, "reason": "embedded repositories are not allowed"}
@@ -756,6 +874,9 @@ class Run:
                 result["evaluation"] = {"valid": False, "reason": "files Git cannot remove"}
             elif guarded and self.unsettled(path, own, restored, restores):
                 result["evaluation"] = {"valid": False, "reason": "repository configuration changed during checkout"}
+            # A link out of the worktree scores files that are not in the commit, and breaks on a clone.
+            elif outside(path, links):
+                result["evaluation"] = {"valid": False, "reason": "symlinks must stay inside the worktree"}
             # The commit's attributes, e.g. eol or an encoding, decide how protected files are written.
             elif fingerprint(path, self.config["protected"]) != self.pinned:
                 result["evaluation"] = {"valid": False, "reason": "checkout changed protected files"}

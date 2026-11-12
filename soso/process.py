@@ -112,8 +112,9 @@ def git(root, *args, ok=(0,), env=None, stdin=None):
     # commit holds. No advice either: it goes to stderr, which is read together with the output.
     env.update(GIT_NO_REPLACE_OBJECTS="1", GIT_ADVICE="0", **(extra or {}))
     # Run no repository-configured programs: no hooks, and no fsmonitor hook, which could also report
-    # edited files as unchanged.
-    result = execute(["git", "-c", "core.hooksPath=/dev/null", "-c", "core.fsmonitor=false", *args], root, timeout=60,
+    # edited files as unchanged. Status lists untracked files as by default, whatever the repository says.
+    result = execute(["git", "-c", "core.hooksPath=/dev/null", "-c", "core.fsmonitor=false",
+                      "-c", "status.showUntrackedFiles=normal", *args], root, timeout=60,
                      stdin=stdin, limit=2_000_000, env=env)
     if result["returncode"] not in ok or result["timed_out"]:
         raise RuntimeError("git " + args[0] + ": " + result["output"][-4000:])
