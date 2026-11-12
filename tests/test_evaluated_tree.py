@@ -222,10 +222,10 @@ class EvaluatedTreeTests(RepoCase):
 
     def test_filter_planted_in_an_included_file_is_restored_and_not_adopted_by_the_next_run(self):
         included = self.common_dir() / 'user-include'
-        included.write_text('')
+        included.write_text('# the user\'s settings\n')
         git(self.root, 'config', 'include.path', str(included))
         first = self.run_candidate([{'tool': 'run', 'argv': ['sh', '-c', self.PLANT]}])
-        self.assertEqual(included.read_text(), '')
+        self.assertEqual(included.read_text(), '# the user\'s settings\n')
         self.assertEqual(self.experiment(first)['evaluation'], {'valid': False, 'reason': 'worker changed repository configuration'})
         self.assertEqual(self.restored_keys(first), ['included:' + str(included)])
         self.assertIn(self.STUB_FILTER, json.dumps(self.experiment(first)['config_restored']))
@@ -248,7 +248,7 @@ class EvaluatedTreeTests(RepoCase):
         git(self.root, 'config', 'include.path', str(included))
         report = self.run_candidate([{'tool': 'run', 'argv': ['sh', '-c', f'rm "{included}" && ln -s "{target}" "{included}"']},
                                      {'tool': 'write', 'path': 'value.txt', 'content': '5'}])
-        self.assertEqual(self.experiment(report)['error'], f'could not restore {included}; see config_restored')
+        self.assertIn(f'could not restore {included}; see config_restored', self.experiment(report)['error'])
         self.assertIn('clean', target.read_text())
         with self.assertRaisesRegex(ValueError, 'could not restore ' + re.escape(str(included))):
             Run(self.root, self.config(), 'Improve', allow_exec=True)
@@ -278,8 +278,8 @@ class EvaluatedTreeTests(RepoCase):
         report = self.run_candidate([{'tool': 'run', 'argv': ['sh', '-c', 'git remote add origin https://example.invalid/p.git']},
                                      {'tool': 'write', 'path': 'value.txt', 'content': '5'}])
         self.assertFalse(self.experiment(report)['evaluation']['valid'])
-        self.assertIn('could not restore', self.experiment(report)['error'])
-        with self.assertRaisesRegex(ValueError, 'could not restore'):
+        self.assertIn('filter.x.clean changed in ' + str(included.resolve()), self.experiment(report)['error'])
+        with self.assertRaisesRegex(ValueError, 'could not restore ' + re.escape(str(included.resolve()))):
             Run(self.root, self.config(), 'Improve', allow_exec=True)
 
     # Checks around the checkout itself.

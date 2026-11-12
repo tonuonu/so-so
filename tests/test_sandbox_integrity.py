@@ -317,6 +317,38 @@ class SandboxIntegrityTests(RepoCase):
         self.assertEqual(included.read_text(), '')
         self.assertEqual(self.restored_keys(self.events('experiment')[0]), ['included:' + str(included)])
 
+    def test_failed_restore_of_an_included_setting_leaves_repository_config_untouched(self):
+        # The user's includes supply core.eol, one only once a remote matches. The worker adds such a remote
+        # (unwatched) and writes info/attributes. The included files are unchanged, so no recorded bytes can
+        # put core.eol back: no override may be written into .git/config; the attributes are still restored.
+        included, conditional = self.common_dir() / 'user-include', self.common_dir() / 'conditional'
+        included.write_text('[core]\n\teol = lf\n')
+        conditional.write_text('[core]\n\teol = crlf\n')
+        git(self.root, 'config', 'include.path', str(included))
+        git(self.root, 'config', 'includeIf.hasconfig:remote.*.url:https://example.invalid/**.path', str(conditional))
+        change = ('git remote add origin https://example.invalid/p.git && '
+                  'printf "*.bin binary\n" > "$(git rev-parse --git-common-dir)/info/attributes" && echo 5 > value.txt')
+        evaluation = self.hidden_score_run(change)
+        self.assertFalse(evaluation['valid'])
+        experiment = self.events('experiment')[0]
+        self.assertIn(str(conditional.resolve()), experiment['error'])
+        self.assertIn('core.eol', experiment['error'])
+        self.assertEqual(git(self.root, 'config', '--file', str(self.common_dir() / 'config'), '--get-all', 'core.eol', ok=(0, 1)), '')
+        self.assertFalse((self.common_dir() / 'info/attributes').exists())
+        self.assertEqual(self.restored_keys(experiment), ['info/attributes'])
+        self.assertEqual([e['keys'] for e in self.events('repository_config_restored')], [['info/attributes']])
+
+    def test_commit_comparison_leaves_the_candidate_index_untouched(self):
+        # Later checks read the candidate's index (worker-set flags, status), so the comparison must use
+        # its own index: read-tree into the real one would drop flags and staged state.
+        from soso.engine import differs_from_commit
+        (self.root / 'value.txt').write_text('7')
+        git(self.root, 'add', 'value.txt')
+        git(self.root, 'update-index', '--assume-unchanged', 'evaluate.py')
+        before = (git(self.root, 'ls-files', '-v'), git(self.root, 'diff', '--cached', '--name-only'))
+        self.assertEqual(differs_from_commit(self.root, 'HEAD', set()), ['value.txt'])
+        self.assertEqual((git(self.root, 'ls-files', '-v'), git(self.root, 'diff', '--cached', '--name-only')), before)
+
     def test_user_setting_during_a_run_without_exec_is_left_alone(self):
         # Without command execution a worker cannot change config, so nothing is blamed or restored.
         steps = iter([{'tool': 'write', 'path': 'value.txt', 'content': '5'}, {'tool': 'done', 'summary': 'done'}])
@@ -350,13 +382,13 @@ class SandboxIntegrityTests(RepoCase):
     def test_resumed_run_keeps_the_recorded_baseline(self):
         # A worker change left behind by a hard kill must not become the baseline after resume.
         config = self.config(parallel=1, rounds=1)
-        recorded = watched_config(self.root, '--local')  # e.g. core.filemode, which git init writes
+        recorded = watched_config(self.root, '--local', os.path.realpath(self.common_dir() / 'config'))[:2]
         self.improving_run()
         run_id = sorted(p.name for p in self.common_dir().glob('soso/*-*') if p.is_dir())[-1]
         git(self.root, 'config', 'core.autocrlf', 'true')
         resumed = Run(self.root, {**config, 'allow_exec': True}, 'Improve', allow_exec=True, resume=run_id)
-        self.assertEqual(resumed.watched[0], recorded)
-        self.assertNotIn(('core.autocrlf', 'true'), resumed.watched[0])
+        self.assertEqual(resumed.watched[0], recorded)  # e.g. core.filemode, which git init writes
+        self.assertNotIn(('core.autocrlf', 'true'), resumed.watched[0][1])
         self.assertIsNone(resumed.watched[1])
 
     def test_failed_restore_ends_the_candidate_with_an_error(self):
@@ -379,7 +411,7 @@ class SandboxIntegrityTests(RepoCase):
             report = runner.run()
         experiment = report['rounds'][0]['experiments'][0]
         self.assertIn('could not restore', experiment.get('error', ''))
-        self.assertEqual(set(self.restored_keys(experiment)), {'local:core.autocrlf'})  # one entry per attempt
+        self.assertEqual(self.restored_keys(experiment), ['local:core.autocrlf'])  # logged once
 
     def parallel_run(self, plans, observe=None):
         # Candidates 0 and 1 run together; candidate 0 starts first and finishes after candidate 1's change.

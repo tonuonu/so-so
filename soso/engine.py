@@ -110,17 +110,25 @@ INCLUDE = re.compile(r"include\.path|includeif\..*\.path", re.I)
 MAX_INCLUDED, MAX_CONFIG_BYTES = 64, 1 << 20
 
 
-def watched_config(path, source):
-    """Watched (key, value) entries, includes expanded, from --local or one config file, in file order."""
-    if source == "--local":
-        where = ["--local"]
-    elif not source.is_file():
-        return []
-    else:
-        where = ["--file", str(source)]
-    listing = git(path, "config", *where, "--includes", "--list", "-z", ok=(0, 1))
-    entries = [entry.split("\n", 1) for entry in listing.split("\0") if entry]
-    return [(entry[0], entry[1] if len(entry) > 1 else "true") for entry in entries if WATCHED.fullmatch(entry[0])]
+def watched_config(path, source, file):
+    """Watched settings of --local or one config file, includes expanded, in file order: ([(key, value)]
+    written in that file itself, [(key, value)] in effect, {key: [files]} that supply included values)."""
+    if source != "--local" and not source.is_file():
+        return [], [], {}
+    where = ["--local"] if source == "--local" else ["--file", str(source)]
+    parts = git(path, "config", *where, "--includes", "--show-origin", "--list", "-z", ok=(0, 1)).split("\0")
+    direct, effective, included = [], [], {}
+    for origin, entry in zip(parts[::2], parts[1::2]):
+        key, _, value = entry.partition("\n")
+        if WATCHED.fullmatch(key):
+            value = value if "\n" in entry else "true"
+            origin = os.path.realpath(os.path.join(path, origin.removeprefix("file:")))
+            effective.append((key, value))
+            if origin == file:
+                direct.append((key, value))
+            else:
+                included.setdefault(key, []).append(origin)
+    return direct, effective, included
 
 
 def config_bytes(name):
@@ -161,7 +169,7 @@ def dump_watched(watched):
 
 def load_watched(saved):
     decode = lambda text: None if text is None else base64.b64decode(text)
-    return ([tuple(entry) for entry in saved["local"]], decode(saved["attributes"]),
+    return (tuple([tuple(entry) for entry in entries] for entries in saved["local"]), decode(saved["attributes"]),
             {name: decode(text) for name, text in saved.get("included", {}).items()})  # older runs: none recorded
 
 def differs_from_commit(path, commit, flagged):
@@ -345,7 +353,8 @@ class Run:
         self.storage = common / "soso"
         # Watched shared settings, info/attributes and included config files, recorded when the first
         # candidate worktree is created; restores counts restores that changed something.
-        self.attributes, self.config_file, self.watched = common / "info" / "attributes", common / "config", None
+        self.attributes, self.watched = common / "info" / "attributes", None
+        self.config_file = os.path.realpath(common / "config")
         self.started_experiments = self.active_experiments = self.restores = 0
         self.storage.mkdir(exist_ok=True)
         self.lock = threading.Lock()
@@ -575,12 +584,8 @@ class Run:
     def shared(self, path, names=None):
         """Watched shared settings, info/attributes and included config files: those named, or all reached now."""
         files = included(path, self.config_file) if names is None else {name: config_bytes(name) for name in names}
-        return watched_config(path, "--local"), self.attributes.read_bytes() if self.attributes.is_file() else None, files
-
-    def unrestorable(self, name):
-        """Record a shared setting that could not be restored, so that no new run adopts it; return the error."""
-        atomic_json(self.unrestored, {"run": self.run_id, "file": str(name)})
-        return RuntimeError(f"could not restore {name}; see config_restored")
+        attributes = self.attributes.read_bytes() if self.attributes.is_file() else None
+        return watched_config(path, "--local", self.config_file)[:2], attributes, files
 
     def unsettled(self, path, own, restored, restores):
         """Whether a watched setting changed after restores was read, e.g. while files were checked out."""
@@ -590,9 +595,11 @@ class Run:
 
     def restore_watched(self, path, own, restored):
         """Put back watched settings (shared, and this worktree's config.worktree), included config files and
-        info/attributes as recorded; call with self.lock held. Each change is added to restored with its old
-        and new values; return the changed names. A restore that does not take raises."""
-        changed = []
+        info/attributes as recorded; call with self.lock held. Included files get their recorded bytes back;
+        otherwise only entries written in the config files themselves are rewritten, never an override for an
+        included value. Each change is added to restored with its old and new values; return the changed
+        names. A difference that cannot be restored raises after the rest is done, and keeps new runs out."""
+        changed, problems = [], []
         text = lambda data: None if data is None else data.decode(errors="replace")[:4000]
         for name, data in self.watched[2].items():  # first: the expanded settings below read these files
             found = config_bytes(name)
@@ -606,23 +613,31 @@ class Run:
                 else:  # in place, keeping its mode; never through a symlink
                     with os.fdopen(os.open(name, os.O_WRONLY | os.O_CREAT | os.O_TRUNC | os.O_NOFOLLOW, 0o644), "wb") as stream:
                         stream.write(data)
-            except OSError as exc:
-                raise self.unrestorable(name) from exc
-        for source, recorded, scope in (("--local", self.watched[0], "local"), (own[0], own[1], "worktree")):
+            except OSError:
+                problems.append((name, f"could not restore {name}; see config_restored"))
+        for source, file, recorded, scope in (("--local", self.config_file, self.watched[0], "local"),
+                                              (own[0], own[1], own[2], "worktree")):
             where = ["--local"] if source == "--local" else ["--file", str(source)]
-            current = watched_config(path, source)
-            if current == recorded:
+            direct, effective, _ = watched_config(path, source, file)
+            if (direct, effective) == recorded:
                 continue
-            for key in dict.fromkeys(k for k, _ in recorded + current):
-                before, after = [v for k, v in recorded if k == key], [v for k, v in current if k == key]
+            for key in dict.fromkeys(k for k, _ in recorded[0] + direct):
+                before, after = [v for k, v in recorded[0] if k == key], [v for k, v in direct if k == key]
                 if before != after:
                     changed.append(scope + ":" + key)
                     restored.append({"key": scope + ":" + key, "restored": before, "found": after})
                     git(path, "config", *where, "--unset-all", key, ok=(0, 5))
                     for value in before:
                         git(path, "config", *where, "--add", key, value)
-            if watched_config(path, source) != recorded:  # e.g. an include an unwatched setting turned on
-                raise self.unrestorable(self.config_file if source == "--local" else source)
+            direct, effective, included = watched_config(path, source, file)
+            if direct != recorded[0]:
+                problems.append((file, f"could not restore the {scope} Git configuration; see config_restored"))
+            elif effective != recorded[1]:  # e.g. an include that an unwatched setting turned on
+                keys = sorted(k for k in dict.fromkeys(k for k, _ in recorded[1] + effective)
+                              if [v for x, v in recorded[1] if x == k] != [v for x, v in effective if x == k])
+                files = sorted({f for k in keys for f in included.get(k, [])}) or ["an included file"]
+                problems.append((", ".join(files), f"{scope} settings {', '.join(keys)} changed in {', '.join(files)}; "
+                                 "repair them there, the runner restores only included files it recorded"))
         attributes = self.attributes.read_bytes() if self.attributes.is_file() else None
         if attributes != self.watched[1]:
             changed.append("info/attributes")
@@ -633,6 +648,9 @@ class Run:
                 self.attributes.parent.mkdir(exist_ok=True)
                 self.attributes.write_bytes(self.watched[1])  # in place: keeps its mode
         self.restores += bool(changed)
+        if problems:  # a new run must not adopt them as its baseline: Run() refuses to start until repaired
+            atomic_json(self.unrestored, {"run": self.run_id, "file": ", ".join(file for file, _ in problems)})
+            raise RuntimeError("; ".join(message for _, message in problems))
         return changed
 
     def experiment(self, task, round_number, index, continuation=None):
@@ -671,7 +689,8 @@ class Run:
                 if self.watched is None:
                     self.watched = self.shared(path)
                     atomic_json(self.folder / "watched-config.json", dump_watched(self.watched))
-                own = (own_file, watched_config(path, own_file))  # read even if the extension is off
+                own_real = os.path.realpath(own_file)  # read even if the extension is off
+                own = (own_file, own_real, watched_config(path, own_file, own_real)[:2])
                 recorded = guarded
             if continuation and fingerprint(path, self.config['protected']) != self.pinned:
                 raise ValueError('retained candidate policy changed')
@@ -774,6 +793,7 @@ class Run:
                     with contextlib.suppress(RuntimeError):
                         self.restore_watched(path, own, restored)
             if restored:  # logged on every path, including errors, with names only; values stay in the result
+                restored = list({change["key"]: change for change in reversed(restored)}.values())[::-1]  # first per key
                 result["config_restored"] = redact_value(restored)
                 self.log("repository_config_restored", candidate=index, keys=[change["key"] for change in restored])
             if cleanup and path.exists():
