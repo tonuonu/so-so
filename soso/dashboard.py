@@ -399,6 +399,8 @@ class Dashboard:
                     self.send_header('Content-Security-Policy', "default-src 'self'; object-src 'none'; frame-ancestors 'none'; base-uri 'none'")
                     self.end_headers()
                     self.wfile.write(data)
+                except (BrokenPipeError, ConnectionResetError):
+                    return  # the client closed the connection; nothing to log or answer
                 except Exception as exc:
                     # Unknown routes and assets are 404; anything else is a monitor defect, logged once per reason.
                     if route != 'api' and isinstance(exc, (OSError, ValueError, TypeError, KeyError)):

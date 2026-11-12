@@ -179,6 +179,21 @@ class DashboardTests(unittest.TestCase):
                     self.assertEqual(r.read(),b'listed image')
                     self.assertEqual(r.headers['Content-Type'],'image/png')
 
+    def test_client_abort_is_not_logged_or_answered(self):
+        import contextlib,io
+        with tempfile.TemporaryDirectory() as tmp:
+            root=Path(tmp);self.fixture(root)
+            with Dashboard(root) as d:
+                handler=d.server.RequestHandlerClass
+                for route in ('api',''):
+                    for error in (BrokenPipeError,ConnectionResetError):
+                        with self.subTest(route=route,error=error.__name__), contextlib.redirect_stderr(io.StringIO()) as errors, \
+                                patch.object(handler,'end_headers',side_effect=error), patch.object(handler,'send_error') as send_error:
+                            with self.assertRaises(Exception):urllib.request.urlopen(d.url+route)
+                            self.assertEqual(errors.getvalue(),'')
+                            send_error.assert_not_called()
+                self.assertIsNone(getattr(d,'last_error',None))
+
     def test_milestone_progress_requires_evidence_from_accepted_candidate(self):
         with tempfile.TemporaryDirectory() as tmp:
             root=Path(tmp);_,project,report=self.fixture(root)
