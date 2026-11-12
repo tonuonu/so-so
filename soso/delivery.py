@@ -444,7 +444,7 @@ class DeliveryEpoch(Run):
                     'break an established interface or invalidate existing evidence. '
                     'Return JSON {"approve":boolean,"useful":boolean,"reason":"...","milestone_statuses":[{"index":0,"status":"complete|in_progress|not_started","evidence":"specific test evidence"}]}. Report zero-based contract milestones; complete requires concrete evidence.\nGOAL:\n' + self.intent +
                     '\nCONTRACT:\n' + json.dumps(self.contract) + '\nBASELINE:\n' + json.dumps(self.report['baseline']) +
-                    '\nDIFF:\n' + git(self.integration, 'diff', base, candidate['commit']) + '\nEVALUATION:\n' +
+                    '\nDIFF:\n' + git(self.integration, 'diff', '--no-ext-diff', '--no-textconv', base, candidate['commit']) + '\nEVALUATION:\n' +
                     json.dumps(candidate['evaluation']), self.integration, task=self.intent)
         if git(self.integration, 'rev-parse', 'HEAD') != base:
             raise ValueError('review changed accepted HEAD')

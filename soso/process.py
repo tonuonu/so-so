@@ -104,16 +104,17 @@ def common_dir(root):
     return os.path.realpath(os.path.join(root, result["output"].strip()))
 
 
-def git(root, *args, ok=(0,), env=None):
-    extra, env = env, None
+def git(root, *args, ok=(0,), env=None, stdin=None):
+    extra, env = env, dict(os.environ)
     if IDENTITY and ("scope" not in IDENTITY or common_dir(root) in IDENTITY["scope"]):
-        env = {**{k: v for k, v in IDENTITY.items() if k != "scope"}, **os.environ}
-    if extra:
-        env = {**(env or os.environ), **extra}
+        env = {**{k: v for k, v in IDENTITY.items() if k != "scope"}, **env}
+    # Objects as stored: replace refs could show the reviewer and the checkout other content than the
+    # commit holds. No advice either: it goes to stderr, which is read together with the output.
+    env.update(GIT_NO_REPLACE_OBJECTS="1", GIT_ADVICE="0", **(extra or {}))
     # Run no repository-configured programs: no hooks, and no fsmonitor hook, which could also report
     # edited files as unchanged.
     result = execute(["git", "-c", "core.hooksPath=/dev/null", "-c", "core.fsmonitor=false", *args], root, timeout=60,
-                     limit=2_000_000, env=env)
+                     stdin=stdin, limit=2_000_000, env=env)
     if result["returncode"] not in ok or result["timed_out"]:
         raise RuntimeError("git " + args[0] + ": " + result["output"][-4000:])
     if result["truncated"]:
