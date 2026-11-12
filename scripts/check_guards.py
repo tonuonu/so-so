@@ -318,7 +318,7 @@ GUARDS = [
       'test_evaluated_tree.EvaluatedTreeTests.test_old_git_shows_a_committed_lockfile_marked_minus_diff_as_text']),
     ('soso/engine.py', '"binary" if b"\\0" in head else "text"', '"text"',
      ['test_evaluated_tree.EvaluatedTreeTests.test_large_binary_files_are_approvable']),
-    ('soso/engine.py', '"empty" if not size else ', '', ['test_evaluated_tree.EvaluatedTreeTests.test_large_binary_files_are_approvable']),
+    ('soso/engine.py', '"empty" if not size else ', '', ['test_evaluated_tree.EvaluatedTreeTests.test_emptied_or_filled_placeholder_is_approvable']),
     ('soso/engine.py', 'if None in found:', 'if False:', ['test_evaluated_tree.EvaluatedTreeTests.test_side_that_cannot_be_read_is_withheld']),
     ('soso/engine.py', 'if len(changes) != len(binaries):', 'if False:', ['test_evaluated_tree.EvaluatedTreeTests.test_files_that_cannot_be_matched_are_withheld']),
     ('soso/engine.py', 'if len(diff) > GIT_OUTPUT_LIMIT:', 'if False:',
