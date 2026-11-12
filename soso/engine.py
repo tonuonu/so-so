@@ -94,22 +94,58 @@ def fingerprint(root, patterns):
     return values
 
 
+def _python_entry(command):
+    """("-m", module) or ("path", arg) that a python argv runs; None for -c, stdin or another program."""
+    if not command or not Path(command[0]).name.startswith("python"):
+        return None
+    args, i = command[1:], 0
+    while i < len(args):
+        arg = args[i]
+        if arg == "--":
+            return ("path", args[i + 1]) if i + 1 < len(args) else None
+        if arg == "-" or not arg.startswith("-"):
+            return None if arg == "-" else ("path", arg)
+        if not arg.startswith("--"):
+            for j, flag in enumerate(arg[1:], 2):
+                if flag in "cmWX":  # takes a value: the rest of this argument, or the next one
+                    value = arg[j:] or (args[i + 1] if i + 1 < len(args) else "")
+                    if flag in "cm":
+                        return ("-m", value) if flag == "m" else None
+                    if not arg[j:]:
+                        i += 1
+                    break
+        i += 1
+    return None
+
+
 def local_programs(root, commands):
-    """Repository-relative names of in-repo files that evaluator and check commands run."""
-    root = Path(root).resolve()
-    names = [arg for command in commands for arg in command]
+    """Repository-relative names of in-repo files that evaluator and check commands run.
+
+    Existing argument files are named as written and as resolved through symlinks. For python3 -m a.b,
+    every file that could supply a or a.b is named even before it exists, as is the __main__.py of a
+    python3 directory argument, so creating one changes the fingerprint.
+    """
+    root = os.path.realpath(root)
+    names = [(arg, True) for command in commands for arg in command]
     for command in commands:
-        for flag, module in zip(command, command[1:]):
-            if flag == "-m":
-                # python3 -m a.b imports a/__init__.py (and a/b/__init__.py), then runs a/b.py or a/b/__main__.py.
-                parts = module.split(".")
-                names += ["/".join(parts[:i]) + "/__init__.py" for i in range(1, len(parts) + 1)]
-                names += ["/".join(parts) + ".py", "/".join(parts) + "/__main__.py"]
+        kind, target = _python_entry(command) or (None, "")
+        parts = target.split(".")
+        if kind == "-m" and all(parts):
+            for i in range(1, len(parts)):
+                names += [("/".join(parts[:i]) + "/__init__.py", False), ("/".join(parts[:i]) + ".py", False)]
+            module = "/".join(parts)
+            names += [(module + ".py", False), (module + "/__init__.py", False), (module + "/__main__.py", False)]
+        elif kind == "path" and os.path.isdir(os.path.join(root, target)):
+            names.append((target + "/__main__.py", False))
     programs = []
-    for name in names:
-        path = Path(os.path.normpath(root / name))  # "a/../b" names "b", also via "../<repo>/b"
-        if path.is_relative_to(root) and path.is_file():
-            programs.append(path.relative_to(root).as_posix())
+    for name, existing in names:
+        try:
+            written = os.path.normpath(os.path.join(root, name))  # "a/../b" and "../<repo>/b" name "b"
+            for path in (written, os.path.realpath(written)):
+                if os.path.commonpath([root, path]) == root and (not existing or os.path.isfile(path)):
+                    programs.append(os.path.relpath(path, root).replace(os.sep, "/"))
+        except (OSError, ValueError):
+            continue  # e.g. a -c program text that is no usable file name
     return list(dict.fromkeys(programs))
 
 

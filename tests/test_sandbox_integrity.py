@@ -10,7 +10,7 @@ import unittest
 from unittest.mock import patch
 from test_core import RepoCase
 from soso.cli import main
-from soso.engine import Run, fingerprint
+from soso.engine import Run, fingerprint, local_programs
 from soso.models import Router
 from soso.process import git
 from soso.workspace import Workspace
@@ -229,6 +229,56 @@ class SandboxIntegrityTests(RepoCase):
         protected = self.prepared_protection(['python3', '-m', 'bench.sub.score'], [])
         for name in ('bench/__init__.py', 'bench/sub/__init__.py', 'bench/sub/score.py'):
             self.assertIn(name, protected)
+
+    def test_python_m_module_names_are_protected_before_they_exist(self):
+        # A worker creating a/b/__main__.py or a/__init__.py would take over python3 -m a.b.
+        (self.root / 'a').mkdir()
+        (self.root / 'a/b.py').write_text('')
+        protected = local_programs(self.root, [['python3', '-m', 'a.b']])
+        for name in ('a/b.py', 'a/__init__.py', 'a/b/__init__.py', 'a/b/__main__.py'):
+            self.assertIn(name, protected)
+        before = fingerprint(self.root, protected)
+        with self.assertRaises(PermissionError):
+            Workspace(self.root, protected).tool({'tool': 'write', 'path': 'a/b/__main__.py', 'content': ''})
+        (self.root / 'a/b').mkdir()
+        (self.root / 'a/b/__main__.py').write_text('')  # e.g. created with command execution
+        self.assertNotEqual(fingerprint(self.root, protected), before)
+
+    def test_python_m_is_recognised_only_for_python_in_its_spellings(self):
+        (self.root / 'a').mkdir()
+        (self.root / 'a/b.py').write_text('')
+        (self.root / 'slow.py').write_text('')
+        self.assertNotIn('slow.py', local_programs(self.root, [['pytest', '-m', 'slow']]))
+        for command in (['python3', '-ma.b'], ['python3', '-Bm', 'a.b'], ['/usr/bin/python3.11', '-B', '-m', 'a.b']):
+            with self.subTest(command=command):
+                self.assertIn('a/b.py', local_programs(self.root, [command]))
+
+    def test_python_directory_argument_protects_its_main(self):
+        (self.root / 'pkgdir').mkdir()
+        (self.root / 'pkgdir/helper.py').write_text('')
+        self.assertIn('pkgdir/__main__.py', local_programs(self.root, [['python3', 'pkgdir']]))
+
+    def test_program_paths_resolve_symlinks(self):
+        (self.root / 'real').mkdir()
+        (self.root / 'real/check.py').write_text('')
+        (self.root / 'link').symlink_to('real')
+        (self.root / 'top.py').write_text('')
+        outside = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, outside)
+        (outside / 'alias').symlink_to(self.root)
+        protected = local_programs(self.root, [['python3', 'link/check.py'], ['python3', str(outside / 'alias/top.py')]])
+        self.assertIn('real/check.py', protected)
+        self.assertIn('top.py', protected)
+        # Replacing the directory link with a real directory must still change protected state.
+        self.assertIn('link/check.py', protected)
+        before = fingerprint(self.root, protected)
+        (self.root / 'link').unlink()
+        (self.root / 'link').mkdir()
+        (self.root / 'link/check.py').write_text('worker code')
+        self.assertNotEqual(fingerprint(self.root, protected), before)
+
+    def test_program_selection_tolerates_unusable_names(self):
+        self.assertEqual(local_programs(self.root, [['python3', '-c', 'x' * 300], ['python3', 'a\0b']]), [])
 
     def test_already_protected_evaluator_leaves_config_unchanged(self):
         # An unchanged protected list keeps the config digest, so earlier runs stay resumable.
