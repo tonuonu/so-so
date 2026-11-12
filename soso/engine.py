@@ -218,22 +218,25 @@ class Run:
                            "status": "running", "config_sha256": config_digest,
                            "intent_sha256": intent_digest, "rounds": [], "plateau": 0,
                            "resources": resources(), "elapsed": 0,
-                           "deadline_unix": self.created_wall + self.config["max_seconds"]}
-            before = fingerprint(self.integration, self.config["protected"])
-            self.log("activity", phase="baseline", task="Baseline checks")
-            self.report["baseline"] = evaluate(self.integration, self.config, self.budget)
-            if (git(self.integration, "rev-parse", "HEAD") != base
-                    or git(self.integration, "status", "--porcelain")
-                    or fingerprint(self.integration, self.config["protected"]) != before):
-                self.report["baseline"] = {"valid": False, "reason": "baseline evaluation modified source"}
-            if not self.report["baseline"]["valid"]:
-                self.report["status"] = "invalid_baseline"
-                self.checkpoint()
-                return self.report
-            self.report["best"] = self.report["baseline"]["score"]
-        self.pinned = fingerprint(self.integration, self.config["protected"])
-        self.checkpoint()
+                           "deadline_unix": self.created_wall + self.config["max_seconds"],
+                           "baseline": {"valid": False, "reason": "baseline not evaluated"}}
+        self.checkpoint()  # The worktree and branch are durable evidence before evaluation.
         try:
+            if not self.report.get("baseline", {}).get("valid"):
+                # Fresh, interrupted or previously invalid baselines are measured before any round.
+                before = fingerprint(self.integration, self.config["protected"])
+                self.log("activity", phase="baseline", task="Baseline checks")
+                self.report["baseline"] = evaluate(self.integration, self.config, self.budget)
+                if (git(self.integration, "rev-parse", "HEAD") != self.report["base"]
+                        or git(self.integration, "status", "--porcelain")
+                        or fingerprint(self.integration, self.config["protected"]) != before):
+                    self.report["baseline"] = {"valid": False, "reason": "baseline evaluation modified source"}
+                if not self.report["baseline"]["valid"]:
+                    self.report["status"] = "invalid_baseline"
+                    return self.report
+                self.report["best"] = self.report["baseline"]["score"]
+            self.pinned = fingerprint(self.integration, self.config["protected"])
+            self.checkpoint()
             if self.report.get("next_retry_at", 0) > time.time():
                 self.report["status"] = "waiting"
                 return self.report

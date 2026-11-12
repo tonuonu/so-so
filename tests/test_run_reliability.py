@@ -63,5 +63,43 @@ class RedactionTests(RepoCase):
         self.assertEqual(state, {'next_retry_at': 1234567.5, 'reason': '[REDACTED]'})
 
 
+def done(router, role, prompt, cwd, attempt=0, task=None):
+    router.budget.claim()
+    return {'tool': 'done'}
+
+
+class BaselineTests(RepoCase):
+    def run_quietly(self, runner):
+        with patch('soso.models.Router.ask', done), contextlib.redirect_stdout(io.StringIO()):
+            return runner.run()
+
+    def test_baseline_failure_leaves_durable_error_report(self):
+        runner = Run(self.root, self.config(evaluate=['no-such-binary-for-soso-test']), 'Improve')
+        report = self.run_quietly(runner)
+        self.assertEqual(report['status'], 'error')
+        saved = json.loads(runner.report_path.read_text())
+        self.assertEqual(saved['status'], 'error')
+        self.assertIn('no-such-binary', saved['reason'])
+        self.assertFalse(saved['baseline']['valid'])
+        self.assertEqual(saved['branch'], 'soso/' + runner.run_id)
+
+    def test_baseline_budget_exhaustion_is_durable(self):
+        from soso.models import BudgetExceeded
+        runner = Run(self.root, self.config(), 'Improve')
+        with patch('soso.engine.evaluate', side_effect=BudgetExceeded('wall time exhausted')):
+            report = self.run_quietly(runner)
+        self.assertEqual(report['status'], 'budget_exhausted')
+        self.assertEqual(json.loads(runner.report_path.read_text())['status'], 'budget_exhausted')
+
+    def test_resume_remeasures_missing_or_invalid_baseline(self):
+        runner = Run(self.root, self.config(rounds=1), 'Improve')
+        with patch('soso.engine.evaluate', return_value={'valid': False, 'reason': 'evaluator failed'}):
+            self.assertEqual(self.run_quietly(runner)['status'], 'invalid_baseline')
+        resumed = self.run_quietly(Run(self.root, self.config(rounds=1), 'Improve', resume=runner.run_id))
+        self.assertTrue(resumed['baseline']['valid'])
+        self.assertEqual(resumed['best'], 0)
+        self.assertEqual(resumed['status'], 'round_limit')
+
+
 if __name__ == '__main__':
     unittest.main()
