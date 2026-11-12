@@ -63,11 +63,14 @@ Persistent delivery instead opens bounded new epochs while preserving its goal.
 Only one run owns a repository at a time (POSIX file lock in the common Git directory).
 Source must be clean. Worktrees and configuration are pinned to committed source;
 ignored caches are not copied into candidate worktrees. Submodule and large-data
-setup are the caller's responsibility; a candidate that adds or changes a gitlink
-(nested repository or submodule), or hides on-disk edits with skip-worktree or
-assume-unchanged index flags, or leaves files inside a submodule directory, is
-rejected before evaluation; worker tools cannot write inside a submodule directory. Git hooks are disabled for runner-managed
-Git commands; do not rely on hooks as your evaluator.
+setup are the caller's responsibility. Before evaluation a candidate is rejected
+when it adds or changes a gitlink (nested repository or submodule), sets
+skip-worktree or assume-unchanged index flags its fresh worktree did not have,
+changes the core.fsmonitor configuration, leaves files inside a submodule
+directory, or creates an entry named `.git` below the worktree root. Worker tools
+cannot write inside a submodule directory. Runner-managed Git commands run without
+hooks or an fsmonitor hook (`core.hooksPath=/dev/null`, `core.fsmonitor=false`);
+do not rely on hooks as your evaluator, and expect no fsmonitor speed-up in them.
 
 A run retains its result branch/worktree and candidate commit refs. Successful
 candidate commits are kept under `refs/soso/RUN_ID/`, including measured rejected
