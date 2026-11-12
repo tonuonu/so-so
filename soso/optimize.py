@@ -5,7 +5,7 @@ from pathlib import Path
 import time
 
 from .delivery import configure_models, load_model_pool
-from .engine import BudgetExceeded, Run, atomic_json, load_config
+from .engine import BudgetExceeded, Run, atomic_json, load_config, local_programs
 from .models import ModelUnavailable, redact_value
 from .process import git
 
@@ -109,8 +109,7 @@ def optimize_project(project: Path, intent: str, folder: Path, models_path=None,
                                         for role in ('planner', 'reviewer')}}
                     config.update(delivery=False, _router_state=str(folder / 'optimization-router-state.json'))
                     # Freeze every existing local evaluator/check program argument.
-                    programs = [arg for command in [config['evaluate']] + config.get('checks', []) for arg in command
-                                if not Path(arg).is_absolute() and (project / arg).is_file()]
+                    programs = local_programs(project, [config['evaluate']] + config.get('checks', []))
                     config['protected'] = list(dict.fromkeys(config['protected'] + programs))
                     atomic_json(config_path, config)
                     digest = hashlib.sha256(config_path.read_bytes()).hexdigest()

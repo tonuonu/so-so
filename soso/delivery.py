@@ -17,7 +17,7 @@ import uuid
 from urllib.parse import urlsplit
 
 from .architecture import planning_reply
-from .engine import DEFAULTS, Run, atomic_json, evaluate, fingerprint, load_config, resources
+from .engine import DEFAULTS, Run, atomic_json, evaluate, fingerprint, load_config, local_programs, resources
 from .models import ModelProtocolError, Budget, BudgetExceeded, HTTP_TRANSPORT, ModelUnavailable, Router, redact, redact_value
 from .process import IDENTITY, execute, git
 from .workspace import Workspace
@@ -224,8 +224,7 @@ def _contract(root, config, intent, router, folder, previous_feedback=''):
     policy = root / POLICY
     policy.mkdir(exist_ok=True)
     supplied_evaluate = config.get('evaluate')
-    protected_commands = [str(Path(arg)) for cmd in [supplied_evaluate] + config.get('checks', []) if cmd
-                          for arg in cmd if not Path(arg).is_absolute() and (root / arg).is_file()]
+    protected_commands = local_programs(root, [cmd for cmd in [supplied_evaluate] + config.get('checks', []) if cmd])
     config.update(delivery=True, direction='max', evaluate=supplied_evaluate or [sys.executable, '-B', f'{POLICY}/evaluate.py'],
                   protected=list(dict.fromkeys(config['protected'] + [f'{POLICY}/*'] + protected_commands)))
     inventory = Workspace(root, []).files()[:120]

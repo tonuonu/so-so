@@ -215,6 +215,17 @@ class PreparedOptimizationTests(unittest.TestCase):
         self.assertNotIn('routing', frozen)
         self.assertEqual(set(frozen['models']), {'test'})
 
+    def test_python_m_evaluator_and_its_packages_are_frozen_as_protected(self):
+        (self.root / 'bench').mkdir()
+        (self.root / 'bench/__init__.py').write_text('')
+        (self.root / 'bench/score.py').write_text((self.root / 'evaluate.py').read_text())
+        self.config['evaluate'] = ['python3', '-B', '-m', 'bench.score']
+        self.write_config()
+        result = self.run_goal()
+        frozen = json.loads((Path(result['snapshot']).parent / 'optimization-config.json').read_text())
+        self.assertIn('bench/score.py', frozen['protected'])
+        self.assertIn('bench/__init__.py', frozen['protected'])
+
     def test_edited_intent_generates_delivery_oracle_without_stale_ast_checks(self):
         (self.root / 'INTENT.md').write_text('Build a different application.')
         (self.root / 'evaluate.py').write_text("raise AssertionError('STALE_AST_ORACLE_EXECUTED')\n")

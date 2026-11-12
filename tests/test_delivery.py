@@ -165,6 +165,21 @@ print(json.dumps({'score':100 if stage>=2 else 0,'complete':stage>=2}))
         self.assertEqual(first['status'], 'incomplete')
         self.assertEqual(first['epochs'][0]['best'], 0)
 
+    def test_configured_python_m_evaluator_and_its_packages_are_protected(self):
+        git(self.repo, 'init', '-b', 'main')
+        git(self.repo, 'config', 'user.name', 'Tester')
+        git(self.repo, 'config', 'user.email', 'test@example.invalid')
+        (self.repo / 'bench').mkdir()
+        (self.repo / 'bench/__init__.py').write_text('')
+        (self.repo / 'bench/score.py').write_text(EVALUATOR)
+        (self.repo / 'soso.json').write_text(json.dumps({**self.config, 'evaluate': [sys.executable, '-B', '-m', 'bench.score']}))
+        git(self.repo, 'add', '--all')
+        git(self.repo, '-c', 'commit.gpgsign=false', 'commit', '-m', 'configured policy')
+        state = self.start()
+        config = json.loads((Path(state['report']).parent / 'config.json').read_text())
+        self.assertIn('bench/score.py', config['protected'])
+        self.assertIn('bench/__init__.py', config['protected'])
+
     def resume_paused_worker(self, error, status):
         calls = []
         first = None
