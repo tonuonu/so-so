@@ -71,7 +71,9 @@ def optimize_project(project: Path, intent: str, folder: Path, models_path=None,
         if state['stalled_epochs'] < STALLED_EPOCHS:
             return False
         state.update(status='blocked', run_id=None, next_retry_at=None, reason=str(state['stalled_epochs'])
-                     + ' consecutive epochs exhausted their budget before completing a round; increase max_calls or max_seconds')
+                     + ' consecutive epochs exhausted their budget before completing a round'
+                     + (' (last: ' + str(report['reason']) + ')' if report.get('reason') else '')
+                     + '; increase max_calls or max_seconds if the budget is too small')
         checkpoint()
         return True
 
