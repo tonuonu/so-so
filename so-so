@@ -76,10 +76,11 @@ if [ -z "$so_so_python" ]; then
         else
             wget -q "https://astral.sh/uv/$so_so_uv_version/install.sh" -O "$so_so_installer"
         fi
+        # A failing checksum tool is an unverified installer, not a silent exit under set -e.
         if command -v sha256sum >/dev/null 2>&1; then
-            so_so_digest=$(sha256sum "$so_so_installer")
+            so_so_digest=$(sha256sum "$so_so_installer") || so_so_digest=''
         elif command -v shasum >/dev/null 2>&1; then
-            so_so_digest=$(shasum -a 256 "$so_so_installer")
+            so_so_digest=$(shasum -a 256 "$so_so_installer") || so_so_digest=''
         else
             so_so_digest=''
         fi

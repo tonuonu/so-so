@@ -117,6 +117,23 @@ class IdentityTests(RepoCase):
             with patch.dict(os.environ,{'GIT_AUTHOR_NAME':'Exported'}):
                 git(self.root,'commit','--allow-empty','-m','exported')
             self.assertEqual(git(self.root,'log','-1','--format=%an'),'Exported')
+    def test_fallback_identity_stays_in_the_repository_it_was_derived_for(self):
+        import os
+        from soso.delivery import _identity
+        no_identity={'GIT_CONFIG_GLOBAL':os.devnull,'GIT_CONFIG_SYSTEM':os.devnull}
+        with tempfile.TemporaryDirectory() as other, patch.dict(os.environ,no_identity), \
+                patch.dict('soso.process.IDENTITY',clear=True):
+            bare=Path(other)/'bare'
+            git(Path(other),'init','-q','-b','main',str(bare))
+            _identity(bare)
+            git(bare,'commit','--allow-empty','-m','fallback')
+            git(bare,'worktree','add','-q','--detach',str(Path(other)/'tree'),'HEAD')
+            git(Path(other)/'tree','commit','--allow-empty','-m','fallback in worktree')
+            for root in (bare,Path(other)/'tree'):
+                self.assertEqual(git(root,'log','-1','--format=%an <%ae>'),'Local Builder <builder@localhost>')
+            # A second repository with its own identity in the same process keeps that identity.
+            git(self.root,'commit','--allow-empty','-m','own identity')
+            self.assertEqual(git(self.root,'log','-1','--format=%an <%ae>'),'Test <test@example.invalid>')
 
 class ModelTests(unittest.TestCase):
     def test_json(self):

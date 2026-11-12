@@ -71,6 +71,19 @@ class MarkdownPoolTests(unittest.TestCase):
             self.assertEqual([(e['event'], e['url']) for e in events],
                              [('endpoint_unavailable', 'http://127.0.0.1:11439'), ('endpoint_unavailable', 'http://gpu:11434')])
 
+    def test_setup_events_redact_environment_secrets(self):
+        import json, os
+        from soso.models import ModelUnavailable
+        secret = 'tok-abcdef123'
+        with tempfile.TemporaryDirectory() as tmp, patch.dict(os.environ, {'SOSO_TEST_TOKEN': secret}), \
+                patch('soso.intent.configure_models', side_effect=ModelUnavailable()), \
+                patch('soso.intent.shutil.which', return_value=None), patch('soso.intent.ollama_models', return_value=[]):
+            with self.assertRaises(ModelUnavailable):
+                resolve_pool('Ollama runs on http://user:' + secret + '@gpu:11434 here.', Path(tmp))
+            text = (Path(tmp) / '.so-so/pools/setup-events.jsonl').read_text()
+            self.assertNotIn(secret, text)
+            self.assertEqual(json.loads(text)['url'], 'http://user:[REDACTED]@gpu:11434')
+
 
 class ExplicitProjectPolicyTests(unittest.TestCase):
     def test_explicit_policy_bypasses_discovery_and_intent_cache(self):

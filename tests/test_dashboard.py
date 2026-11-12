@@ -179,6 +179,48 @@ class DashboardTests(unittest.TestCase):
                     self.assertEqual(r.read(),b'listed image')
                     self.assertEqual(r.headers['Content-Type'],'image/png')
 
+    def test_asset_requests_reuse_recent_image_inventory(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root=Path(tmp);managed,_,report=self.fixture(root)
+            result=report.parent/'result';result.mkdir();(result/'screen.png').write_bytes(b'listed image')
+            (managed/'unlisted.png').write_bytes(b'unlisted')
+            with Dashboard(root) as d, patch.object(Monitor,'snapshot',autospec=True,side_effect=Monitor.snapshot) as snapshot:
+                with urllib.request.urlopen(d.url+'api') as r:path=json.load(r)['images'][0]['path']
+                for _ in range(3):
+                    with urllib.request.urlopen(d.url+'asset/'+path) as r:self.assertEqual(r.read(),b'listed image')
+                with self.assertRaises(urllib.error.HTTPError) as caught:urllib.request.urlopen(d.url+'asset/.so-so/unlisted.png')
+                self.assertEqual(caught.exception.code,404);caught.exception.close()
+                self.assertEqual(snapshot.call_count,1)
+                with patch.object(Dashboard,'IMAGE_SECONDS',-1):  # an expired inventory is rebuilt
+                    with urllib.request.urlopen(d.url+'asset/'+path) as r:self.assertEqual(r.read(),b'listed image')
+                self.assertEqual(snapshot.call_count,2)
+
+    def test_listed_image_replaced_by_symlink_is_not_served_from_cache(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root=Path(tmp);managed,_,report=self.fixture(root)
+            result=report.parent/'result';result.mkdir();(result/'screen.png').write_bytes(b'listed image')
+            (managed/'secret.json').write_text('{"token":"x"}')
+            with Dashboard(root) as d:
+                with urllib.request.urlopen(d.url+'api') as r:path=json.load(r)['images'][0]['path']
+                (result/'screen.png').unlink();(result/'screen.png').symlink_to(managed/'secret.json')
+                with self.assertRaises(urllib.error.HTTPError) as caught:urllib.request.urlopen(d.url+'asset/'+path)
+                self.assertEqual(caught.exception.code,404);caught.exception.close()
+
+    def test_client_abort_is_not_logged_or_answered(self):
+        import contextlib,io
+        with tempfile.TemporaryDirectory() as tmp:
+            root=Path(tmp);self.fixture(root)
+            with Dashboard(root) as d:
+                handler=d.server.RequestHandlerClass
+                for route in ('api',''):
+                    for error in (BrokenPipeError,ConnectionResetError,ConnectionAbortedError):
+                        with self.subTest(route=route,error=error.__name__), contextlib.redirect_stderr(io.StringIO()) as errors, \
+                                patch.object(handler,'end_headers',side_effect=error), patch.object(handler,'send_error') as send_error:
+                            with self.assertRaises(Exception):urllib.request.urlopen(d.url+route)
+                            self.assertEqual(errors.getvalue(),'')
+                            send_error.assert_not_called()
+                self.assertIsNone(getattr(d,'last_error',None))
+
     def test_milestone_progress_requires_evidence_from_accepted_candidate(self):
         with tempfile.TemporaryDirectory() as tmp:
             root=Path(tmp);_,project,report=self.fixture(root)

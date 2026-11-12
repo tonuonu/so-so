@@ -104,7 +104,9 @@ def redact(text):
     # Environment names are inspected, but their values never enter inventories.
     for name, value in os.environ.items():
         if len(value) >= 6 and re.search(r"(?i)(secret|token|password|credential|api.?key|access.?key)", name):
-            text = text.replace(value, "[REDACTED]")
+            # Text that embeds JSON carries the escaped form; replace it first, since it can contain the raw value.
+            for form in (json.dumps(value)[1:-1], json.dumps(value, ensure_ascii=False)[1:-1], value):
+                text = text.replace(form, "[REDACTED]")
     text = re.sub(r"(?i)(Bearer\s+)[A-Za-z0-9._~+/-]{8,}", r"\1[REDACTED]", text)
     return text
 

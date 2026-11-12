@@ -349,6 +349,8 @@ class Monitor:
 
 
 class Dashboard:
+    IMAGE_SECONDS = 2  # asset checks reuse the image list of a snapshot at most this old
+
     def __init__(self, project, port=0, host=None, public_host=None):
         settings = {}
         config = Path(project) / 'soso.json'
@@ -360,6 +362,7 @@ class Dashboard:
             raise ValueError('set dashboard.public_host to a reachable hostname or IP when binding all interfaces')
         self.monitor = Monitor(project)
         self.token = secrets.token_urlsafe(24)
+        self.images = (float('-inf'), set())
         owner = self
         class Handler(BaseHTTPRequestHandler):
             def log_message(self, *args):
@@ -373,7 +376,7 @@ class Dashboard:
                 route = unquote(self.path[len(prefix):])
                 try:
                     if route == 'api':
-                        data = json.dumps(owner.monitor.snapshot()).encode()
+                        data = json.dumps(owner.snapshot()).encode()
                         mime = 'application/json'
                     elif route in ('', 'dashboard.js', 'dashboard.css'):
                         file = 'dashboard.html' if not route else route
@@ -381,7 +384,10 @@ class Dashboard:
                         mime = {'': 'text/html; charset=utf-8', 'dashboard.js': 'text/javascript', 'dashboard.css': 'text/css'}[route]
                     elif route.startswith('asset/'):
                         relative = route[6:]
-                        if relative not in {x['path'] for x in owner.monitor.snapshot()['images']}:
+                        candidate = owner.monitor.root / relative
+                        # The inventory may be up to IMAGE_SECONDS old: recheck that no link was swapped in since.
+                        if relative not in owner.listed_images() or any(
+                                p.is_symlink() for p in [candidate, *candidate.parents] if p.is_relative_to(owner.monitor.root)):
                             raise ValueError('unknown asset')
                         path = owner.monitor.path(owner.monitor.root / relative)
                         data = path.read_bytes()
@@ -399,6 +405,8 @@ class Dashboard:
                     self.send_header('Content-Security-Policy', "default-src 'self'; object-src 'none'; frame-ancestors 'none'; base-uri 'none'")
                     self.end_headers()
                     self.wfile.write(data)
+                except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError):
+                    return  # the client closed the connection; nothing to log or answer
                 except Exception as exc:
                     # Unknown routes and assets are 404; anything else is a monitor defect, logged once per reason.
                     if route != 'api' and isinstance(exc, (OSError, ValueError, TypeError, KeyError)):
@@ -413,6 +421,17 @@ class Dashboard:
         self.server.daemon_threads = True
         self.url = f'http://{public_host}:{self.server.server_port}/{self.token}/'
         self.thread = threading.Thread(target=self.server.serve_forever, daemon=True)
+
+    def snapshot(self):
+        snapshot = self.monitor.snapshot()
+        self.images = (time.monotonic(), {x['path'] for x in snapshot['images']})
+        return snapshot
+
+    def listed_images(self):
+        """Images the dashboard lists; polled asset requests need not rebuild a full snapshot each."""
+        if time.monotonic() - self.images[0] > self.IMAGE_SECONDS:
+            self.snapshot()
+        return self.images[1]
 
     def __enter__(self):
         self.thread.start()

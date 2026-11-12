@@ -214,6 +214,27 @@ class BootstrapTests(unittest.TestCase):
             self.assertIn('checksum', result.stderr)
             self.assertRegex(requests.read_text(), r'https://astral\.sh/uv/\d+\.\d+\.\d+/install\.sh')
 
+    def test_failing_checksum_tool_removes_unverified_installer(self):
+        for tool in ('sha256sum', 'shasum'):
+            with self.subTest(tool=tool), tempfile.TemporaryDirectory() as folder:
+                root, env, log = self.shell_fixture(folder)
+                tools = Path(folder) / 'bin'
+                (tools / 'python3').unlink()  # force the local runtime path
+                for name in ('sh', 'rm'):
+                    (tools / name).symlink_to(shutil.which(name))
+                (tools / 'curl').write_text('#!/bin/sh\nwhile [ "$#" -gt 1 ]; do [ "$1" = -o ] && out=$2; shift; done\n'
+                                            'printf "%s\\n" "exit 0" > "$out"\n')
+                # The tool prints a matching digest but fails, as a broken checksum tool might.
+                (tools / tool).write_text('#!/bin/sh\nprintf "%s  %s\\n" d263ee68314cf5bea36b08e6bd9e2c4563240d7adb73756cf33af5c199b92db4 x\n'
+                                          'exit 3\n')
+                for name in ('curl', tool):
+                    (tools / name).chmod(0o755)
+                result = subprocess.run([str(root / 'so-so')], cwd=root, env=env,
+                                        capture_output=True, text=True, timeout=10)
+                self.assertEqual(result.returncode, 1)
+                self.assertIn('so-so: could not verify the pinned uv installer checksum.', result.stderr)
+                self.assertFalse((root / '.so-so/tools/install-uv.sh').exists())
+
     def test_timeout_hides_command_credentials(self):
         argv = ['git', 'clone', 'https://SECRET@example.com/repo']
         with patch.object(bootstrap.subprocess, 'run', side_effect=subprocess.TimeoutExpired(argv, 180)):
