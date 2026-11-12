@@ -101,5 +101,57 @@ class BaselineTests(RepoCase):
         self.assertEqual(resumed['status'], 'round_limit')
 
 
+class IncompleteRoundTests(RepoCase):
+    def answer(self, review_unavailable):
+        from soso.models import ModelUnavailable
+        def ask(router, role, prompt, cwd, attempt=0, task=None):
+            if role == 'reviewer':
+                if review_unavailable:
+                    raise ModelUnavailable(None, 'reviewer offline')
+                return {'approve': True}
+            if '-c0-' in str(cwd):
+                raise ModelUnavailable(None, 'worker offline')
+            router.budget.claim()
+            if 'LAST RESULT:\n{"files"' in prompt:
+                return {'tool': 'write', 'path': 'value.txt', 'content': '1'}
+            return {'tool': 'done'}
+        return ask
+
+    def run_round(self, runner, review_unavailable=False):
+        with patch('soso.models.Router.ask', self.answer(review_unavailable)), contextlib.redirect_stdout(io.StringIO()):
+            return runner.run()
+
+    def test_valid_sibling_is_accepted_when_another_candidate_waits(self):
+        runner = Run(self.root, self.config(parallel=2, rounds=1), 'Improve')
+        report = self.run_round(runner)
+        self.assertEqual(report['status'], 'waiting')
+        self.assertEqual(report['best'], 1)
+        self.assertEqual(report['rounds'][0]['outcome'], 'accepted')
+
+    def test_unreviewed_round_is_not_consumed_and_is_reviewed_on_resume(self):
+        config = self.config(parallel=2, rounds=1, routes={'worker': ['test'], 'reviewer': ['test']})
+        runner = Run(self.root, config, 'Improve')
+        report = self.run_round(runner, review_unavailable=True)
+        self.assertEqual(report['status'], 'waiting')
+        self.assertEqual(report['best'], 0)
+        self.assertEqual(len(report['rounds']), 1)
+        self.assertEqual(report['rounds'][0]['outcome'], 'incomplete')
+        import time as clock
+        later = clock.time() + 60
+        with patch('soso.engine.time.time', side_effect=lambda: later):
+            resumed = self.run_round(Run(self.root, config, 'Improve', resume=runner.run_id))
+        self.assertEqual(resumed['best'], 1)
+        self.assertEqual(resumed['rounds'][0]['outcome'], 'accepted')
+        self.assertEqual(resumed['status'], 'round_limit')
+        self.assertEqual(git(runner.integration, 'show', 'HEAD:value.txt'), '1')
+
+    def test_interrupted_round_keeps_its_record(self):
+        runner = Run(self.root, self.config(parallel=2), 'Improve')
+        with patch('soso.engine.concurrent.futures.as_completed', side_effect=KeyboardInterrupt):
+            report = self.run_round(runner)
+        self.assertEqual(report['status'], 'interrupted')
+        self.assertEqual([r['outcome'] for r in report['rounds']], ['incomplete'])
+
+
 if __name__ == '__main__':
     unittest.main()

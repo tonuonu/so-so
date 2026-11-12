@@ -240,44 +240,35 @@ class Run:
             if self.report.get("next_retry_at", 0) > time.time():
                 self.report["status"] = "waiting"
                 return self.report
-            while len(self.report["rounds"]) < self.config["rounds"]:
+            while self.completed_rounds() < self.config["rounds"]:
                 self.budget.remaining()
                 if self.report["plateau"] >= self.config["patience"]:
                     self.report["status"] = "plateau"
                     break
-                number = len(self.report["rounds"]) + 1
-                tasks = self.plan()
-                round_result = {"round": number, "experiments": [], "accepted": None}
-                with concurrent.futures.ThreadPoolExecutor(max_workers=min(self.config["parallel"], resources()["cpus"])) as pool:
-                    futures = [pool.submit(self.experiment, task, number, i) for i, task in enumerate(tasks)]
-                    for future in concurrent.futures.as_completed(futures):
-                        round_result["experiments"].append(future.result())
-                exhausted = [e for e in round_result["experiments"] if e.get("budget_exhausted")]
-                if exhausted:
+                previous = self.report["rounds"][-1] if self.report["rounds"] else None
+                if previous and previous.get("outcome") == "incomplete" and self.accept(previous):
+                    round_result = previous  # Resume reviewed a valid candidate its interruption left pending.
+                else:
+                    number = self.completed_rounds() + 1
+                    tasks = self.plan()
+                    # Recorded before work starts; an incomplete round is retried, not counted.
+                    round_result = {"round": number, "experiments": [], "accepted": None, "outcome": "incomplete"}
                     self.report["rounds"].append(round_result)
-                    raise BudgetExceeded(exhausted[0]["error"])
-                unavailable = [e["unavailable"] for e in round_result["experiments"] if e.get("unavailable")]
-                if unavailable:
-                    self.report["rounds"].append(round_result)
+                    with concurrent.futures.ThreadPoolExecutor(max_workers=min(self.config["parallel"], resources()["cpus"])) as pool:
+                        futures = [pool.submit(self.experiment, task, number, i) for i, task in enumerate(tasks)]
+                        for future in concurrent.futures.as_completed(futures):
+                            round_result["experiments"].append(future.result())
+                    exhausted = [e for e in round_result["experiments"] if e.get("budget_exhausted")]
+                    unavailable = [e["unavailable"] for e in round_result["experiments"] if e.get("unavailable")]
                     resets = [e["retry_at"] for e in unavailable if e["retry_at"] is not None]
-                    raise ModelUnavailable(min(resets) if resets else None, unavailable[0].get("reason", "provider unavailable"))
-                self.report["rounds"].append(round_result)
-                valid = [x for x in round_result["experiments"] if x.get("evaluation", {}).get("valid")]
-                valid.sort(key=lambda x: (self.utility(x["evaluation"]["score"]), -x["candidate"]), reverse=True)
-                for best in valid:
-                    if self.utility(best["evaluation"]["score"]) <= self.utility(self.report["best"]) + self.config["min_delta"]:
-                        break
-                    try:
-                        approved = self.review(best)
-                    except ModelProtocolError as exc:
-                        best.update(error=str(exc), error_kind=type(exc).__name__)
-                        round_result['outcome'] = 'execution_failed'
-                        raise
-                    if approved:
-                        git(self.integration, "merge", "--ff-only", best["commit"])
-                        self.report["best"] = best["evaluation"]["score"]
-                        round_result["accepted"] = best["commit"]
-                        break
+                    stop = (BudgetExceeded(exhausted[0]["error"]) if exhausted else ModelUnavailable(
+                        min(resets) if resets else None, unavailable[0].get("reason", "provider unavailable")) if unavailable else None)
+                    if self.accept(round_result) and stop:
+                        round_result["outcome"] = "accepted"
+                        self.report["plateau"] = 0
+                    if stop:
+                        raise stop
+                number = round_result["round"]
                 failures = [e for e in round_result['experiments'] if e.get('error')]
                 if failures and not round_result['accepted']:
                     round_result['outcome'] = 'execution_failed'
@@ -313,6 +304,29 @@ class Run:
 
     def utility(self, score):
         return score if self.config["direction"] == "max" else -score
+
+    def completed_rounds(self):
+        return sum(r.get("outcome") != "incomplete" for r in self.report["rounds"])
+
+    def accept(self, round_result):
+        """Merge the best approved improvement among valid, not yet reviewed candidates."""
+        valid = [x for x in round_result["experiments"] if x.get("evaluation", {}).get("valid") and "review" not in x]
+        valid.sort(key=lambda x: (self.utility(x["evaluation"]["score"]), -x["candidate"]), reverse=True)
+        for best in valid:
+            if self.utility(best["evaluation"]["score"]) <= self.utility(self.report["best"]) + self.config["min_delta"]:
+                break
+            try:
+                approved = self.review(best)
+            except ModelProtocolError as exc:
+                best.update(error=str(exc), error_kind=type(exc).__name__)
+                round_result['outcome'] = 'execution_failed'
+                raise
+            if approved:
+                git(self.integration, "merge", "--ff-only", best["commit"])
+                self.report["best"] = best["evaluation"]["score"]
+                round_result["accepted"] = best["commit"]
+                return True
+        return False
 
     def plan(self):
         if not any(role in self.config["routes"] for role in ("planner", "architect")):
