@@ -9,16 +9,18 @@ import json
 import os
 from pathlib import Path
 import re
+import shutil
 import subprocess
 import sys
 import tempfile
+import threading
 from types import SimpleNamespace
 from unittest.mock import patch
 from test_core import RepoCase
 from soso import engine
 from soso.delivery import DeliveryEpoch
 from soso.engine import Run
-from soso.models import Router
+from soso.models import Budget, Router
 from soso.process import execute, git
 
 SCORE = "import json\nprint(json.dumps({'score': %s}))\n"
@@ -263,7 +265,7 @@ class EvaluatedTreeTests(RepoCase):
                     prompts.append(prompt)
                     return {'approve': True, 'useful': True}
                 epoch = SimpleNamespace(integration=self.root, router=SimpleNamespace(ask=ask), intent='Improve',
-                                        contract={}, report={'baseline': {}})
+                                        contract={}, report={'baseline': {}}, budget=Budget(5, 600))
                 DeliveryEpoch.review(epoch, {'commit': commit, 'evaluation': {}})
                 self.assertIn('+999', prompts[0])
                 git(self.root, 'config', '--unset', key)
@@ -633,6 +635,91 @@ class EvaluatedTreeTests(RepoCase):
         self.assertIsNone(reason)
         self.assertIn('-safe', diff)
         self.assertIn('+gamed', diff)
+        self.assertIn('this change adds NUL bytes; later edits to this file will show only as binary', diff)
+
+    def test_text_and_large_binary_swaps_show_kinds_and_sizes_and_are_approvable(self):
+        large = bytes(range(256)) * 12000  # 3.1 MB, a NUL byte at the start
+        cases = (('pointer.dat', b'version https://git-lfs.github.com/spec/v1\n', large),
+                 ('model.dat', large[:2_500_000], b'now text\n'),
+                 ('icon.dat', b'TODO\n', large[:300_000]))
+        for name, before, after in cases:
+            with self.subTest(name=name):
+                diff, reason = self.reviewed(self.change(name, before, after))
+                self.assertIsNone(reason)
+                self.assertIn('Binary files', diff)
+                self.assertRegex(diff, name + r': (text|binary) \S+ \S+ \u2192 (text|binary) \S+ \S+')
+                self.assertLess(len(diff), 20000)  # no binary bytes shown as text
+
+    def test_symlink_replaced_by_a_large_binary_is_approvable(self):
+        (self.root / 'asset').symlink_to('value.txt')
+        self.commit('link', 'asset')
+        base = git(self.root, 'rev-parse', 'HEAD')
+        (self.root / 'asset').unlink()
+        (self.root / 'asset').write_bytes(bytes(range(256)) * 10000)
+        self.commit('binary', 'asset')
+        diff, reason = self.reviewed(base)
+        self.assertIsNone(reason)
+        self.assertLess(len(diff), 20000)
+
+    def test_renamed_file_turned_binary_is_shown_as_text(self):
+        # Rename detection pairs a.cfg with b.cfg in the diff: the listings must pair them the same way.
+        lines = [f'setting{i} = {i}\n'.encode() for i in range(40)]
+        (self.root / 'a.cfg').write_bytes(b''.join(lines))
+        self.commit('config', 'a.cfg')
+        base = git(self.root, 'rev-parse', 'HEAD')
+        git(self.root, 'mv', 'a.cfg', 'b.cfg')
+        (self.root / 'b.cfg').write_bytes(b''.join(lines[:20] + [b'EVIL\0\n'] + lines[21:]))
+        self.commit('renamed', 'b.cfg')
+        diff, reason = self.reviewed(base)
+        self.assertIsNone(reason)
+        self.assertIn('rename to b.cfg', diff)
+        self.assertIn('+EVIL', diff)
+
+    def test_submodule_replaced_by_a_minus_diff_text_file_is_shown(self):
+        (self.root / 'sub').mkdir()
+        identity = ('-c', 'user.name=t', '-c', 'user.email=t@example.invalid', '-c', 'commit.gpgsign=false')
+        git(self.root / 'sub', 'init', '-q')
+        (self.root / 'sub/f.txt').write_text('x')
+        git(self.root / 'sub', 'add', 'f.txt')
+        git(self.root / 'sub', *identity, 'commit', '-qm', 'nested')
+        self.commit('submodule', 'sub')
+        base = git(self.root, 'rev-parse', 'HEAD')
+        (self.common_dir() / 'info/attributes').write_text('sub -diff\n')
+        git(self.root, 'rm', '-q', '--cached', 'sub')
+        shutil.rmtree(self.root / 'sub')
+        (self.root / 'sub').write_text('x = 999\n')
+        self.commit('file', 'sub')
+        diff, reason = self.reviewed(base)
+        self.assertIsNone(reason)
+        self.assertIn('+x = 999', diff)
+
+    def test_review_of_binary_shown_files_stops_at_its_deadline(self):
+        base = self.lockfile_change()
+        with self.old_git():
+            self.assertEqual(engine.review_diff(self.root, base, 'HEAD', 0),
+                             (None, 'could not show every binary-shown file in time; split the change'))
+
+    def test_blob_reads_fail_closed(self):
+        from soso import process
+        self.assertIsNone(process.blob_head(self.root, '0123456789' * 4, 10))  # no such object
+        # A stalled read is killed at its deadline, with its process group, and reads as unreadable.
+        fake = Path(tempfile.mkdtemp(dir=self.tmp.name)) / 'git'
+        fake.write_text('#!/bin/sh\nsleep 20 &\nwait\n')  # the child holds the pipe: only a group kill ends it
+        fake.chmod(0o755)
+        result = []
+        with patch.dict(os.environ, {'PATH': f'{fake.parent}{os.pathsep}{os.environ["PATH"]}'}):
+            reader = threading.Thread(target=lambda: result.append(process.blob_head(self.root, 'a' * 40, 10, timeout=1)),
+                                      daemon=True)
+            reader.start()
+            reader.join(10)
+        self.assertFalse(reader.is_alive())
+        self.assertEqual(result, [None])
+
+    def test_blob_reads_ignore_replace_refs(self):
+        from soso import process
+        stored = git(self.root, 'rev-parse', 'HEAD:value.txt')
+        git(self.root, 'replace', stored, git(self.root, 'hash-object', '-w', '--stdin', stdin='9'))
+        self.assertEqual(process.blob_head(self.root, stored, 1), b'0')
 
     def test_large_binary_files_are_approvable(self):
         blob = bytes(range(256)) * 9000  # 2.3 MB, with a NUL byte at the start
@@ -674,7 +761,7 @@ class EvaluatedTreeTests(RepoCase):
 
     def test_side_that_cannot_be_read_is_withheld(self):
         base = self.lockfile_change()
-        with self.old_git(), patch('soso.engine.blob_kind', return_value=None):
+        with self.old_git(), patch('soso.engine.blob_head', return_value=None):  # a failed or stalled read
             diff, reason = self.reviewed(base)
         self.assertIsNone(diff)
         self.assertIn('could not read deps1.lock', reason)
@@ -796,7 +883,7 @@ class EvaluatedTreeTests(RepoCase):
             asked.append(prompt)
             return {'approve': True, 'useful': True}
         epoch = SimpleNamespace(integration=self.root, router=SimpleNamespace(ask=ask),
-                                intent='Improve', contract={}, report={'baseline': {}})
+                                intent='Improve', contract={}, report={'baseline': {}}, budget=Budget(5, 600))
         candidate = {'commit': commit, 'evaluation': {}}
         with self.old_git():
             self.assertTrue(DeliveryEpoch.review(epoch, candidate))
@@ -810,7 +897,7 @@ class EvaluatedTreeTests(RepoCase):
         git(self.root, 'checkout', '-q', '--detach', base)
         asked = []
         epoch = SimpleNamespace(integration=self.root, router=SimpleNamespace(ask=lambda *a, **k: asked.append(a)),
-                                intent='Improve', contract={}, report={'baseline': {}})
+                                intent='Improve', contract={}, report={'baseline': {}}, budget=Budget(5, 600))
         candidate = {'commit': commit, 'evaluation': {}}
         self.assertFalse(DeliveryEpoch.review(epoch, candidate))
         self.assertEqual(asked, [])

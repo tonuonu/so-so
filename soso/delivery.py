@@ -436,7 +436,7 @@ class DeliveryEpoch(Run):
 
     def review(self, candidate):
         base = git(self.integration, 'rev-parse', 'HEAD')
-        diff, withheld = review_diff(self.integration, base, candidate['commit'])
+        diff, withheld = review_diff(self.integration, base, candidate['commit'], min(300, self.budget.remaining()))
         if withheld:  # never ask a model to approve a change it cannot see; repair_candidate hands the reason back
             candidate['review'] = {'approve': False, 'useful': True, 'reason': withheld, 'head': candidate['commit']}
             return False

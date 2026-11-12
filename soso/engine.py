@@ -207,50 +207,93 @@ def supports_attr_source(root, tree):
     return ATTR_SOURCE["probed"]
 
 
-def blob_kind(root, blob):
-    """As Git judges a blob: "absent" (all-zero id), "empty", "binary" (a NUL byte in its first 8000 bytes) or
-    "text"; None when it cannot be read."""
-    if not blob.strip("0"):
-        return "absent"
-    try:
-        size = int(git(root, "cat-file", "-s", blob, quiet=True))
-    except (RuntimeError, ValueError):
-        return None
-    return "empty" if not size else "binary" if b"\0" in blob_head(root, blob) else "text"
+RENDER_BINARY = 32 * 1024  # a binary side up to this size is still shown as text next to a text side
 
 
-def review_diff(root, base, commit):
+def blob_kinds(root, blobs):
+    """{blob: (kind, size)} for the blobs that can be read, sizes from one cat-file --batch-check. As Git judges
+    it, kind is "empty", "binary" (a NUL byte in the first 8000 bytes) or "text"."""
+    kinds = {}
+    listing = git(root, "cat-file", "--batch-check", stdin="".join(blob + "\n" for blob in blobs), quiet=True)
+    for line in listing.splitlines():
+        blob, kind, *size = line.split() + [""]
+        if kind == "blob" and size[0].isdigit():
+            size = int(size[0])
+            head = blob_head(root, blob, min(size, 8000)) if size else b""
+            if head is not None:
+                kinds[blob] = ("empty" if not size else "binary" if b"\0" in head else "text", size)
+    return kinds
+
+
+def listed_changes(raw):
+    """(old mode, new mode, old blob, new blob, name) from diff --raw -z, with renames and copies."""
+    tokens = iter(raw.split("\0"))
+    for token in tokens:
+        if token.startswith(":"):
+            old_mode, new_mode, old, new, status = token[1:].split()[:5]
+            name = next(tokens)
+            if status[:1] in ("R", "C"):
+                name = next(tokens)  # the new name
+            yield old_mode, new_mode, old, new, name
+
+
+def listed_binaries(numstat):
+    """For each file of diff --numstat -z, with renames and copies, whether Git shows it as binary."""
+    tokens = iter(numstat.split("\0"))
+    for token in tokens:
+        if token:
+            if token.count("\t") >= 2 and not token.split("\t", 2)[2]:  # a rename or copy: two names follow
+                next(tokens), next(tokens)
+            yield token.startswith("-\t-\t")
+
+
+def size_text(size):
+    return f"{size} B" if size < 1000 else f"{size / 1000:.1f} kB" if size < 1_000_000 else f"{size / 1_000_000:.1f} MB"
+
+
+def review_diff(root, base, commit, seconds=300):
     """(diff, None) for a reviewer, or (None, reason) when the change cannot be shown in full.
 
     No external diff program or textconv, and, where Git accepts --attr-source, attributes from an empty tree,
-    so no -diff, binary or diff driver in the repository's .gitattributes hides a change. A file Git still shows
-    only as binary (an older Git, the user's own attributes, a NUL byte added or removed) is shown again as text
-    whenever either side is text; sides are read by blob id from --raw, never through a file name. Only a diff
-    larger than the runner reads, or a side that cannot be read, is withheld."""
+    so no -diff, binary or diff driver in the repository's .gitattributes hides a change. Each file Git still
+    shows only as binary gets a line with both sides' kinds and sizes, read by blob id (a gitlink side counts as
+    absent). It is shown again as text when a side is text and any binary side is small: an older Git, the
+    user's own attributes, or a NUL byte added or removed cannot hide a text change, and larger binaries are
+    never dumped as text or refused. Only rendered text over 2 MB, a side that cannot be read, or binary-shown
+    files beyond the seconds allowed are withheld."""
     empty = git(root, "mktree", stdin="", quiet=True)  # ids are used as arguments: no stderr in them
     options = ["--attr-source=" + empty] if supports_attr_source(root, empty) else []
     too_large = f"the diff exceeds {GIT_OUTPUT_LIMIT // 1_000_000} MB; split the change into smaller ones"
+    stop = time.monotonic() + seconds
     try:
         diff = git(root, *options, "diff", "--no-ext-diff", "--no-textconv", base, commit)
-        # The same files in the same order: ":mode mode old new status", name; and "added\tdeleted\tname".
-        raw = git(root, "diff", "--raw", "-z", "--no-abbrev", "--no-renames", base, commit, quiet=True).split("\0")
-        stats = [entry for entry in git(root, *options, "diff", "--numstat", "-z", "--no-renames", "--no-ext-diff",
-                                        "--no-textconv", base, commit, quiet=True).split("\0") if entry]
-        changes = list(zip(raw[0::2], raw[1::2]))
-        if len(changes) != len(stats):
+        # The same files, paired by the same rename and copy detection, in the same order as the diff above.
+        changes = list(listed_changes(git(root, "diff", "--raw", "-z", "--no-abbrev", base, commit, quiet=True)))
+        binaries = list(listed_binaries(git(root, *options, "diff", "--numstat", "-z", "--no-ext-diff", "--no-textconv",
+                                            base, commit, quiet=True)))
+        if len(changes) != len(binaries):
             return None, "could not match the diff's files to show them"
-        for (meta, name), stat in zip(changes, stats):
-            old_mode, new_mode, *blobs = meta.lstrip(":").split()[:4]
-            if not stat.startswith("-\t-\t") or "160000" in (old_mode, new_mode):
-                continue
-            kinds = [blob_kind(root, blob) for blob in blobs]
-            if None in kinds:
+        # A gitlink side names a commit of another repository: as absent as a missing side.
+        shown = [[(mode, blob if blob.strip("0") and mode != "160000" else None) for mode, blob in
+                  ((old_mode, old), (new_mode, new))] + [name]
+                 for (old_mode, new_mode, old, new, name), binary in zip(changes, binaries) if binary]
+        kinds = blob_kinds(root, sorted({blob for *sides, _ in shown for _, blob in sides if blob})) if shown else {}
+        for *sides, name in shown:
+            if time.monotonic() > stop:
+                return None, "could not show every binary-shown file in time; split the change"
+            found = [("absent", 0) if blob is None else kinds.get(blob) for _, blob in sides]
+            if None in found:
                 return None, f"could not read {name} to show it"
-            if "text" in kinds:  # e.g. -diff, an older Git or one NUL byte added: show the bytes as text
+            (old_kind, old_size), (new_kind, new_size) = found
+            diff += f"\n({name}: {old_kind} {size_text(old_size)} \u2192 {new_kind} {size_text(new_size)}"
+            if old_kind == "text" and new_kind == "binary":
+                diff += "; this change adds NUL bytes; later edits to this file will show only as binary"
+            diff += ")"
+            if "text" in (old_kind, new_kind) and all(kind != "binary" or size <= RENDER_BINARY for kind, size in found):
                 nothing = git(root, "hash-object", "-w", "-t", "blob", "--stdin", stdin="", quiet=True)
-                diff += (f"\n(Git shows {name} as binary; the change as text:)\n"
+                diff += ("\n(Git shows it as binary; the change as text:)\n"
                          + git(root, "diff", "--text", "--no-ext-diff", "--no-textconv",
-                               *(blob if blob.strip("0") else nothing for blob in blobs)))
+                               *(blob or nothing for _, blob in sides)))
                 if len(diff) > GIT_OUTPUT_LIMIT:
                     return None, too_large
     except OutputLimit:
@@ -708,7 +751,7 @@ class Run:
     def review(self, candidate):
         if "reviewer" not in self.config["routes"]:
             return True
-        diff, withheld = review_diff(self.integration, "HEAD", candidate["commit"])
+        diff, withheld = review_diff(self.integration, "HEAD", candidate["commit"], min(300, self.budget.remaining()))
         if withheld:  # never ask a model to approve a change it cannot see
             candidate["review"] = {"approve": False, "reason": withheld}
             return False

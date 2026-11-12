@@ -108,20 +108,28 @@ def common_dir(root):
 GIT_OUTPUT_LIMIT = 2_000_000  # bytes of Git output the runner reads
 
 
-def blob_head(root, blob, size=8000, timeout=60):
-    """The first size bytes of a blob, without reading the rest: where Git looks for a NUL byte. Killed after
-    timeout seconds, as git() is, should Git stall."""
+def blob_head(root, blob, size, timeout=60):
+    """Exactly the first size bytes of a blob, without reading the rest; None when Git fails, stalls past
+    timeout seconds (its process group is then killed, as execute does) or gives fewer bytes."""
     proc = subprocess.Popen(["git", "cat-file", "blob", blob], cwd=root, stdout=subprocess.PIPE,
-                            stderr=subprocess.DEVNULL, env={**os.environ, "GIT_NO_REPLACE_OBJECTS": "1"})
-    deadline = threading.Timer(timeout, proc.kill)
+                            stderr=subprocess.DEVNULL, start_new_session=True,
+                            env={**os.environ, "GIT_NO_REPLACE_OBJECTS": "1"})
+    def kill():
+        try:
+            os.killpg(proc.pid, signal.SIGKILL)  # the whole group: a child could hold the pipe open
+        except (ProcessLookupError, PermissionError):
+            proc.kill()
+    deadline = threading.Timer(timeout, kill)
     deadline.start()
     try:
-        return proc.stdout.read(size)
+        data = proc.stdout.read(size)
     finally:
         deadline.cancel()
-        proc.kill()
-        proc.wait()
+        kill()
+        code = proc.wait()
         proc.stdout.close()
+    # Done (0), or stopped by us after the bytes we asked for (killed): anything else is a failed read.
+    return data if len(data) == size and code in (0, -signal.SIGKILL) else None
 
 
 class OutputLimit(RuntimeError):
