@@ -98,9 +98,11 @@ and the bytes of every file the repository config names with `include.path` or
 `includeIf.*.path` (followed transitively, whatever the condition, at most 64
 files of 1 MiB, a symlinked one at its target) are recorded when a run's first
 candidate worktree is created. `info/` files are also recorded at their target
-when they are symlinks; a device such as `/dev/null` is not recorded, since
-nothing could be put back into it. The record is kept, owner-readable only, in the
-run folder for resume.
+when they are symlinks. A device such as `/dev/null`, an include target too large
+or too numerous to record, and one Git cannot parse (for example behind an
+`includeIf` that never holds) are not recorded and never stop a run; a watched
+change they bring in cannot be restored and fails closed, as below. The record is
+kept, owner-readable only, in the run folder for resume.
 
 After each worker they are restored, under the run lock that also covers staging
 and the commit, and again before the checkout. Each restore is logged as
@@ -110,15 +112,19 @@ recorded bytes back, through a new file renamed into place with the old file's
 mode, only when the watched values that included files supply changed; the
 evidence lists those values, never the file's other content. Every recorded
 include whose bytes differ is then put back, including unrelated edits in it,
-while an include edit that changes no watched value is kept. A FIFO, symlink or
-other non-file put in place of a recorded include is replaced at once. A value that comes from an included file is never
-overridden in `.git/config`. Replace refs the worker added or changed are
+while an include edit that changes no watched value is kept. A FIFO, symlink,
+folder or other non-file put in place of a recorded include is replaced at once.
+Whatever a restore replaces is first kept, owner-only, under `replaced/` in the
+run folder (a folder is moved there whole), and the candidate's record names it as
+`kept`, so your unrelated edits can be recovered. A value that comes from an
+included file is never overridden in `.git/config`. Replace refs the worker added or changed are
 removed or put back. This includes watched changes you make yourself during a
 run with command execution enabled; without it a worker cannot change config,
 so nothing is restored. Other config, such as remotes and branch tracking, is
 never touched. When a difference cannot be restored (for example an
-`includeIf "hasconfig:remote.*.url:..."` that a new remote turned on), the
-candidate ends with an error naming the file, and `soso/unrestored.json` in the
+`includeIf "hasconfig:remote.*.url:..."` that a new remote turned on), or any
+error stops a restore, the candidate ends with an error naming the file, and
+`soso/unrestored.json` in the
 common Git directory makes every new run, including the next delivery epoch,
 refuse to start until the settings again match that run's record. They are
 compared in a temporary detached worktree, as candidates read them, so
@@ -144,11 +150,10 @@ is not clean enough to start a run, even if you set it to `no`), and run without
 2.46 or newer). The reviewer's diff is built with `--no-ext-diff --no-textconv`
 and with attributes from an empty tree (`--attr-source`, Git 2.40 or newer), so
 no `-diff`, `binary` or diff driver in the repository's `.gitattributes` hides a
-change. Your own `info/attributes` and the file `core.attributesFile` names still
-apply there, so a `-diff` you set in them still shows those files to the reviewer
-only as binary. With an
-older Git, a candidate whose text file still shows only as binary is not sent to
-the reviewer and is not approved. Do not rely on hooks as your evaluator, and
+change. A candidate is not sent to the reviewer, and is not approved, when a file
+without NUL bytes still shows only as binary (with an older Git, or through your
+own `info/attributes` or `core.attributesFile`), or when its diff or such a file
+is larger than the 2 MB the runner reads; a diff is never shown cut short. Do not rely on hooks as your evaluator, and
 expect no fsmonitor speed-up in them.
 
 Not covered: global, system and XDG Git configuration, the attributes file that
