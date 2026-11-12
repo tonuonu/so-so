@@ -10,6 +10,9 @@ from .models import ModelUnavailable, redact_value
 from .process import git
 
 
+STALLED_EPOCHS = 3  # consecutive renewed budgets without one completed round
+
+
 def optimization_requested(project):
     path = Path(project) / 'soso.json'
     try:
@@ -61,6 +64,17 @@ def optimize_project(project: Path, intent: str, folder: Path, models_path=None,
         if save:
             save(state)
 
+    def stalled(report):
+        """Epochs whose budget ends before any completed round never reach plateau."""
+        progressed = any(r.get('outcome') in ('accepted', 'no_improvement') for r in report.get('rounds', []))
+        state['stalled_epochs'] = 0 if progressed else state.get('stalled_epochs', 0) + 1
+        if state['stalled_epochs'] < STALLED_EPOCHS:
+            return False
+        state.update(status='blocked', run_id=None, next_retry_at=None, reason=str(state['stalled_epochs'])
+                     + ' consecutive epochs exhausted their budget before completing a round; increase max_calls or max_seconds')
+        checkpoint()
+        return True
+
     checkpoint()
     try:
         while True:
@@ -110,6 +124,8 @@ def optimize_project(project: Path, intent: str, folder: Path, models_path=None,
                     report = runner.run()
                 except BudgetExceeded:
                     state['epochs'][-1]['status'] = 'budget_exhausted'
+                    if stalled({}):
+                        return state
                     state.update(status='incomplete', run_id=None, next_retry_at=time.time() + 2)
                     checkpoint()
                     continue
@@ -132,6 +148,8 @@ def optimize_project(project: Path, intent: str, folder: Path, models_path=None,
                     checkpoint()
                     return state
                 if report['status'] in ('budget_exhausted', 'round_limit'):
+                    if stalled(report):
+                        return state
                     # The accepted result becomes a clean source for a new epoch;
                     # original inputs and the previous Run budget stay unchanged.
                     state.update(status='incomplete', root=str(runner.integration), run_id=None,
@@ -139,6 +157,9 @@ def optimize_project(project: Path, intent: str, folder: Path, models_path=None,
                     checkpoint()
                     continue
                 state.update(status='blocked', reason=report.get('reason', report['status']))
+                if report['status'] == 'invalid_baseline':
+                    # Never resume it: a later launch re-checks the baseline in a fresh epoch and budget.
+                    state.update(run_id=None, reason='invalid baseline: ' + str(report['baseline'].get('reason', 'evaluation failed')))
                 checkpoint()
                 return state
             except ModelUnavailable as exc:

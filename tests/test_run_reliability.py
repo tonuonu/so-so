@@ -153,5 +153,81 @@ class IncompleteRoundTests(RepoCase):
         self.assertEqual([r['outcome'] for r in report['rounds']], ['incomplete'])
 
 
+class OptimizationEpochTests(unittest.TestCase):
+    def setUp(self):
+        import hashlib
+        self.tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self.tmp.name).resolve() / 'project'
+        self.root.mkdir()
+        self.intent = 'Reduce the numeric value while preserving behavior.'
+        (self.root / 'INTENT.md').write_text(self.intent)
+        (self.root / 'value.txt').write_text('200')
+        (self.root / 'evaluate.py').write_text(
+            "import json, os, sys\nfrom pathlib import Path\n"
+            "if not Path(os.environ.get('SOSO_TEST_GATE', '/nonexistent')).exists(): sys.exit(1)\n"
+            "print(json.dumps({'score':int(Path('value.txt').read_text())}))\n")
+        self.gate = Path(self.tmp.name) / 'gate'
+        self.gate.write_text('open')
+        self.pool = {'models': {'test': {'kind': 'command', 'command': ['false']}},
+                     'routes': {r: ['test'] for r in ('worker', 'planner', 'reviewer')}}
+        self.config = {**DEFAULTS, **self.pool, 'direction': 'min', 'evaluate': ['python3', '-B', 'evaluate.py'],
+                       'parallel': 1, 'rounds': 3, 'patience': 1, 'max_steps': 5, 'max_calls': 30,
+                       'max_seconds': 30, 'mode': 'optimize',
+                       'prepared_intent_sha256': hashlib.sha256(self.intent.encode()).hexdigest()}
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def answer(self, router, role, prompt, cwd, attempt=0, task=None):
+        router.budget.claim()
+        if role == 'planner':
+            return {'experiments': [{'task': 'reduce value'}]}
+        if role == 'reviewer':
+            return {'approve': True}
+        if 'LAST RESULT:\n{"files"' in prompt:
+            return {'tool': 'write', 'path': 'value.txt', 'content': '100'}
+        return {'tool': 'done'}
+
+    def launch(self, waits=None):
+        from soso.launch import launch
+        (self.root / 'soso.json').write_text(json.dumps(self.config))
+        def wait(until):
+            if waits is not None:
+                waits.append(until)
+                if len(waits) > 6:
+                    raise AssertionError('optimization kept opening zero-progress epochs')
+        with patch.dict(os.environ, {'SOSO_TEST_GATE': str(self.gate)}), \
+             patch('soso.launch.resolve_pool', return_value=self.pool), \
+             patch('soso.models.Router.ask', lambda router, *a, **k: self.answer(router, *a, **k)), \
+             patch('soso.optimize._wait', side_effect=wait), contextlib.redirect_stdout(io.StringIO()):
+            return launch(self.root)
+
+    def test_epochs_without_a_completed_round_stop_blocked(self):
+        self.config['max_calls'] = 1  # planning consumes the whole budget of every epoch
+        waits = []
+        result = self.launch(waits)
+        self.assertEqual(result['status'], 'blocked')
+        self.assertIn('before completing a round', result['reason'])
+        self.assertEqual(len(result['epochs']), 3)
+        self.assertTrue(all(e['status'] == 'budget_exhausted' for e in result['epochs']))
+
+    def test_invalid_baseline_epoch_is_not_resumed(self):
+        self.gate.unlink()
+        first = self.launch()
+        self.assertEqual(first['status'], 'blocked')
+        self.assertIsNone(first['run_id'])
+        self.assertIn('invalid baseline', first['reason'])
+        again = self.launch()
+        self.assertEqual(again['status'], 'blocked')
+        self.assertEqual(len(again['epochs']), 2)
+        self.gate.write_text('open')
+        fixed = self.launch()
+        self.assertEqual(fixed['status'], 'optimized')
+        self.assertNotEqual(fixed['run_id'], first['epochs'][0]['run_id'])
+        report = json.loads(Path(fixed['report']).read_text())
+        self.assertTrue(report['baseline']['valid'])
+        self.assertEqual(report['best'], 100)
+
+
 if __name__ == '__main__':
     unittest.main()
