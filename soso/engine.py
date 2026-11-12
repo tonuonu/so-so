@@ -100,10 +100,20 @@ def index_flags(root):
     return {x for x in git(root, "ls-files", "-v", "-z").split("\0") if x[:1] == "S" or x[:1].islower()}
 
 
-def fsmonitor_config(root):
-    """core.fsmonitor values from config files; runner Git commands override them on the command line."""
-    lines = git(root, "config", "--show-scope", "--get-all", "core.fsmonitor").splitlines()
-    return [line for line in lines if not line.startswith("command\t")]
+def _read(path):
+    return path.read_bytes() if path.is_file() else None
+
+
+def commit_differs(path, base, commit):
+    """Whether a regular file the commit changed no longer hashes to its blob with the current configuration."""
+    fields = git(path, "diff-tree", "-r", "-z", "--no-renames", base, commit).split("\0")
+    changed = [(fields[i + 1], fields[i].split()[3]) for i in range(0, len(fields) - 1, 2)
+               if fields[i].split()[1] in ("100644", "100755")]
+    for start in range(0, len(changed), 200):
+        chunk = changed[start:start + 200]
+        if git(path, "hash-object", "--", *(name for name, _ in chunk)).split() != [blob for _, blob in chunk]:
+            return True
+    return False
 
 
 def nested_git(root):
@@ -249,6 +259,10 @@ class Run:
         if not common.is_absolute():
             common = (self.root / common).resolve()
         self.storage = common / "soso"
+        # Git files every worktree shares; a worker with command execution could add a clean filter or
+        # attributes that make a commit differ from the files that were evaluated.
+        self.shared_config = {file: _read(file) for file in (common / "config", common / "info" / "attributes")}
+        self.started_experiments = self.active_experiments = 0
         self.storage.mkdir(exist_ok=True)
         self.lock = threading.Lock()
         self.run_id = resume or time.strftime("%Y%m%d-%H%M%S-") + uuid.uuid4().hex[:8]
@@ -460,8 +474,32 @@ class Run:
         candidate["review"] = reply
         return reply.get("approve") is True
 
+    def restore_repository_config(self, files):
+        """Put back the given Git files as snapshotted, keeping replaced bytes in the run folder; return the changed paths."""
+        changed = []
+        with self.lock:
+            for file, before in files.items():
+                now = _read(file)
+                if now == before:
+                    continue
+                changed.append(file)
+                if now is not None:
+                    (self.folder / f"replaced-{uuid.uuid4().hex[:8]}-{file.name}").write_bytes(now)
+                if before is None:
+                    file.unlink(missing_ok=True)
+                else:
+                    temporary = file.with_name(file.name + ".soso-restore")
+                    temporary.write_bytes(before)
+                    temporary.replace(file)
+        return changed
+
     def experiment(self, task, round_number, index, continuation=None):
         name = f"r{round_number}-c{index}-{uuid.uuid4().hex[:6]}"
+        with self.lock:  # a shared change is attributable only to a candidate that ran alone
+            sequence, alone = self.started_experiments, self.active_experiments == 0
+            self.started_experiments += 1
+            self.active_experiments += 1
+        own = {}
         path = self.folder / name
         result = {"candidate": index, "task": task}
         preserve = getattr(self, 'retain_candidate', None)
@@ -484,11 +522,17 @@ class Run:
                 expected = continuation['commit']
             git(self.root, "worktree", "add", "--detach", str(path), expected)
             flagged = index_flags(path)  # e.g. skip-worktree entries a sparse checkout gives every worktree
-            monitor, nested = fsmonitor_config(path), nested_git(path)
+            nested = nested_git(path)
+            own = {file: _read(file) for file in [Path(git(path, "rev-parse", "--absolute-git-dir")) / "config.worktree"]}
             if continuation and fingerprint(path, self.config['protected']) != self.pinned:
                 raise ValueError('retained candidate policy changed')
             if not continuation or continuation['phase'] == 'worker':
                 result["worker"] = worker(self.router, task, path, self.config, self.log, index)
+            # Restore before Git stages anything, so the commit is made with the repository's own configuration.
+            changed = self.restore_repository_config({**self.shared_config, **own})
+            with self.lock:
+                alone = alone and self.started_experiments == sequence + 1
+            reconfigured = any(file in own for file in changed) or bool(changed and alone)
             if fingerprint(path, self.config["protected"]) != self.pinned:
                 raise ValueError("protected files changed")
             if git(path, "rev-parse", "HEAD") != expected:
@@ -506,15 +550,17 @@ class Run:
             if preserve:
                 retain()  # Persist before evaluation or review can exhaust the epoch.
             self.log("activity", phase="testing", candidate=index)
+            # A sibling may have changed the shared files since; check and evaluate with the repository's own.
+            self.restore_repository_config({**self.shared_config, **own})
             # Score exactly the committed tree, as the baseline was: experiment worktrees start
             # fresh, so every ignored file here is uncommitted worker output.
             git(path, "clean", "-ffdqX")
             # A nested repository commits only as a gitlink: its files stay on disk, unrecorded and uncleaned.
             if any(line.split()[1] == "160000" for line in git(path, "diff-tree", "-r", base, result["commit"]).splitlines()):
                 result["evaluation"] = {"valid": False, "reason": "embedded repositories are not allowed"}
-            # An fsmonitor hook the worker configured can report its edits as unchanged to other Git users.
-            elif fsmonitor_config(path) != monitor:
-                result["evaluation"] = {"valid": False, "reason": "fsmonitor configuration changed"}
+            # A sibling's change can also reach this commit, so files must still match the committed blobs.
+            elif reconfigured or commit_differs(path, base, result["commit"]):
+                result["evaluation"] = {"valid": False, "reason": "worker changed repository configuration"}
             # Index flags the worker set keep its on-disk edits out of the commit.
             elif index_flags(path) != flagged:
                 result["evaluation"] = {"valid": False, "reason": "index flags hide worktree changes"}
@@ -525,10 +571,10 @@ class Run:
                 result["evaluation"] = {"valid": False, "reason": "files inside a submodule directory"}
             else:
                 result["evaluation"] = evaluate(path, self.config, self.budget)
-            if (git(path, "rev-parse", "HEAD") != result["commit"]
-                    or fingerprint(path, self.config["protected"]) != self.pinned
-                    or git(path, "status", "--porcelain")):
-                raise ValueError("evaluation modified source or protected files")
+                if (git(path, "rev-parse", "HEAD") != result["commit"]
+                        or fingerprint(path, self.config["protected"]) != self.pinned
+                        or git(path, "status", "--porcelain")):
+                    raise ValueError("evaluation modified source or protected files")
             # Retain accepted/rejected commits beyond Git's dangling-object grace period.
             git(self.root, "update-ref", f"refs/soso/{self.run_id}/{name}", result["commit"])
         except (ModelUnavailable, BudgetExceeded, KeyboardInterrupt, SystemExit) as exc:
@@ -550,6 +596,9 @@ class Run:
             result["error_kind"] = type(exc).__name__
             result["evaluation"] = {"valid": False, "reason": type(exc).__name__}
         finally:
+            self.restore_repository_config({**self.shared_config, **own})  # also after early returns and errors
+            with self.lock:
+                self.active_experiments -= 1
             if cleanup and path.exists():
                 with contextlib.suppress(RuntimeError):
                     git(self.root, "worktree", "remove", "--force", str(path))

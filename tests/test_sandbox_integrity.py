@@ -138,7 +138,124 @@ class SandboxIntegrityTests(RepoCase):
         # A hook that reports no changes plus fsmonitor-valid bits hides the edit from status and staging.
         hide = r"""h="$(git rev-parse --absolute-git-dir)/stub" && printf "#!/bin/sh\nprintf 'tok\\0'\n" > "$h" && chmod +x "$h" && git config core.fsmonitor "$h" && git status --porcelain > /dev/null && git update-index --fsmonitor-valid value.txt && echo 999 > value.txt"""
         evaluation = self.hidden_score_run(hide)
-        self.assertEqual(evaluation, {'valid': False, 'reason': 'fsmonitor configuration changed'})
+        self.assertEqual(evaluation, {'valid': False, 'reason': 'worker changed repository configuration'})
+
+    def common_dir(self):
+        return (self.root / '.git').resolve()  # RepoCase is a plain repository
+
+    def test_candidate_changing_repository_config_is_invalid_and_config_is_restored(self):
+        # A clean filter in the shared config commits other content than the evaluated value.txt.
+        common = self.common_dir()
+        config, attributes = (common / 'config').read_bytes(), (common / 'info/attributes')
+        self.assertFalse(attributes.exists())
+        change = ('git config filter.shadow.clean "sed s/1/999/" && '
+                  'printf "value.txt filter=shadow\\n" > "$(git rev-parse --git-common-dir)/info/attributes" && '
+                  'echo 1 > value.txt')
+        evaluation = self.hidden_score_run(change)
+        self.assertEqual(evaluation, {'valid': False, 'reason': 'worker changed repository configuration'})
+        self.assertEqual((common / 'config').read_bytes(), config)
+        self.assertFalse(attributes.exists())
+
+    def test_config_change_without_source_changes_is_restored(self):
+        # The candidate returns early ("no changes"); its config change must not leak into later candidates.
+        steps = iter([{'tool': 'run', 'argv': ['sh', '-c', 'git config soso.test changed']}, {'tool': 'done', 'summary': 'done'}])
+        def answer(router, role, prompt, cwd, attempt=0, task=None):
+            router.budget.claim()
+            return next(steps)
+        runner = Run(self.root, self.config(parallel=1, rounds=1), 'Improve', allow_exec=True)
+        with patch.object(Router, 'ask', answer), contextlib.redirect_stdout(io.StringIO()):
+            report = runner.run()
+        self.assertEqual(report['rounds'][0]['experiments'][0]['evaluation'], {'valid': False, 'reason': 'no changes'})
+        self.assertNotIn(b'soso', (self.common_dir() / 'config').read_bytes())
+        replaced = [p.read_bytes() for p in runner.folder.glob('replaced-*-config')]
+        self.assertTrue(any(b'soso' in data for data in replaced), 'replaced bytes are kept as evidence')
+
+    def test_config_change_is_restored_when_the_worker_fails(self):
+        from soso.models import ModelUnavailable
+        steps = iter([{'tool': 'run', 'argv': ['sh', '-c', 'git config soso.test changed']}])
+        def answer(router, role, prompt, cwd, attempt=0, task=None):
+            router.budget.claim()
+            for step in steps:
+                return step
+            raise ModelUnavailable(reason='provider paused')
+        runner = Run(self.root, self.config(parallel=1, rounds=1), 'Improve', allow_exec=True)
+        with patch.object(Router, 'ask', answer), contextlib.redirect_stdout(io.StringIO()):
+            report = runner.run()
+        self.assertEqual(report['status'], 'waiting')
+        self.assertNotIn(b'soso', (self.common_dir() / 'config').read_bytes())
+
+    def test_sibling_config_change_does_not_invalidate_an_innocent_candidate(self):
+        # Candidate 0 starts first and only edits value.txt; candidate 1 runs alongside it and changes the
+        # shared config before candidate 0 finishes. The change is restored without blaming candidate 0.
+        import threading
+        import time
+        together, changed, restored = threading.Barrier(2, timeout=30), threading.Event(), threading.Event()
+        plans = {0: [{'tool': 'write', 'path': 'value.txt', 'content': '5'}, {'tool': 'done', 'summary': 'done'}],
+                 1: [{'tool': 'run', 'argv': ['sh', '-c', 'git config soso.test changed']}, {'tool': 'done', 'summary': 'done'}]}
+        steps = {}
+        def answer(router, role, prompt, cwd, attempt=0, task=None):
+            router.budget.claim()
+            if role == 'reviewer':
+                return {'approve': True}
+            index = int(Path(cwd).name.split('-c')[1].split('-')[0])
+            step = plans[index][steps.setdefault(index, 0)]
+            steps[index] += 1
+            if step['tool'] != 'done':
+                together.wait()  # both candidates are running
+            elif index == 1:
+                changed.set()  # its config change has run
+                restored.wait(30)  # and is still in place when candidate 0 restores
+            else:
+                changed.wait(30)
+            return step
+        restore = Run.restore_repository_config
+        def observed(self, files):
+            result = restore(self, files)
+            if any('-c0-' in str(file) for file in files):
+                restored.set()
+            return result
+        experiment = Run.experiment
+        def staggered(self, task, round_number, index, continuation=None):
+            if index == 1:
+                time.sleep(0.5)  # candidate 0 starts first, so it alone could be blamed if overlap were ignored
+            return experiment(self, task, round_number, index, continuation)
+        runner = Run(self.root, self.config(parallel=2, rounds=1), 'Improve', allow_exec=True)
+        with patch.object(Router, 'ask', answer), patch.object(Run, 'experiment', staggered), \
+                patch.object(Run, 'restore_repository_config', observed), \
+                patch('soso.engine.resources', return_value={'cpus': 2}), contextlib.redirect_stdout(io.StringIO()):
+            report = runner.run()
+        evaluations = {e['candidate']: e['evaluation'] for e in report['rounds'][0]['experiments']}
+        self.assertEqual(evaluations[0].get('score'), 5, evaluations)
+        self.assertEqual(evaluations[1], {'valid': False, 'reason': 'no changes'})
+        self.assertEqual(report['best'], 5)
+        self.assertNotIn(b'soso', (self.common_dir() / 'config').read_bytes())
+
+    def test_commit_made_under_a_sibling_filter_is_invalid(self):
+        # Simulate a sibling adding a clean filter between this candidate's restore and its commit.
+        common = self.common_dir()
+        restore = Run.restore_repository_config
+        calls = []
+        def sibling_changes_config(self, files):
+            changed = restore(self, files)
+            if not calls:
+                git(self.root, 'config', 'filter.shadow.clean', 'sed s/1/999/')
+                (common / 'info/attributes').write_text('value.txt filter=shadow\n')
+            calls.append(changed)
+            return changed
+        steps = iter([{'tool': 'write', 'path': 'value.txt', 'content': '1'}, {'tool': 'done', 'summary': 'done'}])
+        def answer(router, role, prompt, cwd, attempt=0, task=None):
+            router.budget.claim()
+            if role == 'reviewer': return {'approve': True}
+            return next(steps)
+        runner = Run(self.root, self.config(parallel=1, rounds=1), 'Improve')
+        with patch.object(Router, 'ask', answer), patch.object(Run, 'restore_repository_config', sibling_changes_config), \
+                contextlib.redirect_stdout(io.StringIO()):
+            report = runner.run()
+        experiment = report['rounds'][0]['experiments'][0]
+        self.assertEqual(calls[0], [])  # this candidate changed nothing itself
+        self.assertEqual(git(self.root, 'show', experiment['commit'] + ':value.txt'), '999')
+        self.assertEqual(experiment['evaluation'], {'valid': False, 'reason': 'worker changed repository configuration'})
+        self.assertFalse((common / 'info/attributes').exists())
 
     def test_runner_git_ignores_a_preconfigured_fsmonitor_hook(self):
         # The hook is already configured, so no configuration change is detected; the runner's own
