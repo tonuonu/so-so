@@ -487,13 +487,8 @@ class Router:
                 response = self._measured_call(role, name, model, packet, cwd,
                     min(model.get('timeout', 180), self.budget.remaining()))
                 self.budget.remaining()
-                try:
-                    return self._role_response(role, response)
-                except ValueError:
-                    unavailable = cli_unavailable(response) if isinstance(response, str) and model['kind'] in ('command', 'codex', 'kimi') else None
-                    if unavailable is not None:
-                        raise unavailable
-                    raise
+                # Quota text is recognized only in failed-process diagnostics, never in a returned answer.
+                return self._role_response(role, response)
             except (ValueError, IndexError) as exc:
                 self.budget.remaining()
                 # Only safe structural diagnostics, never response excerpts.

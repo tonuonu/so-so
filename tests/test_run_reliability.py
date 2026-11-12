@@ -341,5 +341,30 @@ class DeterministicRouteFailureTests(unittest.TestCase):
         self.assertIsNone(state['next_retry_at'])
 
 
+class QuotaTextTests(unittest.TestCase):
+    def router(self, command, state=None):
+        from soso.models import Budget, Router
+        config = {'models': {'m': {'kind': 'command', 'command': command}}, 'routes': {'worker': ['m']}}
+        if state:
+            config['_router_state'] = str(state)
+        return Router(config, Budget(5, 30), lambda *a, **k: None)
+
+    def test_returned_answer_mentioning_rate_limits_is_not_a_cooldown(self):
+        from soso.models import ModelProtocolError
+        router = self.router(['m'])
+        answer = 'The API docs say: rate limit exceeded, retry after 3 hours.'
+        with patch.object(router, '_call', return_value=answer), self.assertRaises(ModelProtocolError):
+            router.ask('worker', 'prompt', Path.cwd())
+        self.assertEqual(router.cooldowns, {})
+
+    def test_failed_process_quota_diagnostic_still_cools_down(self):
+        import time
+        from soso.models import ModelUnavailable
+        router = self.router(['sh', '-c', 'echo "Usage limit reached; retry in 2 hours" >&2; exit 1'])
+        with self.assertRaises(ModelUnavailable) as raised:
+            router.ask('worker', 'prompt', Path.cwd())
+        self.assertAlmostEqual(raised.exception.retry_at, time.time() + 7200, delta=30)
+
+
 if __name__ == '__main__':
     unittest.main()
