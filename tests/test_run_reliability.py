@@ -366,5 +366,24 @@ class QuotaTextTests(unittest.TestCase):
         self.assertAlmostEqual(raised.exception.retry_at, time.time() + 7200, delta=30)
 
 
+class FailureBackoffTests(unittest.TestCase):
+    def test_success_resets_persisted_failure_backoff(self):
+        import time
+        from soso.models import Budget, ModelUnavailable, Router
+        with tempfile.TemporaryDirectory() as folder:
+            state = Path(folder) / 'router-state.json'
+            state.write_text(json.dumps({'cooldowns': {}, 'failures': {'m': 6}}))
+            config = {'models': {'m': {'kind': 'command', 'command': ['m']}}, 'routes': {'worker': ['m']},
+                      '_router_state': str(state)}
+            router = Router(config, Budget(5, 30), lambda *a, **k: None)
+            with patch.object(router, '_call', return_value='{"tool":"done"}'):
+                router.ask('worker', 'prompt', Path.cwd())
+            restarted = Router(config, Budget(5, 30), lambda *a, **k: None)
+            self.assertNotIn('m', restarted.failures)
+            with patch.object(restarted, '_call', side_effect=ModelUnavailable()), self.assertRaises(ModelUnavailable):
+                restarted.ask('worker', 'prompt', Path.cwd())
+            self.assertLess(restarted.cooldowns['m'], time.time() + 60)
+
+
 if __name__ == '__main__':
     unittest.main()

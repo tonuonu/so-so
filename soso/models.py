@@ -252,12 +252,21 @@ class Router:
             self.failures[name] = failures
             until = max(time.time() + 1, retry_at) if retry_at is not None else time.time() + min(900, 30 * 2 ** min(failures - 1, 5))
             self.cooldowns[name] = until
-            if self.state_path:
-                self.state_path.parent.mkdir(parents=True, exist_ok=True)
-                temporary = self.state_path.with_suffix('.tmp')
-                temporary.write_text(json.dumps({'cooldowns': self.cooldowns, 'failures': self.failures}))
-                temporary.replace(self.state_path)
+            self._persist()
             return until
+
+    def _recovered(self, name):
+        # A provider that answered starts its next failure backoff from the beginning.
+        with self.state_lock:
+            if self.failures.pop(name, None) is not None:
+                self._persist()
+
+    def _persist(self):
+        if self.state_path:
+            self.state_path.parent.mkdir(parents=True, exist_ok=True)
+            temporary = self.state_path.with_suffix('.tmp')
+            temporary.write_text(json.dumps({'cooldowns': self.cooldowns, 'failures': self.failures}))
+            temporary.replace(self.state_path)
 
     def _select(self, role, task, cwd):
         text = task.casefold()
@@ -519,6 +528,7 @@ class Router:
         try:
             response = self._call(model, prompt, cwd, timeout)
             status = 'returned'
+            self._recovered(name)
             return response
         finally:
             self.log('call_finished', call_id=call_id, role=role, model=name,
