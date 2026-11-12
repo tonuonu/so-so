@@ -397,6 +397,26 @@ class EvaluatedTreeTests(RepoCase):
         self.assertEqual(included.read_text(), '[core]\n\tautocrlf = false\n')
         self.assertEqual(self.experiment(report)['evaluation'], {'valid': False, 'reason': 'worker changed repository configuration'})
 
+    def test_config_files_are_read_only_when_regular(self):
+        fifo = self.common_dir() / 'fifo'
+        os.mkfifo(fifo)
+        with self.assertRaises(OSError):
+            engine.config_bytes(fifo)  # returns at once, never waits for a writer
+        self.assertIs(engine.current_bytes(fifo), engine.IRREGULAR)
+
+    def test_restore_replaces_a_fifo_before_git_reads_config(self):
+        # Config reads are stubbed: with the FIFO still there, Git itself would block on it.
+        included = self.common_dir() / 'user-include'
+        runner = Run(self.root, self.config(), 'Improve', allow_exec=True)
+        runner.watched = (([], []), None, {str(included): b'[core]\n'}, engine.UNRECORDED, engine.UNRECORDED)
+        os.mkfifo(included)
+        own = (self.root / 'none', str(self.root / 'none'), ([], []))
+        with patch('soso.engine.watched_config', return_value=([], [], {})):
+            changed = runner.restore_watched(self.root, own, [])
+        self.assertTrue(included.is_file())
+        self.assertEqual(included.read_bytes(), b'[core]\n')
+        self.assertEqual(changed, ['included:' + str(included)])
+
     def test_missing_record_of_a_failed_restore_gives_the_clear_message(self):
         report = self.failed_restore()
         os.unlink(self.common_dir() / 'soso' / report['run_id'] / 'watched-config.json')

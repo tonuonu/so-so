@@ -260,10 +260,11 @@ GUARDS = [
     ('soso/delivery.py', "if diff is None:  # never ask", "if False:  # never ask",
      ['test_evaluated_tree.EvaluatedTreeTests.test_delivery_reviewer_is_not_asked_about_a_text_file_shown_as_binary']),
     # Review follow-ups.
+    # The end-to-end FIFO test also covers these, but its mutants block on Git for minutes: unit tests instead.
     ('soso/engine.py', 'if not stat.S_ISREG(os.fstat(fd).st_mode):', 'if False:',
-     ['test_evaluated_tree.EvaluatedTreeTests.test_included_file_replaced_by_a_fifo_does_not_hang_the_restore']),
+     ['test_evaluated_tree.EvaluatedTreeTests.test_config_files_are_read_only_when_regular']),
     ('soso/engine.py', '        included_files(lambda name: current_bytes(name) is IRREGULAR, "a regular file", "not a regular file")',
-     '        pass', ['test_evaluated_tree.EvaluatedTreeTests.test_included_file_replaced_by_a_fifo_does_not_hang_the_restore']),
+     '        pass', ['test_evaluated_tree.EvaluatedTreeTests.test_restore_replaces_a_fifo_before_git_reads_config']),
     ('soso/engine.py', 'name = os.path.realpath(named)', 'name = named',
      ['test_evaluated_tree.EvaluatedTreeTests.test_users_symlinked_include_is_recorded_and_restored_at_its_target']),
     ('soso/engine.py', 'if scope == "local" and supplied(effective, direct) != supplied(recorded[1], recorded[0]):',
