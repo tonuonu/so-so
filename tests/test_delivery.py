@@ -147,6 +147,31 @@ print(json.dumps({'score':min(100,10*stage+(50 if stale else 0)),'complete':stag
         self.assertEqual(first['epochs'][0]['best'], 10)
         self.assertEqual((Path(first['worktree']) / 'stage.txt').read_text(), '1')
 
+    def test_contract_repair_scores_the_baseline_without_earlier_leftovers(self):
+        # Each epoch checks the goal worktree out again, but contract attempts score it as it stands:
+        # the second attempt must not see the marker the first attempt's evaluator left.
+        self.config['max_seconds'] = 600
+        self.repo.joinpath('.gitignore').write_text('cache/\n')
+        self.use_evaluator('''import json
+from pathlib import Path
+marker=Path('cache/marker')
+stale=marker.exists()
+marker.parent.mkdir(exist_ok=True)
+marker.write_text('1')
+print(json.dumps({'score':50 if stale else 0,'complete':False}))
+''')
+        original, reviews = self.answer, []
+        def answer(router, role, prompt, cwd, **kwargs):
+            if role == 'reviewer' and 'proposed acceptance contract' in prompt and not reviews:
+                reviews.append(prompt)
+                router.budget.claim()
+                return {'approve': False, 'reason': 'repair the coverage'}
+            return original(router, role, prompt, cwd, **kwargs)
+        self.answer = answer
+        first = self.start()
+        lines = (Path(first['report']).parent / 'contract-reviews.jsonl').read_text().splitlines()
+        self.assertEqual([json.loads(line)['baseline']['score'] for line in lines], [0, 0])
+
     def test_candidate_ignored_shadow_files_do_not_raise_accepted_score(self):
         self.config['max_seconds'] = 600  # as above: the result must not depend on machine speed
         self.repo.joinpath('.gitignore').write_text('cache/\n')
@@ -535,6 +560,23 @@ print(json.dumps({'score':10*stage+(50 if expanded else 0),'complete':False}))
             second = self.start(resume_goal=first['goal_id'])
         report = json.loads(Path(second['epochs'][-1]['report']).read_text())
         self.assertEqual(report['baseline']['score'], 60)
+
+    def test_interrupt_during_goal_checkout_is_finished_on_resume(self):
+        # The epoch's checkout deletes every file before writing them again; resume completes it.
+        from soso import delivery
+        first = self.start()
+        self.assertEqual((Path(first['worktree']) / 'stage.txt').read_text(), '1')
+        def interrupted(root, *args):
+            (Path(root) / 'stage.txt').unlink()
+            raise KeyboardInterrupt
+        with patch('soso.delivery.time.time', return_value=time.time() + 5), \
+                patch('soso.delivery.checkout', side_effect=interrupted):
+            second = self.start(resume_goal=first['goal_id'])
+        self.assertEqual(second['status'], 'interrupted')
+        with patch('soso.delivery.time.time', return_value=time.time() + 10):
+            third = self.start(resume_goal=first['goal_id'])
+        self.assertEqual(third['status'], 'complete')
+        self.assertEqual((Path(third['worktree']) / 'stage.txt').read_text(), '2')
 
     def test_interrupt_around_merge_preserves_or_reconciles_reviewed_draft(self):
         for after_merge in (False, True):

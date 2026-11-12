@@ -219,7 +219,7 @@ def included(path, config):
                 continue
             named = os.path.abspath(os.path.join(os.path.dirname(source), os.path.expanduser(value)))
             name = os.path.realpath(named)  # e.g. a dotfiles symlink: the file itself is recorded and restored
-            if name not in found:
+            if name not in found and current_bytes(name) is not IRREGULAR:  # e.g. /dev/null: nothing to restore
                 found[name] = config_bytes(name)
                 if len(found) > MAX_INCLUDED or len(found[name] or b"") > MAX_CONFIG_BYTES:
                     raise ValueError("included Git configuration is too large to record: " + name)
@@ -228,7 +228,7 @@ def included(path, config):
 
 
 def dump_watched(watched):
-    encode = lambda data: None if data is None else base64.b64encode(data).decode()
+    encode = lambda data: data if data is None or data is UNRECORDED else base64.b64encode(data).decode()
     return {"local": watched[0], "attributes": encode(watched[1]),
             "included": {name: encode(data) for name, data in watched[2].items()},
             "exclude": encode(watched[3]), "replace": watched[4]}
@@ -236,7 +236,7 @@ def dump_watched(watched):
 
 def load_watched(saved):
     """A record as dump_watched wrote it; what an older record lacks is UNRECORDED (included: none) and left alone."""
-    decode = lambda text: None if text is None else base64.b64decode(text)
+    decode = lambda text: text if text is None or text is UNRECORDED else base64.b64decode(text)
     return (tuple([tuple(entry) for entry in entries] for entries in saved["local"]), decode(saved["attributes"]),
             {name: decode(text) for name, text in saved.get("included", {}).items()},
             decode(saved["exclude"]) if "exclude" in saved else UNRECORDED, saved.get("replace", UNRECORDED))
@@ -423,7 +423,8 @@ class Run:
         self.storage = common / "soso"
         # Watched shared settings, info/attributes and included config files, recorded when the first
         # candidate worktree is created; restores counts restores that changed something.
-        self.attributes, self.exclude, self.watched = common / "info" / "attributes", common / "info" / "exclude", None
+        self.attributes, self.exclude = (Path(os.path.realpath(common / "info" / name)) for name in ("attributes", "exclude"))
+        self.watched = None
         self.config_file = os.path.realpath(common / "config")
         self.started_experiments = self.active_experiments = self.restores = 0
         self.storage.mkdir(exist_ok=True)
@@ -661,11 +662,13 @@ class Run:
     def shared(self, path, files=True):
         """Watched shared state as it is now: settings, info/attributes, included config files (with files),
         info/exclude and replace refs."""
-        for name in (self.attributes, self.exclude):
-            if len(config_bytes(name) or b"") > MAX_CONFIG_BYTES:
+        def info(name):  # anything but a regular file (e.g. /dev/null) is left alone: UNRECORDED
+            data = current_bytes(name)
+            if data is not IRREGULAR and len(data or b"") > MAX_CONFIG_BYTES:
                 raise ValueError(f"{name} is too large to record")
-        return (watched_config(path, "--local", self.config_file)[:2], config_bytes(self.attributes),
-                included(path, self.config_file) if files else {}, config_bytes(self.exclude), replace_refs(path))
+            return UNRECORDED if data is IRREGULAR else data
+        return (watched_config(path, "--local", self.config_file)[:2], info(self.attributes),
+                included(path, self.config_file) if files else {}, info(self.exclude), replace_refs(path))
 
     def repaired(self, recorded):
         """Whether the shared state matches recorded (included files aside: their watched values are part of the

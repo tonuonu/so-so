@@ -199,18 +199,32 @@ class EvaluatedTreeTests(RepoCase):
 
     # A worker that sets diff.* is rejected and restored (see below); the user's own external diff
     # program or textconv driver, e.g. a structural diff tool, must not shape the reviewer's view either.
+    def reviewed_diffs(self, steps):
+        """The reviewer's diff with this Git, and with one that lacks --attr-source (before 2.40)."""
+        real = engine.git
+        def old_git(root, *args, **kwargs):
+            if any(str(arg).startswith('--attr-source') for arg in args):
+                raise RuntimeError('git: unknown option')
+            return real(root, *args, **kwargs)
+        diffs = [self.reviewed_diff(steps)]
+        for path in self.common_dir().glob('soso/*-*/result'):
+            git(self.root, 'worktree', 'remove', '--force', str(path))  # back to the same base for the next run
+        git(self.root, 'checkout', '-q', '--', 'value.txt')
+        with patch('soso.engine.git', old_git):
+            diffs.append(self.reviewed_diff(steps))
+        return diffs
+
     def test_external_diff_does_not_hide_the_change_from_the_reviewer(self):
         git(self.root, 'config', 'diff.external', 'true')
-        diff = self.reviewed_diff([{'tool': 'write', 'path': 'value.txt', 'content': '999'}])
-        self.assertIn('+999', diff)
+        for diff in self.reviewed_diffs([{'tool': 'write', 'path': 'value.txt', 'content': '999'}]):
+            self.assertIn('+999', diff)
 
     def test_textconv_does_not_hide_the_change_from_the_reviewer(self):
-        # The diff reads attributes from the result worktree, so the diff driver comes from the base.
-        (self.root / '.gitattributes').write_text('value.txt diff=hide\n')
-        self.commit('attributes', '.gitattributes')
+        # A driver from the user's own info/attributes, which applies whatever --attr-source says.
+        (self.common_dir() / 'info/attributes').write_text('value.txt diff=hide\n')
         git(self.root, 'config', 'diff.hide.textconv', 'true')
-        diff = self.reviewed_diff([{'tool': 'write', 'path': 'value.txt', 'content': '999'}])
-        self.assertIn('+999', diff)
+        for diff in self.reviewed_diffs([{'tool': 'write', 'path': 'value.txt', 'content': '999'}]):
+            self.assertIn('+999', diff)
 
     def test_diff_driver_settings_do_not_hide_the_change_from_the_reviewer(self):
         # diff.<driver>.binary on a driver the base's attributes use shows only "Binary files differ".
@@ -618,6 +632,38 @@ class EvaluatedTreeTests(RepoCase):
         self.sparse_repository('--sparse-index')
         evaluate = score_of(VALUE + " + (1000 if __import__('os').path.exists('extra') else 0)")
         self.assert_valid(self.run_candidate([{'tool': 'write', 'path': 'value.txt', 'content': '5'}], evaluate))
+
+    def test_users_symlinked_info_exclude_stays_valid(self):
+        # e.g. info/exclude linked to a shared ignore file: recorded and restored at its target.
+        target, exclude = self.common_dir() / 'shared-ignore', self.common_dir() / 'info/exclude'
+        target.write_text('*.log\n')
+        exclude.unlink()
+        exclude.symlink_to(target)
+        for allow_exec in (False, True):
+            with self.subTest(allow_exec=allow_exec):
+                self.assert_valid(self.run_candidate([{'tool': 'write', 'path': 'value.txt', 'content': '5'}],
+                                                     allow_exec=allow_exec))
+                self.assertTrue(exclude.is_symlink())
+                git(self.root, 'checkout', '-q', '--', 'value.txt')
+
+    def test_symlinked_info_exclude_is_restored_at_its_target(self):
+        target, exclude = self.common_dir() / 'shared-ignore', self.common_dir() / 'info/exclude'
+        target.write_text('*.log\n')
+        exclude.unlink()
+        exclude.symlink_to(target)
+        report = self.run_candidate([{'tool': 'run', 'argv': ['sh', '-c', f'echo "*.txt" >> "{exclude}"']},
+                                     {'tool': 'write', 'path': 'value.txt', 'content': '5'}])
+        self.assertTrue(exclude.is_symlink())
+        self.assertEqual(target.read_text(), '*.log\n')
+        self.assertIn('info/exclude', self.restored_keys(report))
+
+    def test_device_files_named_by_the_users_config_stay_valid(self):
+        # Nothing can be put back into /dev/null, so it is not recorded, and it does not stop a run.
+        exclude = self.common_dir() / 'info/exclude'
+        exclude.unlink()
+        exclude.symlink_to('/dev/null')
+        git(self.root, 'config', 'include.path', '/dev/null')
+        self.assert_valid(self.run_candidate([{'tool': 'write', 'path': 'value.txt', 'content': '5'}]))
 
     def test_users_file_mode_and_symlinks_off_stay_valid(self):
         (self.root / 'link.txt').symlink_to('value.txt')
