@@ -1,7 +1,11 @@
 import contextlib
 import io
 import json
+import os
+from pathlib import Path
+import shutil
 import sys
+import tempfile
 import unittest
 from unittest.mock import patch
 from test_core import RepoCase
@@ -107,6 +111,44 @@ class SandboxIntegrityTests(RepoCase):
         self.assertIn('bench/score.py', captured['protected'])
         self.assertEqual(captured['protected'].count('bench/score.py'), 1)
         self.assertTrue(Workspace(self.root, captured['protected']).is_protected('check.py'))
+
+    def prepared_protection(self, evaluate, checks):
+        (self.root / 'INTENT.md').write_text('Improve value')
+        (self.root / 'soso.json').write_text(json.dumps({
+            'models': {'test': {'kind': 'command', 'command': ['false']}}, 'routes': {'worker': ['test']},
+            'evaluate': evaluate, 'checks': checks}))
+        captured = {}
+        class FakeRun:
+            report_path = self.root / 'report.json'
+            def __init__(self, root, config, intent, allow_exec=False, resume=None):
+                captured.update(config)
+            def run(self):
+                return {'status': 'plateau'}
+        with patch('soso.cli.Run', FakeRun), contextlib.redirect_stdout(io.StringIO()):
+            self.assertEqual(main(['run', '--repo', str(self.root)]), 0)
+        return captured['protected']
+
+    def test_run_protects_normalised_program_paths_inside_repo_only(self):
+        (self.root / 'bench').mkdir()
+        (self.root / 'tools').mkdir()
+        (self.root / 'tools/check.py').write_text('')
+        outside = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, outside)
+        (outside / 'o.py').write_text('')
+        protected = self.prepared_protection(['python3', 'bench/../tools/check.py'],
+                                             [['python3', os.path.relpath(outside / 'o.py', self.root)]])
+        self.assertTrue(Workspace(self.root, protected).is_protected('tools/check.py'))
+        self.assertFalse([name for name in protected if name.startswith('..')], protected)
+
+    def test_run_protects_module_named_by_python_m(self):
+        (self.root / 'bench').mkdir()
+        (self.root / 'bench/score.py').write_text('')
+        (self.root / 'tool').mkdir()
+        (self.root / 'tool/__main__.py').write_text('')
+        protected = self.prepared_protection(['python3', '-m', 'bench.score'], [['python3', '-m', 'tool']])
+        ws = Workspace(self.root, protected)
+        self.assertTrue(ws.is_protected('bench/score.py'))
+        self.assertTrue(ws.is_protected('tool/__main__.py'))
 
     def test_already_protected_evaluator_leaves_config_unchanged(self):
         # An unchanged protected list keeps the config digest, so earlier runs stay resumable.

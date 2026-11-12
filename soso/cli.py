@@ -1,6 +1,7 @@
 """Command line entry points."""
 import argparse
 import json
+import os
 from pathlib import Path
 import sys
 from .engine import Run, load_config, resources
@@ -70,8 +71,13 @@ def main(argv=None):
                 config["protected"].append(str(path.relative_to(root)))
         # Freeze in-repo evaluator and check programs, as goal and optimization runs do.
         # Append only new names: an unchanged list keeps the digest that resume checks.
-        programs = [str(Path(arg)) for command in [config["evaluate"]] + config.get("checks", [])
-                    for arg in command if not Path(arg).is_absolute() and (root / arg).is_file()]
+        commands = [config["evaluate"]] + config.get("checks", [])
+        names = [os.path.normpath(arg) for command in commands for arg in command]  # "a/../b" names "b"
+        # python3 -m pkg.mod runs pkg/mod.py, or pkg/mod/__main__.py for a package.
+        names += [module.replace(".", "/") + suffix for command in commands for flag, module in zip(command, command[1:])
+                  if flag == "-m" for suffix in (".py", "/__main__.py")]
+        programs = [name for name in names if not Path(name).is_absolute() and name.split("/")[0] != ".."
+                    and (root / name).is_file()]
         config["protected"] += [name for name in dict.fromkeys(programs) if name not in config["protected"]]
         if not intent.strip() or len(intent.encode()) > 8000:
             raise ValueError("intent must contain 1..8000 bytes; move detail into source files")
