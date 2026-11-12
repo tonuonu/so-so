@@ -47,7 +47,10 @@ def resolve_pool(text, cwd):
     models = dict(discovered['models'])
     if shutil.which('kimi'):
         models['kimi'] = {'kind': 'kimi', 'context_bytes': 60000, 'timeout': 180}
+    answered = {}  # role -> model that produced its latest reply
     def log(event, **data):
+        if event == 'model':
+            answered[data['role']] = data['model']
         with (folder / 'setup-events.jsonl').open('a') as stream:
             stream.write(json.dumps({'time': time.time(), 'event': event, **data}) + '\n')
     # Inventory explicitly supplied Ollama endpoints, without downloading weights.
@@ -168,6 +171,9 @@ INVENTORY:
             'omitted, reordered or misinterpreted; do not approve merely because the JSON is structurally valid. '
             '\nUSER MARKDOWN:\n' + text + '\nVERIFIED INVENTORY:\n' + json.dumps(models) +
             '\nCOMPILED POLICY:\n' + json.dumps(pool))
+        # Review on another model when one answers; the compiler is only the last fallback.
+        compiler = answered.pop('configuration', None)
+        router.routes['configuration_review'] = sorted(preferred, key=lambda name: name == compiler)
         try:
             review = router.ask('configuration_review', review_prompt, cwd,
                                 task='Review model policy fidelity to user Markdown')
@@ -178,7 +184,9 @@ INVENTORY:
             raise
         approved = type(review.get('approve')) is bool and review['approve']
         reason = str(review.get('reason', 'review must explicitly approve with a boolean'))[:2000]
-        log('policy_review', attempt=attempt, approve=approved, reason=reason,
+        reviewer = answered.pop('configuration_review', None)
+        log('policy_review', attempt=attempt, approve=approved, reason=reason, compiled_by=compiler, reviewed_by=reviewer,
+            independent=compiler is not None and reviewer not in (None, compiler),
             policy_sha256=hashlib.sha256(json.dumps(pool, sort_keys=True).encode()).hexdigest())
         if not approved:
             temporary.unlink(missing_ok=True)

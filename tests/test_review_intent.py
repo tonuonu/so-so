@@ -43,6 +43,33 @@ class IntentCompilerReviewTests(unittest.TestCase):
         self.assertEqual(pool['models']['worker']['model'], 'tiny')
         self.assertEqual(pool['models']['planner']['model'], 'capable')
 
+    def compile_and_review(self, inventory, text, policy=POLICY):
+        calls = []
+        def infer(router, model, *args):
+            review = args[0].startswith('Independently review this compiled model policy')
+            calls.append((model['model'], review))
+            return json.dumps({'approve': True, 'reason': 'Faithful policy.'} if review else policy)
+        with tempfile.TemporaryDirectory() as folder, \
+                patch('soso.intent.configure_models', return_value=inventory), \
+                patch('soso.intent.shutil.which', return_value=None), \
+                patch.object(Router, '_call', infer):
+            resolve_pool(text, Path(folder))
+            events = [json.loads(line) for line in
+                      (Path(folder) / '.so-so/pools/setup-events.jsonl').read_text().splitlines()]
+        return calls, [e for e in events if e['event'] == 'policy_review']
+
+    def test_policy_review_runs_on_a_model_other_than_the_compiler(self):
+        calls, reviews = self.compile_and_review(INVENTORY, TEXT)
+        self.assertEqual(calls, [('tiny', False), ('capable', True)])
+        self.assertTrue(reviews[0]['independent'])
+
+    def test_single_model_policy_review_is_recorded_as_not_independent(self):
+        inventory = {'models': {'small': INVENTORY['models']['small']}, 'routes': {'worker': ['small']}}
+        policy = {'aliases': {'worker': 'small'}, 'routes': {'worker': ['worker']}}
+        calls, reviews = self.compile_and_review(inventory, 'Use tiny for everything.', policy)
+        self.assertEqual(calls, [('tiny', False), ('tiny', True)])
+        self.assertFalse(reviews[0]['independent'])
+
     def check_repair(self, settings):
         bad = {**POLICY, 'settings': settings}
         with tempfile.TemporaryDirectory() as folder, \
