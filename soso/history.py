@@ -43,16 +43,17 @@ def update_history(managed, folder, entry):
             continue
         try:
             item = json.loads(path.read_text())
-            records.append((item.get('updated_at', 0), path.parent, item))
-        except (OSError, ValueError):
-            continue
+            timestamp = item.get('updated_at', 0)
+            when = datetime.fromtimestamp(timestamp, timezone.utc).isoformat(timespec='seconds')
+            records.append((timestamp, path.parent, item, when))
+        except (OSError, ValueError, AttributeError, TypeError, OverflowError):
+            continue  # One malformed snapshot entry must not block every launch.
     lines = ['# Intent history', '',
              'Each folder is a snapshot of an assignment and its source files. The short suffix distinguishes revisions.',
              'Open its README for status and result paths, or INTENT.md for the exact assignment.', '',
              'This directory also holds checkpoints, logs, model settings and result worktrees.',
              'Deleting it removes resume history and any results stored here; copy wanted results first.', '']
-    for timestamp, path, item in sorted(records, key=lambda record: record[0], reverse=True):
-        label = item.get('title', path.name).replace('\n', ' ').replace('[', '\\[').replace(']', '\\]')
-        when = datetime.fromtimestamp(timestamp, timezone.utc).isoformat(timespec='seconds')
+    for timestamp, path, item, when in sorted(records, key=lambda record: record[0], reverse=True):
+        label = str(item.get('title', path.name)).replace('\n', ' ').replace('[', '\\[').replace(']', '\\]')
         lines.append(f'- [{label}]({quote(str(path.relative_to(managed)))}/README.md) — {item.get("status", "unknown")} — {when}')
     _write(managed / 'README.md', '\n'.join(lines) + '\n')

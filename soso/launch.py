@@ -128,7 +128,7 @@ def _snapshot(cwd, managed, intent):
             if _digest(destination) != item['sha256']:
                 raise ValueError('source changed while preparing snapshot; rerun the command')
         git(target, 'init', '-b', 'main')
-        _identity(target)
+        _identity(target, persist=True)  # the managed snapshot is runner-owned
         git(target, 'add', '--force', '--all')
         git(target, '-c', 'commit.gpgsign=false', 'commit', '--allow-empty', '-m', 'Snapshot project inputs')
         atomic_json(temporary / 'manifest.json', {'fingerprint': digest, 'files': manifest,
@@ -231,10 +231,16 @@ def launch(cwd: Path, goal: str | None = None, intent_file: str | None = None, r
         settings = goal if use_file or source_intent is None else source_intent + '\n\nCurrent assignment (overrides the task above):\n' + goal
     managed = _managed(cwd)
     with (managed / 'launch.lock').open('w') as lock:
-        try:
-            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
-        except BlockingIOError:
-            raise RuntimeError('another so-so process owns this project') from None
+        # An attached dashboard probes this lock for microseconds; a real owner keeps it.
+        deadline = time.monotonic() + 1
+        while True:
+            try:
+                fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                break
+            except BlockingIOError:
+                if time.monotonic() >= deadline:
+                    raise RuntimeError('another so-so process owns this project') from None
+                time.sleep(.05)
         if resume is not None:
             fingerprint, folder, project, goal, entry = _resume_snapshot(managed, resume)
             source = Path(entry['source'])
@@ -308,7 +314,7 @@ def launch(cwd: Path, goal: str | None = None, intent_file: str | None = None, r
 
 
 def main(argv=None):
-    parser = argparse.ArgumentParser(description='Read INTENT.md and carry out its goal; source files are preserved.')
+    parser = argparse.ArgumentParser(prog='so-so', description='Read INTENT.md and carry out its goal; source files are preserved.')
     parser.add_argument('goal', nargs='?', help='optional assignment instead of INTENT.md')
     parser.add_argument('task_id', nargs='?', help='optional saved task ID after resume')
     parser.add_argument('--intent', metavar='PATH', help='read the assignment from a Markdown file')

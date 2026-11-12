@@ -203,6 +203,18 @@ class PreparedOptimizationTests(unittest.TestCase):
         self.assertNotEqual(resumed['run_id'], renewed['run_id'])
         self.assertGreater(renewed['deadline_unix'], retry)
 
+    def test_model_pool_replaces_project_routing_destinations(self):
+        # A Markdown-derived pool replaces project models; stale project routing must not survive.
+        self.config['models'] = {'project-only': {'kind': 'command', 'command': ['false']}}
+        self.config['routes'] = {'worker': ['project-only']}
+        self.config['routing'] = {'default': ['project-only']}
+        self.write_config()
+        result = self.run_goal()
+        self.assertEqual(result['status'], 'optimized')
+        frozen = json.loads((Path(result['snapshot']).parent / 'optimization-config.json').read_text())
+        self.assertNotIn('routing', frozen)
+        self.assertEqual(set(frozen['models']), {'test'})
+
     def test_edited_intent_generates_delivery_oracle_without_stale_ast_checks(self):
         (self.root / 'INTENT.md').write_text('Build a different application.')
         (self.root / 'evaluate.py').write_text("raise AssertionError('STALE_AST_ORACLE_EXECUTED')\n")

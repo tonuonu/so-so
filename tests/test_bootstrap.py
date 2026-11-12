@@ -35,6 +35,22 @@ class BootstrapTests(unittest.TestCase):
             self.assertEqual(bootstrap.main(['--workspace',folder,'--install-only']),0)
             self.assertTrue((Path(folder)/'soso').is_symlink())
 
+    def test_model_pool_replaces_checkout_routing_destinations(self):
+        # The checkout's soso.json routing names its own models, absent from a supplied pool.
+        import contextlib, io
+        from soso.engine import Run
+        with tempfile.TemporaryDirectory() as folder:
+            pool = Path(folder) / 'pool.json'
+            pool.write_text(json.dumps({'models': {'test': {'kind': 'command', 'command': ['false']}}}))
+            report = {'status': 'plateau', 'baseline': {'score': 1}, 'best': 1}
+            with patch.object(Run, 'run', return_value=report), patch.dict(os.environ, {'SOSO_LOCAL_ONLY': ''}), \
+                    contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()) as errors:
+                code = bootstrap.main(['--workspace', folder, '--models', str(pool)])
+            self.assertEqual(code, 0, errors.getvalue())
+            config = json.loads(next(Path(folder).glob('self-*/soso.json')).read_text())
+            self.assertNotIn('routing', config)
+            self.assertEqual(set(config['models']), {'test'})
+
     def shell_fixture(self, folder, installer='apt-get', permitted=True, existing=False):
         root = Path(folder) / 'checkout'
         tools = Path(folder) / 'bin'
@@ -123,6 +139,80 @@ class BootstrapTests(unittest.TestCase):
             self.assertIn('needs system installation permission', result.stderr)
             self.assertNotIn('LAUNCH', result.stdout)
             self.assertFalse(log.exists())
+
+    def test_help_leaves_no_managed_state(self):
+        for python in (True, False):
+            with self.subTest(python=python), tempfile.TemporaryDirectory() as folder:
+                root, env, log = self.shell_fixture(folder)
+                if not python:
+                    (Path(folder) / 'bin/python3').unlink()
+                cwd = Path(folder) / 'elsewhere'
+                cwd.mkdir()
+                result = subprocess.run([str(root / 'so-so'), '--help'], cwd=cwd, env=env,
+                                        capture_output=True, text=True, timeout=10)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertIn('LAUNCH' if python else 'usage: so-so', result.stdout)
+                self.assertFalse((cwd / '.so-so').exists())
+                self.assertFalse(log.exists())
+
+    def test_help_never_runs_a_tool_from_an_unchecked_state_directory(self):
+        # Help skips the .so-so ownership check, so it must not execute anything stored there.
+        with tempfile.TemporaryDirectory() as folder:
+            root, env, log = self.shell_fixture(folder)
+            (Path(folder) / 'bin/python3').unlink()
+            cwd = Path(folder) / 'elsewhere'
+            (cwd / '.so-so/tools').mkdir(parents=True)
+            marker = Path(folder) / 'uv-ran'
+            uv = cwd / '.so-so/tools/uv'
+            uv.write_text(f'#!/bin/sh\n: > {marker}\n')
+            uv.chmod(0o755)
+            result = subprocess.run([str(root / 'so-so'), '--help'], cwd=cwd, env=env,
+                                    capture_output=True, text=True, timeout=10)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertIn('usage: so-so', result.stdout)
+            self.assertFalse(marker.exists())
+
+    def test_resume_of_bundled_assignment_prepares_its_check_tools(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root, env, log = self.shell_fixture(folder)
+            # The launcher reuses the runtime's saved-task lookup; this stub stands in for it.
+            (root / 'soso/launch.py').write_text(
+                'from shutil import which\n'
+                'def _resume_snapshot(managed, task_id):\n'
+                '    assert task_id == "", task_id\n'
+                '    return None, None, None, (managed / "saved-intent.md").read_text(), None\n'
+                'if __name__ == "__main__":\n'
+                '    print("LAUNCH", bool(which("node")), bool(which("cc")))\n')
+            state = root / '.so-so'
+            state.mkdir()
+            (state / 'owner.json').write_text('{"owner":"so-so","version":1}\n')
+            (state / 'saved-intent.md').write_text((root / 'INTENT.md').read_text())
+            result = subprocess.run([str(root / 'so-so'), 'resume'], cwd=root, env=env,
+                                    capture_output=True, text=True, timeout=10)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertIn('LAUNCH True True', result.stdout)
+            self.assertIn('nodejs', log.read_text())
+
+    def test_uv_installer_is_version_pinned_and_checksum_verified(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root, env, log = self.shell_fixture(folder)
+            tools = Path(folder) / 'bin'
+            (tools / 'python3').unlink()  # force the local runtime path
+            for name in ('sh', 'rm', 'touch', 'sha256sum', 'shasum'):
+                if shutil.which(name):
+                    (tools / name).symlink_to(shutil.which(name))
+            marker = Path(folder) / 'installer-ran'
+            requests = Path(folder) / 'curl.log'
+            (tools / 'curl').write_text('#!/bin/sh\nprintf "%s\\n" "$*" >> ' + str(requests) + '\n'
+                                        'while [ "$#" -gt 1 ]; do [ "$1" = -o ] && out=$2; shift; done\n'
+                                        'printf "%s\\n" "touch ' + str(marker) + '" > "$out"\n')
+            (tools / 'curl').chmod(0o755)
+            result = subprocess.run([str(root / 'so-so')], cwd=root, env=env,
+                                    capture_output=True, text=True, timeout=10)
+            self.assertNotEqual(result.returncode, 0)
+            self.assertFalse(marker.exists())
+            self.assertIn('checksum', result.stderr)
+            self.assertRegex(requests.read_text(), r'https://astral\.sh/uv/\d+\.\d+\.\d+/install\.sh')
 
     def test_timeout_hides_command_credentials(self):
         argv = ['git', 'clone', 'https://SECRET@example.com/repo']

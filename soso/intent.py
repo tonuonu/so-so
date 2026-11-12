@@ -47,11 +47,18 @@ def resolve_pool(text, cwd):
     models = dict(discovered['models'])
     if shutil.which('kimi'):
         models['kimi'] = {'kind': 'kimi', 'context_bytes': 60000, 'timeout': 180}
+    def log(event, **data):
+        with (folder / 'setup-events.jsonl').open('a') as stream:
+            stream.write(json.dumps({'time': time.time(), 'event': event, **data}) + '\n')
     # Inventory explicitly supplied Ollama endpoints, without downloading weights.
-    for url in dict.fromkeys(re.findall(r'https?://[^\s`<>"\)]+', text)):
+    # Sentence punctuation after a URL in prose is not part of the endpoint.
+    for url in dict.fromkeys(match.rstrip('.,;:!?\'*_]') for match in re.findall(r'https?://[^\s`<>"\)]+', text)):
         if ':1143' not in url and 'ollama' not in url.lower():
             continue
-        for name in ollama_models(url):
+        names = ollama_models(url)
+        if not names:
+            log('endpoint_unavailable', url=url)
+        for name in names:
             alias = 'remote-' + hashlib.sha256((url + name).encode()).hexdigest()[:10]
             models[alias] = {'kind': 'ollama', 'url': url, 'model': name,
                              'context_tokens': 32768, 'context_bytes': 60000, 'timeout': 600}
@@ -67,9 +74,6 @@ def resolve_pool(text, cwd):
     preferred += [n for n in candidates if n not in preferred]
     compiler_config = {'delivery': True, 'models': models, 'routes': {'worker': preferred, 'configuration_review': preferred},
                        '_router_state': str(folder / 'compiler-cooldowns.json')}
-    def log(event, **data):
-        with (folder / 'setup-events.jsonl').open('a') as stream:
-            stream.write(json.dumps({'time': time.time(), 'event': event, **data}) + '\n')
     router = Router(compiler_config, Budget(6, 600), log)
     prompt = """Interpret user Markdown as a model routing policy. Return ONLY JSON with:
 "aliases": {"friendly-name":"exact-inventory-key", ...},

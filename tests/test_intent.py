@@ -57,6 +57,21 @@ class MarkdownPoolTests(unittest.TestCase):
             self.assertEqual(result['models']['router']['options'], {'num_gpu': 0})
 
 
+    def test_sentence_punctuation_is_not_part_of_endpoint_and_unreachable_endpoint_is_logged(self):
+        import json
+        from soso.models import ModelUnavailable
+        text = 'Ollama runs on http://127.0.0.1:11439. Also try http://gpu:11434, then decide.'
+        with tempfile.TemporaryDirectory() as tmp, patch('soso.intent.configure_models', side_effect=ModelUnavailable()), \
+                patch('soso.intent.shutil.which', return_value=None), \
+                patch('soso.intent.ollama_models', return_value=[]) as probe:
+            with self.assertRaises(ModelUnavailable):
+                resolve_pool(text, Path(tmp))
+            self.assertEqual([c.args[0] for c in probe.call_args_list], ['http://127.0.0.1:11439', 'http://gpu:11434'])
+            events = [json.loads(line) for line in (Path(tmp) / '.so-so/pools/setup-events.jsonl').read_text().splitlines()]
+            self.assertEqual([(e['event'], e['url']) for e in events],
+                             [('endpoint_unavailable', 'http://127.0.0.1:11439'), ('endpoint_unavailable', 'http://gpu:11434')])
+
+
 class ExplicitProjectPolicyTests(unittest.TestCase):
     def test_explicit_policy_bypasses_discovery_and_intent_cache(self):
         import json

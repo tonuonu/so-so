@@ -98,6 +98,7 @@ def optimize_project(project: Path, intent: str, folder: Path, models_path=None,
                         raise ValueError('optimization requires an intent-bound prepared assignment')
                     config = load_config(project / 'soso.json')
                     if models_path:
+                        config.pop('routing', None)  # project destinations name models the pool replaces
                         config.update(load_model_pool(models_path))
                     config = configure_models(config)
                     config['routes'] = {**config['routes'], **{role: config['routes'].get(role, config['routes']['worker'])

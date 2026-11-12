@@ -432,7 +432,7 @@ def automatic(project):
             dashboard = Dashboard(project)
             dashboard.__enter__()
             print('Dashboard: ' + dashboard.url, flush=True)
-    except (OSError, ValueError) as exc:
+    except Exception as exc:  # e.g. malformed soso.json dashboard settings; never stop the work
         print('Dashboard unavailable: ' + str(exc), flush=True)
     try:
         yield dashboard

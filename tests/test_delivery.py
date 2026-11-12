@@ -16,7 +16,7 @@ from soso.cli import main
 from soso.delivery import configure_models, load_model_pool, ollama_models, start_goal
 from soso.engine import DEFAULTS, evaluate
 from soso.models import ModelProtocolError, Budget, BudgetExceeded, ModelUnavailable, Router, cli_unavailable, retry_timestamp
-from soso.process import git
+from soso.process import execute, git
 
 
 EVALUATOR = '''import json
@@ -500,6 +500,52 @@ class DeliveryTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, 'HEAD changed'):
             self.start(resume_goal=state['goal_id'])
 
+    def test_policy_tampering_with_recorded_head_is_blocked(self):
+        # Same recorded HEAD and clean status: only the frozen policy fingerprint detects the change.
+        state = self.start()
+        root = Path(state['worktree'])
+        (root / '.soso-delivery/evaluate.py').write_text('print(100)')
+        git(root, 'add', '--all')
+        git(root, '-c', 'commit.gpgsign=false', 'commit', '-m', 'tamper')
+        saved = json.loads(Path(state['report']).read_text())
+        saved['head'] = git(root, 'rev-parse', 'HEAD')
+        Path(state['report']).write_text(json.dumps(saved))
+        with self.assertRaisesRegex(ValueError, 'goal acceptance policy changed'):
+            self.start(resume_goal=state['goal_id'])
+
+    def test_approving_review_that_leaves_files_is_not_integrated(self):
+        original = self.answer
+        def answer(router, role, prompt, cwd, **kwargs):
+            if role == 'reviewer' and prompt.startswith('Independently review this increment.'):
+                (Path(cwd) / 'reviewer-scratch.txt').write_text('left behind')
+            return original(router, role, prompt, cwd, **kwargs)
+        self.answer = answer
+        with self.assertRaisesRegex(ValueError, 'review modified accepted source'):
+            self.start()
+        state = json.loads(next((self.repo / '.git/soso/goals').glob('*/state.json')).read_text())
+        self.assertFalse((Path(state['worktree']) / 'stage.txt').exists())
+
+    def test_prepared_contract_evaluator_is_verified_before_recovery(self):
+        for tamper in (False, True):
+            with self.subTest(tamper=tamper):
+                def interrupt(root, *args):
+                    if 'Freeze goal acceptance contract' in args:
+                        raise KeyboardInterrupt
+                    return git(root, *args)
+                with patch('soso.delivery.git', side_effect=interrupt):
+                    first = self.start()
+                self.assertEqual(first['status'], 'interrupted')
+                self.assertNotIn('policy', first)
+                evaluator = Path(first['worktree']) / '.soso-delivery/evaluate.py'
+                if tamper:
+                    evaluator.write_text(EVALUATOR.replace('stage>=2', 'stage>=0'))
+                    with self.assertRaisesRegex(ValueError, 'prepared acceptance evaluator changed'):
+                        self.start(resume_goal=first['goal_id'])
+                else:
+                    recovered = self.start(resume_goal=first['goal_id'])
+                    self.assertIn('.soso-delivery/evaluate.py', recovered['policy'])
+                    self.assertIn('Freeze goal acceptance contract', git(Path(recovered['worktree']), 'log', '--format=%s'))
+
     def test_dirty_source_is_preserved(self):
         self.start()
         (self.repo / 'keep.txt').write_text('pending')
@@ -792,6 +838,53 @@ print(json.dumps({'score':100 if ok else 0,'complete':ok}))
         self.assertEqual(resumed['status'], 'complete')
         self.assertEqual(resumed['models_path'], str(pool_path.resolve()))
         self.assertEqual(config_path.read_text(), json.dumps(frozen, indent=2) + '\n')
+
+
+    def test_fallback_identity_is_not_written_to_source_git_config(self):
+        # A host without any Git identity: the runner must commit without editing the user's config.
+        no_identity = {'GIT_CONFIG_GLOBAL': os.devnull, 'GIT_CONFIG_SYSTEM': os.devnull, 'GIT_CONFIG_COUNT': '1',
+                       'GIT_CONFIG_KEY_0': 'user.useConfigOnly', 'GIT_CONFIG_VALUE_0': 'true'}
+        with patch.dict(os.environ, no_identity), patch.dict('soso.process.IDENTITY', clear=True):
+            first = self.start()
+            self.assertEqual(first['status'], 'incomplete')
+            with patch('soso.delivery.time.time', return_value=time.time() + 5):
+                second = self.start(resume_goal=first['goal_id'])
+            self.assertEqual(second['status'], 'complete')
+            for key in ('user.name', 'user.email'):
+                self.assertNotEqual(execute(['git', 'config', '--get', key], self.repo)['returncode'], 0)
+            self.assertEqual(git(Path(second['worktree']), 'log', '-1', '--format=%an <%ae>'), 'Local Builder <builder@localhost>')
+
+    def test_losing_concurrent_start_leaves_no_orphan_goal(self):
+        import fcntl
+        git(self.repo, 'init', '-b', 'main')
+        git(self.repo, '-c', 'user.name=T', '-c', 'user.email=t@example.invalid', 'commit', '--allow-empty', '-m', 'base')
+        (self.repo / '.git/soso').mkdir()
+        with (self.repo / '.git/soso/lock').open('w') as owner:
+            fcntl.flock(owner, fcntl.LOCK_EX)
+            with self.assertRaisesRegex(RuntimeError, 'another soso controller owns this repository'):
+                self.start()
+        self.assertEqual(list((self.repo / '.git/soso/goals').glob('*')), [])
+        self.assertEqual(git(self.repo, 'branch', '--list', 'soso/*'), '')
+        self.assertEqual(git(self.repo, 'worktree', 'list', '--porcelain').count('worktree '), 1)
+
+    def test_model_pool_replaces_project_routing_destinations(self):
+        git(self.repo, 'init', '-b', 'main')
+        (self.repo / 'evaluate.py').write_text(EVALUATOR)
+        (self.repo / 'soso.json').write_text(json.dumps({
+            **{k: self.config[k] for k in ('rounds', 'patience', 'parallel', 'max_steps', 'max_calls', 'max_seconds')},
+            'evaluate': [sys.executable, 'evaluate.py'],
+            'models': {'project-only': {'kind': 'command', 'command': ['false']}},
+            'routes': {'worker': ['project-only']}, 'routing': {'default': ['project-only']}}))
+        git(self.repo, 'add', '--all')
+        git(self.repo, '-c', 'user.name=T', '-c', 'user.email=t@example.invalid', 'commit', '-m', 'project policy')
+        pool_path = Path(self.tmp.name) / 'models.json'
+        pool_path.write_text(json.dumps({'models': {'test': {'kind': 'command', 'command': ['false']}}}))
+        with patch.object(Router, 'ask', lambda router, *a, **k: self.answer(router, *a, **k)), \
+             patch.dict(os.environ, {'SOSO_MODELS_FILE': str(pool_path), 'SOSO_LOCAL_ONLY': ''}):
+            state = start_goal(self.repo, 'make game', once=True)
+        frozen = json.loads((Path(state['report']).parent / 'config.json').read_text())
+        self.assertNotIn('routing', frozen)
+        self.assertEqual(set(frozen['models']), {'test'})
 
 
 class RoutingTests(unittest.TestCase):
