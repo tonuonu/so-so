@@ -150,14 +150,18 @@ class SandboxIntegrityTests(RepoCase):
         return [json.loads(line) for path in sorted(self.common_dir().glob('soso/*/events.jsonl'))
                 for line in path.read_text().splitlines() if json.loads(line)['event'] == name]
 
-    def improving_run(self, answer=None, **config):
+    @staticmethod
+    def restored_keys(experiment):
+        return [change['key'] for change in experiment.get('config_restored', [])]
+
+    def improving_run(self, answer=None, allow_exec=True, **config):
         # One candidate that sets value.txt to 5; returns its experiment record.
         steps = iter([{'tool': 'write', 'path': 'value.txt', 'content': '5'}, {'tool': 'done', 'summary': 'done'}])
         def default(router, role, prompt, cwd, attempt=0, task=None):
             router.budget.claim()
             if role == 'reviewer': return {'approve': True}
             return next(steps)
-        runner = Run(self.root, self.config(**{'parallel': 1, 'rounds': 1, **config}), 'Improve')
+        runner = Run(self.root, self.config(**{'parallel': 1, 'rounds': 1, **config}), 'Improve', allow_exec=allow_exec)
         with patch.object(Router, 'ask', answer or default), contextlib.redirect_stdout(io.StringIO()):
             report = runner.run()
         return report['rounds'][0]['experiments'][0]
@@ -176,6 +180,8 @@ class SandboxIntegrityTests(RepoCase):
         restored = self.events('repository_config_restored')
         self.assertEqual(restored[0]['keys'], ['local:filter.shadow.clean', 'info/attributes'])
         self.assertNotIn('sed', json.dumps(restored))  # names only, never values
+        evidence = self.events('experiment')[0]['config_restored']
+        self.assertEqual(evidence[0], {'key': 'local:filter.shadow.clean', 'restored': [], 'found': ['sed s/1/999/']})
 
     def test_watched_config_change_without_source_changes_is_restored(self):
         # The candidate returns early ("no changes"); its changes must not leak into later candidates.
@@ -192,7 +198,7 @@ class SandboxIntegrityTests(RepoCase):
             report = runner.run()
         experiment = report['rounds'][0]['experiments'][0]
         self.assertEqual(experiment['evaluation'], {'valid': False, 'reason': 'no changes'})
-        self.assertEqual(experiment['config_restored'], ['local:core.autocrlf', 'info/attributes'])
+        self.assertEqual(self.restored_keys(experiment), ['local:core.autocrlf', 'info/attributes'])
         self.assertEqual(self.config_value('core.autocrlf'), 'false')
         self.assertEqual(attributes.read_text(), '*.bin binary\n')
 
@@ -255,6 +261,123 @@ class SandboxIntegrityTests(RepoCase):
         self.assertEqual(self.config_value('remote.origin.url'), 'https://example.invalid/project.git')
         self.assertNotIn('config_restored', experiment)
 
+    # Four ways a worker with command execution made Git stage other content than the files the
+    # evaluator then scored (999 on disk, 1 in the commit). The back-dated file keeps Git's stat
+    # cache from re-hashing it, as it would for any file not written in the last second.
+    STUB_FILTER = 'sed s/999/1/'
+
+    def test_filtered_blob_left_in_the_stat_cache_is_invalid(self):
+        # (a) Configure a filter, stage with it, then remove the configuration again.
+        change = (f'git config filter.x.clean "{self.STUB_FILTER}" && '
+                  'printf "value.txt filter=x\\n" > "$(git rev-parse --git-common-dir)/info/attributes" && '
+                  'echo 999 > value.txt && touch -t 200001010000 value.txt && git add value.txt && git config --unset filter.x.clean && '
+                  'rm "$(git rev-parse --git-common-dir)/info/attributes"')
+        evaluation = self.hidden_score_run(change)
+        self.assertEqual(evaluation, {'valid': False, 'reason': 'evaluated files differ from the commit'})
+
+    def test_filter_given_on_the_command_line_is_invalid(self):
+        # (b) No configuration is written at all.
+        change = ('a="$(git rev-parse --absolute-git-dir)/attrs" && printf "value.txt filter=x\\n" > "$a" && '
+                  f'echo 999 > value.txt && touch -t 200001010000 value.txt && git -c filter.x.clean="{self.STUB_FILTER}" -c core.attributesFile="$a" add value.txt')
+        evaluation = self.hidden_score_run(change)
+        self.assertEqual(evaluation, {'valid': False, 'reason': 'evaluated files differ from the commit'})
+
+    def test_worktree_config_enabled_by_the_worker_is_invalid_and_restored(self):
+        # (c) The worktree scope did not exist when the candidate worktree was created.
+        change = ('a="$(git rev-parse --absolute-git-dir)/attrs" && printf "value.txt filter=x\\n" > "$a" && '
+                  'git config extensions.worktreeConfig true && '
+                  f'git config --worktree filter.x.clean "{self.STUB_FILTER}" && git config --worktree core.attributesFile "$a" && '
+                  'echo 999 > value.txt && touch -t 200001010000 value.txt && git add value.txt')
+        evaluation = self.hidden_score_run(change)
+        self.assertEqual(evaluation, {'valid': False, 'reason': 'worker changed repository configuration'})
+        self.assertEqual(self.config_value('extensions.worktreeConfig'), '')
+        keys = [change['key'] for change in self.events('experiment')[0]['config_restored']]
+        self.assertEqual(keys, ['local:extensions.worktreeconfig', 'worktree:filter.x.clean', 'worktree:core.attributesfile'])
+
+    def test_filter_behind_an_include_is_invalid_and_restored(self):
+        # (d) The filter lives in an included file; include.path is the only key in .git/config.
+        change = ('d="$(git rev-parse --absolute-git-dir)" && printf "value.txt filter=x\\n" > "$d/attrs" && '
+                  f'printf "[filter \\"x\\"]\\n\\tclean = {self.STUB_FILTER}\\n[core]\\n\\tattributesFile = $d/attrs\\n" > "$d/included" && '
+                  'git config include.path "$d/included" && echo 999 > value.txt && touch -t 200001010000 value.txt && git add value.txt')
+        evaluation = self.hidden_score_run(change)
+        self.assertEqual(evaluation, {'valid': False, 'reason': 'worker changed repository configuration'})
+        self.assertEqual(self.config_value('include.path'), '')
+
+    def test_change_inside_an_existing_included_file_is_not_accepted(self):
+        # The user's include.path is unchanged, so only an includes-expanded read sees the filter the
+        # worker adds to the included file; it cannot be restored, so the candidate must not be scored.
+        included = self.common_dir() / 'user-include'
+        included.write_text('')
+        git(self.root, 'config', 'include.path', str(included))
+        change = ('c="$(git rev-parse --git-common-dir)" && printf "value.txt filter=x\\n" > "$c/attrs" && '
+                  f'printf "[filter \\"x\\"]\\n\\tclean = {self.STUB_FILTER}\\n[core]\\n\\tattributesFile = $(cd "$c" && pwd)/attrs\\n" >> "$c/user-include" && '
+                  'echo 999 > value.txt')
+        evaluation = self.hidden_score_run(change)
+        self.assertFalse(evaluation['valid'])
+        self.assertIn('could not restore', self.events('experiment')[0]['error'])
+
+    def test_user_setting_during_a_run_without_exec_is_left_alone(self):
+        # Without command execution a worker cannot change config, so nothing is blamed or restored.
+        steps = iter([{'tool': 'write', 'path': 'value.txt', 'content': '5'}, {'tool': 'done', 'summary': 'done'}])
+        def answer(router, role, prompt, cwd, attempt=0, task=None):
+            router.budget.claim()
+            if role == 'reviewer': return {'approve': True}
+            step = next(steps)
+            if step['tool'] == 'write':
+                git(self.root, 'config', 'core.autocrlf', 'input')
+            return step
+        experiment = self.improving_run(answer, allow_exec=False)
+        self.assertEqual(experiment['evaluation'].get('score'), 5, experiment['evaluation'])
+        self.assertEqual(self.config_value('core.autocrlf'), 'input')
+        self.assertNotIn('config_restored', experiment)
+
+    def test_restore_is_logged_when_the_candidate_ends_with_an_error(self):
+        steps = iter([{'tool': 'run', 'argv': ['sh', '-c', 'git config core.autocrlf true && echo "# x" >> evaluate.py']},
+                      {'tool': 'done', 'summary': 'done'}])
+        def answer(router, role, prompt, cwd, attempt=0, task=None):
+            router.budget.claim()
+            return next(steps)
+        runner = Run(self.root, self.config(parallel=1, rounds=1), 'Improve', allow_exec=True)
+        with patch.object(Router, 'ask', answer), contextlib.redirect_stdout(io.StringIO()):
+            report = runner.run()
+        experiment = report['rounds'][0]['experiments'][0]
+        self.assertEqual(experiment['error'], 'protected files changed')
+        self.assertEqual(self.restored_keys(experiment), ['local:core.autocrlf'])
+        self.assertEqual([e['keys'] for e in self.events('repository_config_restored')], [['local:core.autocrlf']])
+        self.assertEqual(self.config_value('core.autocrlf'), '')
+
+    def test_resumed_run_keeps_the_recorded_baseline(self):
+        # A worker change left behind by a hard kill must not become the baseline after resume.
+        config = self.config(parallel=1, rounds=1)
+        self.improving_run()
+        run_id = sorted(p.name for p in self.common_dir().glob('soso/*-*') if p.is_dir())[-1]
+        git(self.root, 'config', 'core.autocrlf', 'true')
+        resumed = Run(self.root, {**config, 'allow_exec': True}, 'Improve', allow_exec=True, resume=run_id)
+        self.assertEqual(resumed.watched[0], [])
+        self.assertIsNone(resumed.watched[1])
+
+    def test_failed_restore_ends_the_candidate_with_an_error(self):
+        # A restore that leaves a watched key missing must not pass silently.
+        git(self.root, 'config', 'core.autocrlf', 'false')
+        from soso import engine
+        real = engine.git
+        def dropping_add(root, *args, **kwargs):
+            if args[:1] == ('config',) and '--add' in args:
+                return ''
+            return real(root, *args, **kwargs)
+        steps = iter([{'tool': 'run', 'argv': ['sh', '-c', 'git config core.autocrlf true && echo 5 > value.txt']},
+                      {'tool': 'done', 'summary': 'done'}])
+        def answer(router, role, prompt, cwd, attempt=0, task=None):
+            router.budget.claim()
+            return next(steps)
+        runner = Run(self.root, self.config(parallel=1, rounds=1), 'Improve', allow_exec=True)
+        with patch.object(Router, 'ask', answer), patch('soso.engine.git', dropping_add), \
+                contextlib.redirect_stdout(io.StringIO()):
+            report = runner.run()
+        experiment = report['rounds'][0]['experiments'][0]
+        self.assertIn('could not restore', experiment.get('error', ''))
+        self.assertEqual(set(self.restored_keys(experiment)), {'local:core.autocrlf'})  # one entry per attempt
+
     def parallel_run(self, plans, observe=None):
         # Candidates 0 and 1 run together; candidate 0 starts first and finishes after candidate 1's change.
         import threading
@@ -277,8 +400,8 @@ class SandboxIntegrityTests(RepoCase):
                 changed.wait(30)
             return step
         restore = Run.restore_watched
-        def observed(self, path, own):
-            result = restore(self, path, own)
+        def observed(self, path, own, restored_list):
+            result = restore(self, path, own, restored_list)
             if '-c0-' in str(path):
                 restored.set()
             return result
@@ -299,7 +422,7 @@ class SandboxIntegrityTests(RepoCase):
             0: [{'tool': 'write', 'path': 'value.txt', 'content': '5'}, {'tool': 'done', 'summary': 'done'}],
             1: [{'tool': 'run', 'argv': ['sh', '-c', 'git config core.safecrlf warn']}, {'tool': 'done', 'summary': 'done'}]})
         self.assertEqual(experiments[0]['evaluation'].get('score'), 5, experiments)
-        self.assertEqual(experiments[0]['config_restored'], ['local:core.safecrlf'])
+        self.assertEqual(self.restored_keys(experiments[0]), ['local:core.safecrlf'])
         self.assertEqual(experiments[1]['evaluation'], {'valid': False, 'reason': 'no changes'})
         self.assertEqual(report['best'], 5)
         self.assertEqual(self.config_value('core.safecrlf'), '')
@@ -312,15 +435,15 @@ class SandboxIntegrityTests(RepoCase):
                 {'tool': 'write', 'path': 'notes.txt', 'content': 'tracked change'}, {'tool': 'done', 'summary': 'done'}],
             1: [{'tool': 'write', 'path': 'value.txt', 'content': '5'}, {'tool': 'done', 'summary': 'done'}]})
         self.assertEqual(experiments[0]['evaluation'], {'valid': False, 'reason': 'worker changed repository configuration'})
-        self.assertEqual(experiments[0]['config_restored'], ['worktree:core.autocrlf'])
+        self.assertEqual(self.restored_keys(experiments[0]), ['worktree:core.autocrlf'])
         self.assertEqual(experiments[1]['evaluation'].get('score'), 5)
 
     def test_sibling_change_after_the_commit_is_restored_before_evaluation(self):
         # A sibling changes a watched setting right after this commit; the evaluator must not see it.
         restore = Run.restore_watched
         calls = []
-        def sibling_changes_config(self, path, own):
-            changed = restore(self, path, own)
+        def sibling_changes_config(self, path, own, restored):
+            changed = restore(self, path, own, restored)
             calls.append(changed)
             if len(calls) == 2:  # the re-check after the commit
                 git(self.root, 'config', 'core.safecrlf', 'warn')
@@ -331,15 +454,15 @@ class SandboxIntegrityTests(RepoCase):
         with patch.object(Run, 'restore_watched', sibling_changes_config):
             experiment = self.improving_run(evaluate=[sys.executable, '-c', code])
         self.assertEqual(experiment['evaluation'].get('score'), 5, experiment['evaluation'])
-        self.assertEqual(experiment['config_restored'], ['local:core.safecrlf'])
+        self.assertEqual(self.restored_keys(experiment), ['local:core.safecrlf'])
 
     def test_commit_made_under_a_sibling_filter_is_invalid(self):
         # Simulate a sibling adding a clean filter while this candidate stages and commits.
         common = self.common_dir()
         restore = Run.restore_watched
         calls = []
-        def sibling_changes_config(self, path, own):
-            changed = restore(self, path, own)
+        def sibling_changes_config(self, path, own, restored):
+            changed = restore(self, path, own, restored)
             if not calls:
                 git(self.root, 'config', 'filter.shadow.clean', 'sed s/1/999/')
                 (common / 'info/attributes').write_text('value.txt filter=shadow\n')

@@ -104,10 +104,12 @@ def common_dir(root):
     return os.path.realpath(os.path.join(root, result["output"].strip()))
 
 
-def git(root, *args, ok=(0,)):
-    env = None
+def git(root, *args, ok=(0,), env=None):
+    extra, env = env, None
     if IDENTITY and ("scope" not in IDENTITY or common_dir(root) in IDENTITY["scope"]):
         env = {**{k: v for k, v in IDENTITY.items() if k != "scope"}, **os.environ}
+    if extra:
+        env = {**(env or os.environ), **extra}
     # Run no repository-configured programs: no hooks, and no fsmonitor hook, which could also report
     # edited files as unchanged.
     result = execute(["git", "-c", "core.hooksPath=/dev/null", "-c", "core.fsmonitor=false", *args], root, timeout=60,
