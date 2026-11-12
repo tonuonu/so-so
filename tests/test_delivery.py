@@ -127,6 +127,8 @@ class DeliveryTests(unittest.TestCase):
 
     def test_baseline_ignores_files_left_by_earlier_evaluator_runs(self):
         # The goal worktree is long-lived; the contract-time evaluator run leaves an ignored marker there.
+        # A slow machine must not run out of the 15 s epoch budget before the candidate is accepted.
+        self.config['max_seconds'] = 600
         self.repo.joinpath('.gitignore').write_text('cache/\n')
         self.use_evaluator('''import json
 from pathlib import Path
@@ -140,11 +142,13 @@ print(json.dumps({'score':min(100,10*stage+(50 if stale else 0)),'complete':stag
 ''')
         first = self.start()
         report = json.loads(Path(first['epochs'][0]['report']).read_text())
+        self.assertEqual(report['status'], 'round_limit', report.get('reason'))
         self.assertEqual(report['baseline']['score'], 0)
         self.assertEqual(first['epochs'][0]['best'], 10)
         self.assertEqual((Path(first['worktree']) / 'stage.txt').read_text(), '1')
 
     def test_candidate_ignored_shadow_files_do_not_raise_accepted_score(self):
+        self.config['max_seconds'] = 600  # as above: the result must not depend on machine speed
         self.repo.joinpath('.gitignore').write_text('cache/\n')
         self.use_evaluator('''import json
 from pathlib import Path
