@@ -414,5 +414,48 @@ class LauncherFailureTests(unittest.TestCase):
             self.assertIsNone(active['reason'])
 
 
+class DashboardMalformedRecordTests(unittest.TestCase):
+    def fixture(self, root, review, events):
+        managed = root / '.so-so'
+        project = managed / 'projects/demo/project'
+        report = project / '.git/soso/run/report.json'
+        report.parent.mkdir(parents=True)
+        (managed / 'active.json').write_text(json.dumps({'project': str(project), 'report': str(report), 'status': 'running'}))
+        (project / '.soso-delivery').mkdir()
+        (project / '.soso-delivery/contract.json').write_text(json.dumps({'milestones': ['one']}))
+        report.write_text(json.dumps({'best': 1, 'rounds': [{'accepted': 'a', 'experiments': [{'commit': 'a', 'review': review}]}]}))
+        (report.parent / 'events.jsonl').write_text('\n'.join(json.dumps(e) for e in events))
+
+    def test_snapshot_tolerates_malformed_reviews_and_call_events(self):
+        from soso.dashboard import Monitor
+        events = [{'event': 'call_started', 'time': 1, 'role': 'worker'},
+                  {'event': 'call_started', 'call_id': 'b', 'time': 2},
+                  {'event': 'call_finished', 'call_id': 'b', 'time': 3, 'seconds': 1, 'status': 'returned'}]
+        for review in ({'approve': True, 'milestone_statuses': None}, 'approved', {'approve': True, 'milestone_statuses': 'all'}):
+            with self.subTest(review=review), tempfile.TemporaryDirectory() as folder:
+                root = Path(folder)
+                self.fixture(root, review, events)
+                state = Monitor(root).snapshot()
+                self.assertEqual(state['milestones'][0]['status'], 'not_reported')
+                self.assertEqual(state['best'], 1)
+
+    def test_unexpected_snapshot_error_is_500_and_unknown_route_is_404(self):
+        import urllib.error
+        import urllib.request
+        from soso.dashboard import Dashboard, Monitor
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            self.fixture(root, {}, [])
+            with Dashboard(root) as dashboard, patch.object(Monitor, 'snapshot', side_effect=AttributeError('broken record')), \
+                 contextlib.redirect_stderr(io.StringIO()) as errors:
+                with self.assertRaises(urllib.error.HTTPError) as failed:
+                    urllib.request.urlopen(dashboard.url + 'api')
+                self.assertEqual(failed.exception.code, 500)
+                with self.assertRaises(urllib.error.HTTPError) as missing:
+                    urllib.request.urlopen(dashboard.url + 'missing')
+                self.assertEqual(missing.exception.code, 404)
+            self.assertIn('broken record', errors.getvalue())
+
+
 if __name__ == '__main__':
     unittest.main()

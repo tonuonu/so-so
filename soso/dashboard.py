@@ -9,10 +9,12 @@ import os
 from pathlib import Path
 import secrets
 import statistics
+import sys
 import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import unquote, urlsplit
+from .models import redact
 
 LIMIT = 2_000_000
 IMAGES = {'.png', '.jpg', '.jpeg', '.webp', '.gif'}
@@ -169,7 +171,8 @@ class Monitor:
         for e in events:
             name = e.get('model')
             if e.get('event') == 'call_started':
-                pending[e['call_id']] = e
+                if e.get('call_id') is not None:
+                    pending[e['call_id']] = e
                 m = models.setdefault(name, {'model': name, 'calls': 0, 'seconds': 0, 'errors': 0,
                                              'input_tokens': None, 'output_tokens': None, 'peak_prompt_bytes': 0, 'durations': []})
                 m['calls'] += 1
@@ -232,7 +235,7 @@ class Monitor:
         for item in [*calls, *models.values()]:
             definition = definitions.get(item['model'], {})
             display = labels.get(item['model'], {})
-            model_name = definition.get('model') or definition.get('kind') or item['model']
+            model_name = str(definition.get('model') or definition.get('kind') or item['model'] or 'unknown model')
             item['model_name'] = Path(model_name).name if model_name.startswith('/') else model_name
             item['display_name'] = str(display.get('display_name') or item['model_name'])
             item['host_label'] = str(display.get('host_label') or '')
@@ -262,10 +265,11 @@ class Monitor:
                       for title in contract.get('milestones', []) if isinstance(title, str)]
         for row in rounds:
             for exp in row['experiments']:
-                review = exp.get('review') or {}
+                review = exp.get('review') if isinstance(exp.get('review'), dict) else {}
+                marks = review.get('milestone_statuses')
                 if not row.get('accepted') or exp.get('commit') != row['accepted'] or review.get('approve') is not True:
                     continue
-                for mark in review.get('milestone_statuses', []):
+                for mark in marks if isinstance(marks, list) else []:
                     if not isinstance(mark, dict):
                         continue
                     i, status = mark.get('index'), mark.get('status')
@@ -395,8 +399,16 @@ class Dashboard:
                     self.send_header('Content-Security-Policy', "default-src 'self'; object-src 'none'; frame-ancestors 'none'; base-uri 'none'")
                     self.end_headers()
                     self.wfile.write(data)
-                except (OSError, ValueError, TypeError, KeyError):
-                    self.send_error(404)
+                except Exception as exc:
+                    # Unknown routes and assets are 404; anything else is a monitor defect, logged once per reason.
+                    if route != 'api' and isinstance(exc, (OSError, ValueError, TypeError, KeyError)):
+                        self.send_error(404)
+                        return
+                    reason = type(exc).__name__ + ': ' + redact(str(exc))[:500]
+                    if reason != getattr(owner, 'last_error', None):
+                        owner.last_error = reason
+                        print('Dashboard error: ' + reason, file=sys.stderr, flush=True)
+                    self.send_error(500)
         self.server = ThreadingHTTPServer((host, port), Handler)
         self.server.daemon_threads = True
         self.url = f'http://{public_host}:{self.server.server_port}/{self.token}/'
