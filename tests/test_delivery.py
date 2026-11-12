@@ -500,6 +500,52 @@ class DeliveryTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, 'HEAD changed'):
             self.start(resume_goal=state['goal_id'])
 
+    def test_policy_tampering_with_recorded_head_is_blocked(self):
+        # Same recorded HEAD and clean status: only the frozen policy fingerprint detects the change.
+        state = self.start()
+        root = Path(state['worktree'])
+        (root / '.soso-delivery/evaluate.py').write_text('print(100)')
+        git(root, 'add', '--all')
+        git(root, '-c', 'commit.gpgsign=false', 'commit', '-m', 'tamper')
+        saved = json.loads(Path(state['report']).read_text())
+        saved['head'] = git(root, 'rev-parse', 'HEAD')
+        Path(state['report']).write_text(json.dumps(saved))
+        with self.assertRaisesRegex(ValueError, 'goal acceptance policy changed'):
+            self.start(resume_goal=state['goal_id'])
+
+    def test_approving_review_that_leaves_files_is_not_integrated(self):
+        original = self.answer
+        def answer(router, role, prompt, cwd, **kwargs):
+            if role == 'reviewer' and prompt.startswith('Independently review this increment.'):
+                (Path(cwd) / 'reviewer-scratch.txt').write_text('left behind')
+            return original(router, role, prompt, cwd, **kwargs)
+        self.answer = answer
+        with self.assertRaisesRegex(ValueError, 'review modified accepted source'):
+            self.start()
+        state = json.loads(next((self.repo / '.git/soso/goals').glob('*/state.json')).read_text())
+        self.assertFalse((Path(state['worktree']) / 'stage.txt').exists())
+
+    def test_prepared_contract_evaluator_is_verified_before_recovery(self):
+        for tamper in (False, True):
+            with self.subTest(tamper=tamper):
+                def interrupt(root, *args):
+                    if 'Freeze goal acceptance contract' in args:
+                        raise KeyboardInterrupt
+                    return git(root, *args)
+                with patch('soso.delivery.git', side_effect=interrupt):
+                    first = self.start()
+                self.assertEqual(first['status'], 'interrupted')
+                self.assertNotIn('policy', first)
+                evaluator = Path(first['worktree']) / '.soso-delivery/evaluate.py'
+                if tamper:
+                    evaluator.write_text(EVALUATOR.replace('stage>=2', 'stage>=0'))
+                    with self.assertRaisesRegex(ValueError, 'prepared acceptance evaluator changed'):
+                        self.start(resume_goal=first['goal_id'])
+                else:
+                    recovered = self.start(resume_goal=first['goal_id'])
+                    self.assertIn('.soso-delivery/evaluate.py', recovered['policy'])
+                    self.assertIn('Freeze goal acceptance contract', git(Path(recovered['worktree']), 'log', '--format=%s'))
+
     def test_dirty_source_is_preserved(self):
         self.start()
         (self.repo / 'keep.txt').write_text('pending')
