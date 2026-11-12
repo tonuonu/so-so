@@ -195,6 +195,16 @@ class SandboxIntegrityTests(RepoCase):
             self.assertEqual((self.root / name).read_text(), 'original')
         self.assertLessEqual({'poetry.lock', 'Makefile', 'data/golden.json'}, set(fingerprint(self.root, patterns)))
 
+    def test_protection_keeps_positive_character_classes_as_written(self):
+        # Casefolding [A-Z] into [a-z] would newly protect value.txt.
+        ws = Workspace(self.root, ['[A-Z]*.txt'])
+        self.assertTrue(ws.tool({'tool': 'write', 'path': 'value.txt', 'content': '1'})['ok'])
+        self.assertNotIn('value.txt', fingerprint(self.root, ['[A-Z]*.txt']))
+        self.assertTrue(ws.is_protected('Value.txt'))
+        self.assertTrue(Workspace(self.root, ['DATA/[A-Z]*']).is_protected('data/X.json'))
+        # On a case-insensitive filesystem Poetry.lock is poetry.lock, which [!A-Z]*.lock protects.
+        self.assertTrue(Workspace(self.root, ['[!A-Z]*.lock']).is_protected('Poetry.lock'))
+
     def test_run_protects_in_repo_evaluator_and_check_programs(self):
         (self.root / 'bench').mkdir()
         (self.root / 'bench/score.py').write_text("print('{\"score\":0}')\n")

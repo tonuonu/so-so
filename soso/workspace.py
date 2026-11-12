@@ -2,6 +2,7 @@
 import fnmatch
 import hashlib
 import json
+import re
 from pathlib import Path, PurePosixPath
 from .process import execute, git
 from .skills import prelude, read_skill
@@ -14,10 +15,28 @@ def gitlinks(root):
     return [entry.split("\t", 1)[1] for entry in entries if entry.startswith("160000 ")]
 
 
+def _glob_regex(pattern):
+    """fnmatch pattern as a regex whose literal characters match in any case; [...] classes stay as written."""
+    out, i, n = [], 0, len(pattern)
+    while i < n:
+        c = pattern[i]
+        if c == "[":  # the class bounds fnmatch uses: "[!]...]" and "[]...]" keep their first "]"
+            j = i + 1 + (pattern[i + 1:i + 2] == "!")
+            j = pattern.find("]", j + (pattern[j:j + 1] == "]"))
+            if j != -1:
+                out.append(fnmatch.translate(pattern[i:j + 1])[4:-3])  # strip "(?s:" and ")\Z"
+                i = j + 1
+                continue
+        out.append(".*" if c == "*" else "." if c == "?" else "(?i:" + re.escape(c) + ")")
+        i += 1
+    return "(?s:" + "".join(out) + r")\Z"
+
+
 class Workspace:
     def __init__(self, root, protected, allow_exec=False, timeout=30, verification=None, budget=None):
         self.root = Path(root).resolve()
         self.protected = protected
+        self.protection = re.compile("|".join(_glob_regex(p) for p in protected) or "(?!)")
         self.allow_exec = allow_exec
         self.timeout = timeout
         self.seen_rules = set()
@@ -38,10 +57,10 @@ class Workspace:
 
     def is_protected(self, name):
         name = PurePosixPath(name).as_posix()  # "./a//b" names the same file as "a/b"
-        # Case-insensitive filesystems (macOS default) map EVALUATE.PY onto evaluate.py; the pattern
-        # as written must also match, since casefolding it changes classes such as [!A-Z].
-        return any(fnmatch.fnmatchcase(name, pattern) or fnmatch.fnmatchcase(name.casefold(), pattern.casefold())
-                   for pattern in self.protected)
+        # Case-insensitive filesystems (macOS default) map EVALUATE.PY onto evaluate.py, so literal
+        # characters match in any case; classes such as [!A-Z] keep their case and are tried on the
+        # name as written and casefolded.
+        return bool(self.protection.match(name) or self.protection.match(name.casefold()))
 
     def in_gitlink(self, name):
         """Git neither records nor cleans files under a gitlink (submodule) directory."""
