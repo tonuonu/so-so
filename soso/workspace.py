@@ -47,8 +47,8 @@ class Workspace:
         """Git neither records nor cleans files under a gitlink (submodule) directory."""
         if self.gitlinks is None:
             self.gitlinks = [link.casefold() for link in gitlinks(self.root)]
-        name = PurePosixPath(name).as_posix().casefold()
-        return any(name == link or name.startswith(link + "/") for link in self.gitlinks)
+        folded = PurePosixPath(name).as_posix().casefold()
+        return any(folded == link or folded.startswith(link + "/") for link in self.gitlinks)
 
     def instructions(self, name="."):
         path = self.path(name)
