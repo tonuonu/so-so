@@ -64,7 +64,25 @@ class SandboxIntegrityTests(RepoCase):
         with patch('soso.cli.Run', FakeRun), contextlib.redirect_stdout(io.StringIO()):
             self.assertEqual(main(['run', '--repo', str(self.root)]), 0)
         self.assertIn('bench/score.py', captured['protected'])
+        self.assertEqual(captured['protected'].count('bench/score.py'), 1)
         self.assertTrue(Workspace(self.root, captured['protected']).is_protected('check.py'))
+
+    def test_already_protected_evaluator_leaves_config_unchanged(self):
+        # An unchanged protected list keeps the config digest, so earlier runs stay resumable.
+        (self.root / 'INTENT.md').write_text('Improve value')
+        (self.root / 'soso.json').write_text(json.dumps({
+            'models': {'test': {'kind': 'command', 'command': ['false']}}, 'routes': {'worker': ['test']},
+            'evaluate': ['python3', 'evaluate.py'], 'checks': [['python3', 'evaluate.py']]}))
+        captured = {}
+        class FakeRun:
+            report_path = self.root / 'report.json'
+            def __init__(self, root, config, intent, allow_exec=False, resume=None):
+                captured.update(config)
+            def run(self):
+                return {'status': 'plateau'}
+        with patch('soso.cli.Run', FakeRun), contextlib.redirect_stdout(io.StringIO()):
+            main(['run', '--repo', str(self.root)])
+        self.assertEqual(captured['protected'].count('evaluate.py'), 1)
 
 
 if __name__ == '__main__':

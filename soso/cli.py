@@ -69,8 +69,10 @@ def main(argv=None):
             if path.is_relative_to(root):
                 config["protected"].append(str(path.relative_to(root)))
         # Freeze in-repo evaluator and check programs, as goal and optimization runs do.
-        config["protected"] += [str(Path(arg)) for command in [config["evaluate"]] + config.get("checks", [])
-                                for arg in command if not Path(arg).is_absolute() and (root / arg).is_file()]
+        # Append only new names: an unchanged list keeps the digest that resume checks.
+        programs = [str(Path(arg)) for command in [config["evaluate"]] + config.get("checks", [])
+                    for arg in command if not Path(arg).is_absolute() and (root / arg).is_file()]
+        config["protected"] += [name for name in dict.fromkeys(programs) if name not in config["protected"]]
         if not intent.strip() or len(intent.encode()) > 8000:
             raise ValueError("intent must contain 1..8000 bytes; move detail into source files")
         runner = Run(root, config, intent, args.allow_exec, args.resume)
