@@ -374,6 +374,9 @@ GUARDS = [
      ['test_evaluated_tree.EvaluatedTreeTests.test_blob_reads_give_up_within_60_seconds_by_default']),
     ('soso/process.py', 'data += proc.stdout.read(1)', 'data += b""',
      ['test_evaluated_tree.EvaluatedTreeTests.test_whole_blob_read_with_more_bytes_than_expected_is_unreadable']),
+    ('soso/engine.py', 'ThreadPoolExecutor(max_workers=READERS) as pool:\n        found', 'ThreadPoolExecutor(max_workers=1) as pool:\n        found',
+     ['test_evaluated_tree.EvaluatedTreeTests.test_blob_reads_run_side_by_side_and_bounded']),
+    ('soso/engine.py', 'READERS = 8  #', 'READERS = 64  #', ['test_evaluated_tree.EvaluatedTreeTests.test_blob_reads_run_side_by_side_and_bounded']),
 ]
 
 

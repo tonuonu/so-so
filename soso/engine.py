@@ -207,23 +207,29 @@ def supports_attr_source(root, tree):
     return ATTR_SOURCE["probed"]
 
 
+READERS = 8  # blob reads at a time, each its own bounded process
+
+
 def blob_kinds(root, blobs, stop):
-    """{blob: (kind, size)} for the blobs that can be read, sizes from one cat-file --batch-check. As Git judges
-    it, kind is "empty", "binary" (a NUL byte in the first 8000 bytes) or "text"; "late" once time.monotonic()
-    passes stop, when no more blobs are read."""
-    kinds = {}
+    """{blob: (kind, size)} for the blobs that can be read, sizes from one cat-file --batch-check, heads read by
+    READERS processes at a time. As Git judges it, kind is "empty", "binary" (a NUL byte in the first 8000
+    bytes) or "text"; "late" once time.monotonic() passes stop, when no more blobs are read."""
+    sizes = {}
     listing = git(root, "cat-file", "--batch-check", stdin="".join(blob + "\n" for blob in blobs), quiet=True)
     for line in listing.splitlines():
         blob, kind, *size = line.split() + [""]
         if kind == "blob" and size[0].isdigit():
-            size = int(size[0])
-            if time.monotonic() > stop:
-                kinds[blob] = ("late", size)
-                continue
-            head = blob_head(root, blob, min(size, 8000), whole=size <= 8000) if size else b""
-            if head is not None:
-                kinds[blob] = ("empty" if not size else "binary" if b"\0" in head else "text", size)
-    return kinds
+            sizes[blob] = int(size[0])
+
+    def kind_of(blob):
+        size = sizes[blob]
+        if time.monotonic() > stop:
+            return "late", size
+        head = blob_head(root, blob, min(size, 8000), whole=size <= 8000) if size else b""
+        return None if head is None else ("empty" if not size else "binary" if b"\0" in head else "text", size)
+    with concurrent.futures.ThreadPoolExecutor(max_workers=READERS) as pool:
+        found = dict(zip(sizes, pool.map(kind_of, sizes)))
+    return {blob: kind for blob, kind in found.items() if kind is not None}
 
 
 def listed_changes(raw):

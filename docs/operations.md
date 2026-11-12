@@ -159,7 +159,8 @@ quotes names in diff headers (C escapes, non-ASCII bytes in octal), read by blob
 id, never through the file name, and sized with one `cat-file --batch-check`; a
 gitlink side counts as absent. A side is binary as Git judges it: a NUL byte in
 its first 8000 bytes, of which at most 8000 bytes are read, within 60 seconds,
-and a failed or stalled read is withheld. Its text sides are then shown in full
+by up to 8 Git processes at a time (about 10 seconds for 1,500 binary-shown
+files), and a failed or stalled read is withheld. Its text sides are then shown in full
 and its binary sides never are: a file text on both sides (a `-diff` in your
 base or your own `info/attributes`) is shown as a text diff; a file that turns
 from binary into text shows its whole new text as added lines; a file that turns

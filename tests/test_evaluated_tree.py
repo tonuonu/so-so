@@ -14,6 +14,7 @@ import subprocess
 import sys
 import tempfile
 import threading
+import time
 from types import SimpleNamespace
 from unittest.mock import patch
 from test_core import RepoCase
@@ -1059,6 +1060,25 @@ class EvaluatedTreeTests(RepoCase):
         self.assertEqual(len(read.call_args_list), 2)
         self.assertEqual({call.args[1]: (call.args[2], call.kwargs.get('whole')) for call in read.call_args_list},
                          {large: (8000, False), small: (100, True)})
+
+    def test_blob_reads_run_side_by_side_and_bounded(self):
+        # One process per read: thousands of binary-shown files must not run into the review's time one by one.
+        blobs = [git(self.root, 'hash-object', '-w', '--stdin', stdin=f'blob {i}\n') for i in range(24)]
+        running, most, lock = 0, 0, threading.Lock()
+        def slow(root, blob, size, whole=False):
+            nonlocal running, most
+            with lock:
+                running += 1
+                most = max(most, running)
+            time.sleep(0.2)
+            with lock:
+                running -= 1
+            return b'x' * size
+        with patch('soso.engine.blob_head', slow):
+            kinds = engine.blob_kinds(self.root, blobs, float('inf'))
+        self.assertEqual(len(kinds), 24)
+        self.assertGreater(most, 1)
+        self.assertLessEqual(most, 8)
 
     def test_blob_reads_give_up_within_60_seconds_by_default(self):
         from soso import process
