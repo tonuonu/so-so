@@ -69,6 +69,19 @@ Provider cooldowns persist across calls and restarts. When no eligible model is
 available, the goal waits until the earliest known reset. Unknown reset times use
 increasing delays.
 
+Command and Codex adapters must report quota and rate limits with a non-zero exit
+status. Quota text is recognized only in the output of a process that fails or
+returns no answer; output returned with exit status 0 is always the model's answer.
+A wrapper that prints a usage-limit message and exits 0 therefore produces a
+protocol failure, not a cooldown. Recognizing quota text in a successful answer
+would let a model's own answer about quotas trigger false cooldowns.
+
+Delivery separates failures that wait from failures that block the goal. Transport
+errors, timeouts, HTTP 5xx and failed CLI processes wait and retry. HTTP 408, 425
+and 429 are cooldowns. Other HTTP 4xx responses, context overflow, missing
+credentials and missing executables are terminal, because waiting cannot repair
+them.
+
 If `routes` is omitted, the loader derives role lists from models' `roles`, sorting
 by ascending `priority`, then `cost`, then declaration order. These are relative
 policy values, not measured provider prices. `roles: []` excludes a classifier
