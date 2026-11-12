@@ -100,20 +100,18 @@ def index_flags(root):
     return {x for x in git(root, "ls-files", "-v", "-z").split("\0") if x[:1] == "S" or x[:1].islower()}
 
 
-def _read(path):
-    return path.read_bytes() if path.is_file() else None
+# Settings that change how content is staged or checked out; other config (remotes, branches,
+# extensions, user edits) is never read or written here.
+WATCHED = re.compile(r"filter\..*|core\.(attributesfile|autocrlf|eol|safecrlf|fsmonitor|worktree|sparsecheckout.*)|index\..*",
+                     re.I)
 
 
-def commit_differs(path, base, commit):
-    """Whether a regular file the commit changed no longer hashes to its blob with the current configuration."""
-    fields = git(path, "diff-tree", "-r", "-z", "--no-renames", base, commit).split("\0")
-    changed = [(fields[i + 1], fields[i].split()[3]) for i in range(0, len(fields) - 1, 2)
-               if fields[i].split()[1] in ("100644", "100755")]
-    for start in range(0, len(changed), 200):
-        chunk = changed[start:start + 200]
-        if git(path, "hash-object", "--", *(name for name, _ in chunk)).split() != [blob for _, blob in chunk]:
-            return True
-    return False
+def watched_config(path, scope):
+    """Watched (key, value) entries in one config scope, in file order."""
+    if scope == "--worktree" and not (Path(git(path, "rev-parse", "--absolute-git-dir")) / "config.worktree").is_file():
+        return []  # git config --worktree cannot list a file that does not exist yet
+    entries = [entry.split("\n", 1) for entry in git(path, "config", scope, "--list", "-z", ok=(0, 1)).split("\0") if entry]
+    return [(entry[0], entry[1] if len(entry) > 1 else "true") for entry in entries if WATCHED.fullmatch(entry[0])]
 
 
 def nested_git(root):
@@ -259,9 +257,8 @@ class Run:
         if not common.is_absolute():
             common = (self.root / common).resolve()
         self.storage = common / "soso"
-        # Git files every worktree shares; a worker with command execution could add a clean filter or
-        # attributes that make a commit differ from the files that were evaluated.
-        self.shared_config = {file: _read(file) for file in (common / "config", common / "info" / "attributes")}
+        # Watched shared settings and info/attributes, recorded when the first candidate worktree is created.
+        self.attributes, self.watched = common / "info" / "attributes", None
         self.started_experiments = self.active_experiments = 0
         self.storage.mkdir(exist_ok=True)
         self.lock = threading.Lock()
@@ -474,24 +471,35 @@ class Run:
         candidate["review"] = reply
         return reply.get("approve") is True
 
-    def restore_repository_config(self, files):
-        """Put back the given Git files as snapshotted, keeping replaced bytes in the run folder; return the changed paths."""
+    def restore_watched(self, path, own):
+        """Put back watched settings (shared and this worktree's) and info/attributes as recorded; call with
+        self.lock held. Return the names of what changed, never values."""
         changed = []
-        with self.lock:
-            for file, before in files.items():
-                now = _read(file)
-                if now == before:
-                    continue
-                changed.append(file)
-                if now is not None:
-                    (self.folder / f"replaced-{uuid.uuid4().hex[:8]}-{file.name}").write_bytes(now)
-                if before is None:
-                    file.unlink(missing_ok=True)
-                else:
-                    temporary = file.with_name(file.name + ".soso-restore")
-                    temporary.write_bytes(before)
-                    temporary.replace(file)
+        for scope, recorded in (("--local", self.watched[0]), ("--worktree", own)):
+            if recorded is None:
+                continue  # no worktree scope without extensions.worktreeConfig
+            current = watched_config(path, scope)
+            for key in dict.fromkeys(k for k, _ in recorded + current):
+                before = [v for k, v in recorded if k == key]
+                if before != [v for k, v in current if k == key]:
+                    changed.append(scope[2:] + ":" + key)
+                    git(path, "config", scope, "--unset-all", key, ok=(0, 5))
+                    for value in before:
+                        git(path, "config", scope, "--add", key, value)
+        attributes = self.attributes.read_bytes() if self.attributes.is_file() else None
+        if attributes != self.watched[1]:
+            changed.append("info/attributes")
+            if self.watched[1] is None:
+                self.attributes.unlink()
+            else:
+                self.attributes.parent.mkdir(exist_ok=True)
+                self.attributes.write_bytes(self.watched[1])  # in place: keeps its mode
         return changed
+
+    def note_restored(self, result, index, changed):
+        if changed:
+            result.setdefault("config_restored", []).extend(changed)
+            self.log("repository_config_restored", candidate=index, keys=changed)
 
     def experiment(self, task, round_number, index, continuation=None):
         name = f"r{round_number}-c{index}-{uuid.uuid4().hex[:6]}"
@@ -499,7 +507,7 @@ class Run:
             sequence, alone = self.started_experiments, self.active_experiments == 0
             self.started_experiments += 1
             self.active_experiments += 1
-        own = {}
+        own, recorded = None, False
         path = self.folder / name
         result = {"candidate": index, "task": task}
         preserve = getattr(self, 'retain_candidate', None)
@@ -523,24 +531,36 @@ class Run:
             git(self.root, "worktree", "add", "--detach", str(path), expected)
             flagged = index_flags(path)  # e.g. skip-worktree entries a sparse checkout gives every worktree
             nested = nested_git(path)
-            own = {file: _read(file) for file in [Path(git(path, "rev-parse", "--absolute-git-dir")) / "config.worktree"]}
+            with self.lock:
+                if self.watched is None:
+                    self.watched = (watched_config(path, "--local"),
+                                    self.attributes.read_bytes() if self.attributes.is_file() else None)
+                if git(path, "config", "--local", "--bool", "--get", "extensions.worktreeConfig", ok=(0, 1)) == "true":
+                    own = watched_config(path, "--worktree")
+                recorded = True
             if continuation and fingerprint(path, self.config['protected']) != self.pinned:
                 raise ValueError('retained candidate policy changed')
             if not continuation or continuation['phase'] == 'worker':
                 result["worker"] = worker(self.router, task, path, self.config, self.log, index)
-            # Restore before Git stages anything, so the commit is made with the repository's own configuration.
-            changed = self.restore_repository_config({**self.shared_config, **own})
+            # Under the lock no sibling restores or commits, and a watched change that appears before the
+            # re-check came from elsewhere while this commit was made.
             with self.lock:
+                changed = self.restore_watched(path, own)
                 alone = alone and self.started_experiments == sequence + 1
-            reconfigured = any(file in own for file in changed) or bool(changed and alone)
-            if fingerprint(path, self.config["protected"]) != self.pinned:
-                raise ValueError("protected files changed")
-            if git(path, "rev-parse", "HEAD") != expected:
-                raise ValueError("worker changed Git history")
-            if git(path, "status", "--porcelain"):
-                git(path, "add", "--all")
-                git(path, "-c", "commit.gpgsign=false", "commit", "-m", f"Experiment {round_number}.{index}")
-            elif expected == base:
+                if fingerprint(path, self.config["protected"]) != self.pinned:
+                    raise ValueError("protected files changed")
+                if git(path, "rev-parse", "HEAD") != expected:
+                    raise ValueError("worker changed Git history")
+                staged = bool(git(path, "status", "--porcelain"))
+                if staged:
+                    git(path, "add", "--all")
+                    git(path, "-c", "commit.gpgsign=false", "commit", "-m", f"Experiment {round_number}.{index}")
+                foreign = self.restore_watched(path, own)
+            self.note_restored(result, index, changed + foreign)
+            # Its own worktree settings, or shared ones it changed alone, are the worker's doing.
+            reconfigured = (bool(foreign) and staged or any(key.startswith("worktree:") for key in changed)
+                            or bool(changed and alone))
+            if not staged and expected == base:
                 result["evaluation"] = {"valid": False, "reason": "no changes"}
                 if result.get('worker', {}).get('finished') is False:
                     result.update(error='Worker exhausted its step budget without producing a candidate', error_kind='worker_incomplete')
@@ -550,16 +570,17 @@ class Run:
             if preserve:
                 retain()  # Persist before evaluation or review can exhaust the epoch.
             self.log("activity", phase="testing", candidate=index)
-            # A sibling may have changed the shared files since; check and evaluate with the repository's own.
-            self.restore_repository_config({**self.shared_config, **own})
+            # A sibling may have changed watched settings since; check and evaluate with the repository's own.
+            with self.lock:
+                late = self.restore_watched(path, own)
+            self.note_restored(result, index, late)
             # Score exactly the committed tree, as the baseline was: experiment worktrees start
             # fresh, so every ignored file here is uncommitted worker output.
             git(path, "clean", "-ffdqX")
             # A nested repository commits only as a gitlink: its files stay on disk, unrecorded and uncleaned.
             if any(line.split()[1] == "160000" for line in git(path, "diff-tree", "-r", base, result["commit"]).splitlines()):
                 result["evaluation"] = {"valid": False, "reason": "embedded repositories are not allowed"}
-            # A sibling's change can also reach this commit, so files must still match the committed blobs.
-            elif reconfigured or commit_differs(path, base, result["commit"]):
+            elif reconfigured:
                 result["evaluation"] = {"valid": False, "reason": "worker changed repository configuration"}
             # Index flags the worker set keep its on-disk edits out of the commit.
             elif index_flags(path) != flagged:
@@ -596,9 +617,13 @@ class Run:
             result["error_kind"] = type(exc).__name__
             result["evaluation"] = {"valid": False, "reason": type(exc).__name__}
         finally:
-            self.restore_repository_config({**self.shared_config, **own})  # also after early returns and errors
             with self.lock:
                 self.active_experiments -= 1
+                final = []
+                if recorded:  # also after early returns and errors; never mask the original error
+                    with contextlib.suppress(RuntimeError):
+                        final = self.restore_watched(path, own)
+            self.note_restored(result, index, final)
             if cleanup and path.exists():
                 with contextlib.suppress(RuntimeError):
                     git(self.root, "worktree", "remove", "--force", str(path))

@@ -63,12 +63,18 @@ Persistent delivery instead opens bounded new epochs while preserving its goal.
 Only one run owns a repository at a time (POSIX file lock in the common Git directory).
 Source must be clean. Worktrees and configuration are pinned to committed source;
 ignored caches are not copied into candidate worktrees. Submodule and large-data
-setup are the caller's responsibility. After each worker, the shared repository
-`config` and `info/attributes` and the worktree's `config.worktree` are restored to
-their state at run start; the replaced bytes are kept in the run folder. Before
-evaluation a candidate is rejected when it changed its own `config.worktree`,
-changed the shared files while it was the only candidate running, has a commit
-whose files no longer match their blobs, adds or changes a gitlink (nested
+setup are the caller's responsibility. Settings that change how content is staged
+or checked out (`filter.*`, `core.attributesFile`, `core.autocrlf`, `core.eol`,
+`core.safecrlf`, `core.fsmonitor`, `core.worktree`, `core.sparseCheckout*`,
+`index.*`, in the repository and worktree config scopes) and `info/attributes`
+are recorded when a run's first candidate worktree is created. After each worker
+they are restored, under the run lock that also covers staging and the commit, and
+again before evaluation; each restore is logged as `repository_config_restored`
+with the key names. This includes watched changes you make yourself during a run.
+Other config, such as remotes and branch tracking, is never touched. Before
+evaluation a candidate is rejected when it changed its own worktree-scope
+settings, changed shared ones while it was the only candidate running, was
+committed while a watched setting changed, adds or changes a gitlink (nested
 repository or submodule), sets skip-worktree or assume-unchanged index flags its
 fresh worktree did not have, leaves files inside a submodule directory, or
 creates an entry named `.git` below the worktree root. Worker tools
