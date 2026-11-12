@@ -150,22 +150,26 @@ is not clean enough to start a run, even if you set it to `no`), and run without
 2.46 or newer). The reviewer's diff is built with `--no-ext-diff --no-textconv`
 and with attributes from an empty tree (`--attr-source`, where a probe shows Git accepts it), so
 no `-diff`, `binary` or diff driver in the repository's `.gitattributes` hides a
-change. A file Git still shows only as binary (with an older Git, through your own
-`info/attributes` or `core.attributesFile`, or because a NUL byte was added or
-removed) is shown again as text when either side is text as Git judges it: no NUL
-byte in its first 8000 bytes, and not empty. Both sides are read by blob id, never
-through the file name, so binary files of any size stay approvable and are never
-read whole (at most 8000 bytes of each, within 60 seconds). A file that is binary
-on both sides still shows only "Binary files differ", as before, including a file
-an earlier accepted change made binary with a NUL byte, and so does a new file with
-a NUL byte in its first 8000 bytes. A text file replaced by a binary larger than
-2 MB (for example a Git LFS pointer by its content) is shown as text and so
-withheld as too large. A diff the reviewer would receive larger than the 2 MB the runner reads
-is never shown cut short: the candidate is not sent to the reviewer and not
-approved, with the reason "the diff exceeds 2 MB; split the change into smaller
-ones"; a side that cannot be read is withheld the same way, with its own reason. In
-persistent delivery such a reason goes back to the worker as repair feedback. Do
-not rely on hooks as your evaluator, and
+change. Each file Git still shows only as binary gets a line with both sides' kinds
+and sizes (for example `pointer.dat: text 44 B → binary 3.1 MB`), read by blob id,
+never through the file name, and sized with one `cat-file --batch-check`; a
+gitlink side counts as absent. A side is binary as Git judges it: a NUL byte in
+its first 8000 bytes, of which at most 8000 bytes are read, within 60 seconds,
+and a failed or stalled read is withheld. The change is also shown as text when a
+side is text and any binary side is at most 32 KiB: a `-diff` from an older Git or
+your own `info/attributes` or `core.attributesFile`, a renamed file, or a NUL byte
+added or removed cannot hide a text change, and a change that adds NUL bytes is
+flagged, since later edits to that file will show only as binary. Larger binaries
+are never shown as text and never refused, whatever their size. A file binary on
+both sides still shows only "Binary files differ", as before, including a file an
+earlier accepted change made binary with a NUL byte. Text the reviewer would
+receive beyond the 2 MB the runner reads is never shown cut short: the candidate is
+not sent to the reviewer and not approved, with the reason "the diff exceeds 2 MB;
+split the change into smaller ones"; a side that cannot be read, or binary-shown
+files that cannot all be read within the review's time (at most 300 seconds, less
+when the run's budget is nearly spent), are withheld the same way, each with its
+own reason. In persistent delivery such a reason goes back to the worker as repair
+feedback. Do not rely on hooks as your evaluator, and
 expect no fsmonitor speed-up in them.
 
 Not covered: global, system and XDG Git configuration, the attributes file that
