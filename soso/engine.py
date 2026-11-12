@@ -218,8 +218,7 @@ class Run:
                            "status": "running", "config_sha256": config_digest,
                            "intent_sha256": intent_digest, "rounds": [], "plateau": 0,
                            "resources": resources(), "elapsed": 0,
-                           "deadline_unix": self.created_wall + self.config["max_seconds"],
-                           "baseline": {"valid": False, "reason": "baseline not evaluated"}}
+                           "deadline_unix": self.created_wall + self.config["max_seconds"]}
         self.checkpoint()  # The worktree and branch are durable evidence before evaluation.
         try:
             if not self.report.get("baseline", {}).get("valid"):
@@ -299,6 +298,7 @@ class Run:
             self.report["status"] = "error"
             self.report["reason"] = str(exc)
         finally:
+            self.report.setdefault("baseline", {"valid": False, "reason": "baseline not evaluated"})
             self.checkpoint()
         return self.report
 

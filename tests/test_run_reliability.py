@@ -86,9 +86,16 @@ class BaselineTests(RepoCase):
     def test_baseline_budget_exhaustion_is_durable(self):
         from soso.models import BudgetExceeded
         runner = Run(self.root, self.config(), 'Improve')
-        with patch('soso.engine.evaluate', side_effect=BudgetExceeded('wall time exhausted')):
+        seen = []
+        def exhausted(*args):
+            seen.append(json.loads(runner.report_path.read_text()))
+            raise BudgetExceeded('wall time exhausted')
+        with patch('soso.engine.evaluate', side_effect=exhausted):
             report = self.run_quietly(runner)
+        self.assertEqual(seen[0]['status'], 'running')
+        self.assertNotIn('baseline', seen[0])  # the dashboard shows a pending, not failed, baseline
         self.assertEqual(report['status'], 'budget_exhausted')
+        self.assertFalse(report['baseline']['valid'])
         self.assertEqual(json.loads(runner.report_path.read_text())['status'], 'budget_exhausted')
 
     def test_resume_remeasures_missing_or_invalid_baseline(self):
