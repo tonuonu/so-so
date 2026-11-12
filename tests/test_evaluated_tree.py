@@ -1036,6 +1036,45 @@ class EvaluatedTreeTests(RepoCase):
             diff, reason = self.reviewed(base, commit_with('\0new', base))
         self.assertIn('could not read "x.bin\\n(value.txt', reason)
 
+    def test_review_time_is_tied_to_the_runs_budget(self):
+        seconds = []
+        def recorded(root, base, commit, allowed=300):
+            seconds.append(allowed)
+            return None, 'withheld'
+        runner = SimpleNamespace(config={'routes': {'reviewer': ['test']}}, integration=self.root,
+                                 budget=Budget(5, 20), intent='Improve')
+        epoch = SimpleNamespace(integration=self.root, budget=Budget(5, 20))
+        with patch('soso.engine.review_diff', recorded), patch('soso.delivery.review_diff', recorded):
+            Run.review(runner, {'commit': 'HEAD', 'task': 'x'})
+            DeliveryEpoch.review(epoch, {'commit': 'HEAD'})
+        self.assertEqual(len(seconds), 2)
+        self.assertTrue(all(0 < allowed <= 20 for allowed in seconds), seconds)
+
+    def test_blob_kinds_read_at_most_8000_bytes_and_short_blobs_whole(self):
+        from soso import process
+        large, small = (git(self.root, 'hash-object', '-w', '--stdin', stdin=text) for text in ('x' * 20000, 'y' * 100))
+        with patch('soso.engine.blob_head', wraps=process.blob_head) as read:
+            kinds = engine.blob_kinds(self.root, [large, small], float('inf'))
+        self.assertEqual(kinds, {large: ('text', 20000), small: ('text', 100)})
+        self.assertEqual(len(read.call_args_list), 2)
+        self.assertEqual({call.args[1]: (call.args[2], call.kwargs.get('whole')) for call in read.call_args_list},
+                         {large: (8000, False), small: (100, True)})
+
+    def test_blob_reads_give_up_within_60_seconds_by_default(self):
+        from soso import process
+        stored = git(self.root, 'rev-parse', 'HEAD:value.txt')
+        with patch('soso.process.threading.Timer', wraps=threading.Timer) as timer:
+            self.assertEqual(process.blob_head(self.root, stored, 1), b'0')
+        self.assertLessEqual(timer.call_args[0][0], 60)
+
+    def test_whole_blob_read_with_more_bytes_than_expected_is_unreadable(self):
+        from soso import process
+        fake = Path(tempfile.mkdtemp(dir=self.tmp.name)) / 'git'
+        fake.write_text('#!/bin/sh\nprintf abcd\n')  # one byte more than the size given, and success
+        fake.chmod(0o755)
+        with patch.dict(os.environ, {'PATH': f'{fake.parent}{os.pathsep}{os.environ["PATH"]}'}):
+            self.assertIsNone(process.blob_head(self.root, 'a' * 40, 3, whole=True))
+
     def test_untracked_files_are_committed_when_the_worker_hides_them_from_status(self):
         report = self.run_candidate([{'tool': 'run', 'argv': ['sh', '-c', 'git config status.showUntrackedFiles no']},
                                      {'tool': 'write', 'path': 'extra.txt', 'content': 'new'}])

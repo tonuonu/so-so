@@ -363,6 +363,17 @@ GUARDS = [
      ['test_evaluated_tree.EvaluatedTreeTests.test_file_names_are_quoted_as_git_quotes_them']),
     ('soso/engine.py', "if all(32 <= byte < 127 and byte not in b'\"\\\\' for byte in data):", 'if True:',
      ['test_evaluated_tree.EvaluatedTreeTests.test_file_names_are_quoted_as_git_quotes_them']),
+    ('soso/engine.py', 'review_diff(self.integration, "HEAD", candidate["commit"], min(300, self.budget.remaining()))',
+     'review_diff(self.integration, "HEAD", candidate["commit"], 300)', ['test_evaluated_tree.EvaluatedTreeTests.test_review_time_is_tied_to_the_runs_budget']),
+    ('soso/delivery.py', "candidate['commit'], min(300, self.budget.remaining()))", "candidate['commit'], 300)",
+     ['test_evaluated_tree.EvaluatedTreeTests.test_review_time_is_tied_to_the_runs_budget']),
+    ('soso/engine.py', 'blob_head(root, blob, min(size, 8000), ', 'blob_head(root, blob, size, ',
+     ['test_evaluated_tree.EvaluatedTreeTests.test_blob_kinds_read_at_most_8000_bytes_and_short_blobs_whole']),
+    ('soso/engine.py', 'whole=size <= 8000)', 'whole=False)', ['test_evaluated_tree.EvaluatedTreeTests.test_blob_kinds_read_at_most_8000_bytes_and_short_blobs_whole']),
+    ('soso/process.py', 'def blob_head(root, blob, size, whole=False, timeout=60):', 'def blob_head(root, blob, size, whole=False, timeout=600):',
+     ['test_evaluated_tree.EvaluatedTreeTests.test_blob_reads_give_up_within_60_seconds_by_default']),
+    ('soso/process.py', 'data += proc.stdout.read(1)', 'data += b""',
+     ['test_evaluated_tree.EvaluatedTreeTests.test_whole_blob_read_with_more_bytes_than_expected_is_unreadable']),
 ]
 
 
