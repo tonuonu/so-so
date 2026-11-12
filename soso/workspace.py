@@ -2,7 +2,7 @@
 import fnmatch
 import hashlib
 import json
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from .process import execute, git
 from .skills import prelude, read_skill
 from .models import BudgetExceeded, redact
@@ -20,7 +20,8 @@ class Workspace:
 
     def path(self, name):
         path = Path(name)
-        if path.is_absolute() or ".." in path.parts or ".git" in path.parts:
+        # casefold: case-insensitive filesystems (macOS default) map .GIT onto .git.
+        if path.is_absolute() or ".." in path.parts or any(p.casefold() == ".git" for p in path.parts):
             raise ValueError("path must stay inside worktree, outside .git")
         full = self.root / path
         if not full.resolve().is_relative_to(self.root):
@@ -29,6 +30,7 @@ class Workspace:
         return full
 
     def is_protected(self, name):
+        name = PurePosixPath(name).as_posix()  # "./a//b" names the same file as "a/b"
         return any(fnmatch.fnmatch(name, pattern) for pattern in self.protected)
 
     def instructions(self, name="."):
