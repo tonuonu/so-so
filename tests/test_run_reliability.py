@@ -269,5 +269,77 @@ class ExitCodeTests(unittest.TestCase):
                     self.assertEqual(bootstrap.main(['--workspace', folder]), code)
 
 
+class DeterministicRouteFailureTests(unittest.TestCase):
+    def router(self, model):
+        from soso.models import Budget, Router
+        return Router({'delivery': True, 'models': {'m': model}, 'routes': {'worker': ['m']}}, Budget(5, 30), lambda *a, **k: None)
+
+    def envelope(self, value):
+        return {'returncode': 0, 'timed_out': False, 'truncated': False, 'output': json.dumps(value)}
+
+    def test_deterministic_failures_are_terminal_in_delivery(self):
+        from soso.models import ModelUnavailable
+        http = {'kind': 'openai', 'url': 'http://127.0.0.1:9/v1', 'model': 'x'}
+        cases = {'context': (self.router({'kind': 'command', 'command': ['false'], 'context_bytes': 4}), None),
+                 'missing key': (self.router({**http, 'api_key_env': 'SOSO_TEST_UNSET_KEY'}), None),
+                 'HTTP 401': (self.router(http), self.envelope({'status': 401}))}
+        for name, (router, response) in cases.items():
+            with self.subTest(name), patch('soso.models.execute', return_value=response):
+                with self.assertRaises(RuntimeError) as raised:
+                    router.ask('worker', 'prompt', Path.cwd())
+                self.assertNotIsInstance(raised.exception, ModelUnavailable)
+                self.assertIn('all routes failed', str(raised.exception))
+
+    def test_failed_cli_process_still_waits_in_delivery(self):
+        from soso.models import ModelUnavailable
+        with self.assertRaises(ModelUnavailable):
+            self.router({'kind': 'command', 'command': ['false']}).ask('worker', 'prompt', Path.cwd())
+
+    def test_unusable_success_body_is_bounded_protocol_failure(self):
+        import http.server
+        import threading
+        from soso.models import ModelProtocolError
+        class Handler(http.server.BaseHTTPRequestHandler):
+            def do_POST(self):
+                self.rfile.read(int(self.headers['Content-Length']))
+                body = b'<html>proxy login</html>'
+                self.send_response(200)
+                self.send_header('Content-Length', str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+            def log_message(self, *args):
+                pass
+        server = http.server.ThreadingHTTPServer(('127.0.0.1', 0), Handler)
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        try:
+            router = self.router({'kind': 'openai', 'url': f'http://127.0.0.1:{server.server_port}/v1', 'model': 'x'})
+            with self.assertRaises(ModelProtocolError):
+                router.ask('worker', 'prompt', Path.cwd())
+            self.assertEqual(router.budget.calls, 3)
+        finally:
+            server.shutdown()
+            server.server_close()
+            thread.join()
+
+    def test_delivery_blocks_with_reason_instead_of_waiting_forever(self):
+        from soso.delivery import start_goal
+        folder = tempfile.TemporaryDirectory()
+        self.addCleanup(folder.cleanup)
+        repo = Path(folder.name).resolve()
+        config = {**DEFAULTS, 'models': {'tiny': {'kind': 'command', 'command': ['false'], 'context_bytes': 10}},
+                  'routes': {r: ['tiny'] for r in ('worker', 'planner', 'reviewer')}, 'rounds': 1, 'parallel': 1,
+                  'max_calls': 10, 'max_seconds': 15, 'protected': list(DEFAULTS['protected'])}
+        def configured(c, *a):
+            return {**c, **config, **{k: c[k] for k in ('evaluate', 'protected', 'delivery') if k in c}}
+        with patch('soso.delivery.configure_models', side_effect=configured), self.assertRaises(RuntimeError) as raised:
+            start_goal(repo / 'project', 'make a game', once=True)
+        self.assertIn('context budget exceeded', str(raised.exception))
+        state = json.loads(next((repo / 'project/.git/soso/goals').glob('*/state.json')).read_text())
+        self.assertEqual(state['status'], 'blocked')
+        self.assertIn('context budget exceeded', state['reason'])
+        self.assertIsNone(state['next_retry_at'])
+
+
 if __name__ == '__main__':
     unittest.main()

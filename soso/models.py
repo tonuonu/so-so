@@ -23,13 +23,17 @@ request = urllib.request.Request(payload["url"], data, payload.get("headers", {}
 try:
     with urllib.request.urlopen(request, timeout=payload["timeout"]) as response:
         data = response.read(1_000_001)
-    if len(data) > 1_000_000:
-        raise ValueError("model response too large")
-    print(json.dumps({"status":200,"data":json.loads(data)}))
 except urllib.error.HTTPError as exc:
     print(json.dumps({"status":exc.code,"retry_after":exc.headers.get("Retry-After")}))
 except Exception:
     print(json.dumps({"status":0}))
+else:
+    try:
+        if len(data) > 1_000_000:
+            raise ValueError("model response too large")
+        print(json.dumps({"status":200,"data":json.loads(data)}))
+    except ValueError:
+        print(json.dumps({"status":-1}))  # complete but unusable body, not a connection failure
 '''
 
 
@@ -67,6 +71,10 @@ class ModelUnavailable(RuntimeError):
     def __init__(self, retry_at=None, reason="provider unavailable"):
         super().__init__(reason)
         self.retry_at = retry_at
+
+
+class ModelProcessFailed(RuntimeError):
+    """A CLI model process failed without a recognized cause; it may be transient."""
 
 
 def cli_unavailable(output):
@@ -367,6 +375,7 @@ class Router:
             names = names[min(attempt, len(names) - 1):]
         errors = []
         unavailable = []
+        retryable = False
         for name in names:
             model = self.models[name]
             until = self.cooldowns.get(name, 0)
@@ -406,13 +415,15 @@ class Router:
                 self.budget.remaining()
                 # Avoid storing URLs/headers/credentials from raw transport exceptions.
                 errors.append(name + ": " + type(exc).__name__)
+                retryable = retryable or isinstance(exc, ModelProcessFailed)
                 self.log("model_error", role=role, model=name, error=type(exc).__name__)
             finally:
                 self.slots[name].release()
         if unavailable:
             explicit = [e.retry_at for e in unavailable if e.retry_at is not None]
             raise ModelUnavailable(min(explicit) if explicit else None, str(unavailable[-1]))
-        if self.validate:
+        if self.validate and retryable:
+            # Delivery waits out failed CLI processes; context, credential and HTTP 4xx failures are terminal.
             raise ModelUnavailable(reason="all model routes temporarily unavailable")
         raise RuntimeError("all routes failed: " + "; ".join(errors))
 
@@ -536,7 +547,7 @@ class Router:
                        'KIMI_MODEL_MAX_COMPLETION_TOKENS': str(model.get('max_tokens', 8192))}
                 result = execute(argv + ['--agent-file', str(profile)] + model.get('args', []), cwd, timeout, limit=256000, env=env)
             if result['returncode'] or result['timed_out'] or result['truncated']:
-                raise cli_unavailable(result['output']) or RuntimeError('kimi model failed')
+                raise cli_unavailable(result['output']) or ModelProcessFailed('kimi model failed')
             answers = []
             for line in result['output'].splitlines():
                 try:
@@ -551,14 +562,14 @@ class Router:
                 except ValueError:
                     continue
             if not answers:
-                raise cli_unavailable(result['output']) or RuntimeError('kimi returned no assistant answer')
+                raise cli_unavailable(result['output']) or ModelProcessFailed('kimi returned no assistant answer')
             return answers[-1]
         if kind == "command":
             argv = [x.replace("{cwd}", str(cwd)).replace("{prompt}", prompt) for x in model["command"]]
             stdin = None if any("{prompt}" in x for x in model["command"]) else prompt
             result = execute(argv, cwd, timeout, stdin=stdin, limit=128000)
             if result["returncode"] or result["timed_out"] or result["truncated"]:
-                raise cli_unavailable(result["output"]) or RuntimeError("command model failed")
+                raise cli_unavailable(result["output"]) or ModelProcessFailed("command model failed")
             return result["output"]
         if kind == "codex":
             # Final message lives separately from progress/diagnostics.
@@ -573,7 +584,7 @@ class Router:
                 argv += model.get("args", []) + ["-"]
                 result = execute(argv, cwd, timeout, stdin=prompt)
                 if result["returncode"] or result["timed_out"] or not out.exists():
-                    raise cli_unavailable(result["output"]) or RuntimeError("codex model failed")
+                    raise cli_unavailable(result["output"]) or ModelProcessFailed("codex model failed")
                 if out.stat().st_size > 128000:
                     raise ValueError("model response too large")
                 return out.read_text()
@@ -615,6 +626,9 @@ class Router:
         if result["truncated"]:
             raise ValueError("inference response exceeds size limit")
         envelope = json.loads(result["output"])
+        if envelope["status"] == -1:
+            self.telemetry.usage = {"error_kind": "invalid_response"}
+            raise ValueError("inference response is not JSON within the size limit")
         if envelope["status"] in (0, 408, 425, 429, 500, 502, 503, 504):
             reason = "inference connection failed or timed out" if envelope["status"] == 0 else "inference service returned HTTP " + str(envelope["status"])
             self.telemetry.usage = {"error_kind": "temporary_provider_failure"}
