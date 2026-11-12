@@ -794,6 +794,26 @@ print(json.dumps({'score':100 if ok else 0,'complete':ok}))
         self.assertEqual(config_path.read_text(), json.dumps(frozen, indent=2) + '\n')
 
 
+    def test_model_pool_replaces_project_routing_destinations(self):
+        git(self.repo, 'init', '-b', 'main')
+        (self.repo / 'evaluate.py').write_text(EVALUATOR)
+        (self.repo / 'soso.json').write_text(json.dumps({
+            **{k: self.config[k] for k in ('rounds', 'patience', 'parallel', 'max_steps', 'max_calls', 'max_seconds')},
+            'evaluate': [sys.executable, 'evaluate.py'],
+            'models': {'project-only': {'kind': 'command', 'command': ['false']}},
+            'routes': {'worker': ['project-only']}, 'routing': {'default': ['project-only']}}))
+        git(self.repo, 'add', '--all')
+        git(self.repo, '-c', 'user.name=T', '-c', 'user.email=t@example.invalid', 'commit', '-m', 'project policy')
+        pool_path = Path(self.tmp.name) / 'models.json'
+        pool_path.write_text(json.dumps({'models': {'test': {'kind': 'command', 'command': ['false']}}}))
+        with patch.object(Router, 'ask', lambda router, *a, **k: self.answer(router, *a, **k)), \
+             patch.dict(os.environ, {'SOSO_MODELS_FILE': str(pool_path), 'SOSO_LOCAL_ONLY': ''}):
+            state = start_goal(self.repo, 'make game', once=True)
+        frozen = json.loads((Path(state['report']).parent / 'config.json').read_text())
+        self.assertNotIn('routing', frozen)
+        self.assertEqual(set(frozen['models']), {'test'})
+
+
 class RoutingTests(unittest.TestCase):
     def test_discovery_prefers_loaded_model_and_strong_planner(self):
         with patch('soso.delivery.ollama_models', return_value=['loaded', 'disk']), patch('soso.delivery.shutil.which', return_value='/bin/tool'):

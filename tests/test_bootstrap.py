@@ -35,6 +35,22 @@ class BootstrapTests(unittest.TestCase):
             self.assertEqual(bootstrap.main(['--workspace',folder,'--install-only']),0)
             self.assertTrue((Path(folder)/'soso').is_symlink())
 
+    def test_model_pool_replaces_checkout_routing_destinations(self):
+        # The checkout's soso.json routing names its own models, absent from a supplied pool.
+        import contextlib, io
+        from soso.engine import Run
+        with tempfile.TemporaryDirectory() as folder:
+            pool = Path(folder) / 'pool.json'
+            pool.write_text(json.dumps({'models': {'test': {'kind': 'command', 'command': ['false']}}}))
+            report = {'status': 'plateau', 'baseline': {'score': 1}, 'best': 1}
+            with patch.object(Run, 'run', return_value=report), patch.dict(os.environ, {'SOSO_LOCAL_ONLY': ''}), \
+                    contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()) as errors:
+                code = bootstrap.main(['--workspace', folder, '--models', str(pool)])
+            self.assertEqual(code, 0, errors.getvalue())
+            config = json.loads(next(Path(folder).glob('self-*/soso.json')).read_text())
+            self.assertNotIn('routing', config)
+            self.assertEqual(set(config['models']), {'test'})
+
     def shell_fixture(self, folder, installer='apt-get', permitted=True, existing=False):
         root = Path(folder) / 'checkout'
         tools = Path(folder) / 'bin'

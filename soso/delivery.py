@@ -667,6 +667,7 @@ def start_goal(repo: Path, intent: str | None = None, *, backend='auto', model=N
                     raise ValueError('frozen epoch configuration changed')
                 config = json.loads((folder / 'config.json').read_text()) if state.get('policy') else _config(repo, state['config_path'], state.get('ignore_project_config', False))
                 if not state.get('policy') and (folder / 'model-pool.json').exists():
+                    config.pop('routing', None)  # project destinations name models the pool replaces
                     config.update(json.loads((folder / 'model-pool.json').read_text()))
                 # Resume preserves the original route unless explicitly overridden.
                 selected_backend = backend if backend != 'auto' or model is not None else state['backend']

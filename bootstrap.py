@@ -105,6 +105,7 @@ def main(argv=None):
             config = load_config(repo / 'soso.json')
             config.pop('models', None)
             config.pop('routes', None)
+            config.pop('routing', None)
             if args.models:
                 config.update(load_model_pool(args.models))
             config = configure_models(config, backend=args.backend, model=args.model)
