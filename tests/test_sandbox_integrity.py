@@ -292,6 +292,14 @@ class SandboxIntegrityTests(RepoCase):
             with self.subTest(command=command):
                 self.assertIn('a/b.py', local_programs(self.root, [command]))
 
+    def test_python_m_is_recognised_behind_a_wrapper(self):
+        (self.root / 'a').mkdir()
+        (self.root / 'a/b.py').write_text('')
+        for command in (['uv', 'run', 'python', '-m', 'a.b'], ['env', 'python3', '-m', 'a.b'],
+                        ['poetry', 'run', 'python', '-B', '-m', 'a.b']):
+            with self.subTest(command=command):
+                self.assertIn('a/b/__main__.py', local_programs(self.root, [command]))
+
     def test_python_directory_argument_protects_its_main(self):
         (self.root / 'pkgdir').mkdir()
         (self.root / 'pkgdir/helper.py').write_text('')

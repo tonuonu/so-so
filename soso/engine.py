@@ -100,10 +100,12 @@ def index_flags(root):
 
 
 def _python_entry(command):
-    """("-m", module) or ("path", arg) that a python argv runs; None for -c, stdin or another program."""
-    if not command or not Path(command[0]).name.startswith("python"):
+    """("-m", module) or ("path", arg) that python runs, also behind a wrapper such as uv run or env;
+    None for -c, stdin or a command without python."""
+    start = next((i for i, arg in enumerate(command) if Path(arg).name.startswith("python")), None)
+    if start is None:
         return None
-    args, i = command[1:], 0
+    args, i = command[start + 1:], 0
     while i < len(args):
         arg = args[i]
         if arg == "--":
