@@ -297,7 +297,8 @@ GUARDS = [
     ('soso/engine.py', '*options, "diff", "--no-ext-diff", "--no-textconv",', '*options, "diff", "--no-ext-diff",',
      ['test_evaluated_tree.EvaluatedTreeTests.test_textconv_does_not_hide_the_change_from_the_reviewer']),
     ('soso/engine.py', 'except OutputLimit:\n        return None', 'except ():\n        return None',
-     ['test_evaluated_tree.EvaluatedTreeTests.test_diff_over_the_output_limit_is_withheld_and_not_approved']),
+     ['test_evaluated_tree.EvaluatedTreeTests.test_diff_over_the_output_limit_is_withheld_and_not_approved',
+      'test_evaluated_tree.EvaluatedTreeTests.test_text_side_over_the_limit_is_withheld_next_to_a_binary_side']),
     ('soso/engine.py', 'except RuntimeError:\n            continue  # e.g. a file', 'except ():\n            continue  # e.g. a file',
      ['test_evaluated_tree.EvaluatedTreeTests.test_include_whose_condition_never_holds_does_not_stop_runs']),
     ('soso/engine.py', 'len(data or b"") > MAX_CONFIG_BYTES or ', '',
@@ -321,7 +322,8 @@ GUARDS = [
     ('soso/engine.py', '"empty" if not size else ', '', ['test_evaluated_tree.EvaluatedTreeTests.test_emptied_or_filled_placeholder_is_approvable']),
     ('soso/engine.py', 'if None in found:', 'if False:', ['test_evaluated_tree.EvaluatedTreeTests.test_side_that_cannot_be_read_is_withheld']),
     ('soso/engine.py', 'if len(changes) != len(binaries):', 'if False:', ['test_evaluated_tree.EvaluatedTreeTests.test_files_that_cannot_be_matched_are_withheld']),
-    ('soso/engine.py', 'if sent > GIT_OUTPUT_LIMIT:', 'if False:',
+    ('soso/engine.py', 'if sent > GIT_OUTPUT_LIMIT:\n                return None, too_large\n            diff += note',
+     'if False:\n                return None, too_large\n            diff += note',
      ['test_evaluated_tree.EvaluatedTreeTests.test_text_shown_for_binary_marked_files_counts_toward_the_limit']),
     ('soso/engine.py', 'candidate["review"] = {"approve": False, "reason": withheld}',
      'candidate["review"] = {"approve": False, "reason": "withheld"}', ['test_evaluated_tree.EvaluatedTreeTests.test_diff_over_the_output_limit_is_withheld_and_not_approved']),
@@ -377,6 +379,8 @@ GUARDS = [
     ('soso/engine.py', 'ThreadPoolExecutor(max_workers=READERS) as pool:\n        found', 'ThreadPoolExecutor(max_workers=1) as pool:\n        found',
      ['test_evaluated_tree.EvaluatedTreeTests.test_blob_reads_run_side_by_side_and_bounded']),
     ('soso/engine.py', 'READERS = 8  #', 'READERS = 64  #', ['test_evaluated_tree.EvaluatedTreeTests.test_blob_reads_run_side_by_side_and_bounded']),
+    ('soso/engine.py', 'if sent > GIT_OUTPUT_LIMIT:  # e.g. invalid UTF-8', 'if False:  # e.g. invalid UTF-8',
+     ['test_evaluated_tree.EvaluatedTreeTests.test_plain_diff_is_limited_in_bytes_too']),
 ]
 
 

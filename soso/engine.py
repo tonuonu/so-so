@@ -285,7 +285,7 @@ def review_diff(root, base, commit, seconds=300):
     # Attributes as the base commit holds them: the user's own (e.g. "diff" forcing text) apply, while
     # attributes the candidate commits do not. Without --attr-source Git reads them from root's worktree,
     # which both reviewers keep at the base. Ids are used as arguments: no stderr in them.
-    base = git(root, "rev-parse", "--verify", "--end-of-options", base + "^{commit}", quiet=True)
+    base = git(root, "rev-parse", "--verify", base + "^{commit}", quiet=True)
     options = ["--attr-source=" + base] if supports_attr_source(root, base) else []
     too_large = f"the diff exceeds {GIT_OUTPUT_LIMIT // 1_000_000} MB; split the change into smaller ones"
     stop = time.monotonic() + seconds
@@ -304,6 +304,8 @@ def review_diff(root, base, commit, seconds=300):
         kinds = blob_kinds(root, sorted({blob for *sides, _ in shown for _, blob in sides if blob}), stop) if shown else {}
         nothing = git(root, "hash-object", "-w", "-t", "blob", "--stdin", stdin="", quiet=True) if shown else None
         sent = len(diff.encode())  # what the reviewer receives, in bytes
+        if sent > GIT_OUTPUT_LIMIT:  # e.g. invalid UTF-8, each byte sent as a three-byte replacement character
+            return None, too_large
         for *sides, name in shown:
             found = [("absent", 0) if blob is None else kinds.get(blob) for _, blob in sides]
             if time.monotonic() > stop or any(kind == "late" for kind, _ in filter(None, found)):

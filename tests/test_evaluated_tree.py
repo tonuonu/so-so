@@ -1013,6 +1013,16 @@ class EvaluatedTreeTests(RepoCase):
         self.assertIsNone(diff)
         self.assertIn('exceeds 2 MB', reason)
 
+    def test_plain_diff_is_limited_in_bytes_too(self):
+        # 0.8 MB of Latin-1 text: Git's output fits, but each invalid byte reaches the reviewer as U+FFFD,
+        # three bytes of UTF-8, and nothing is shown as binary.
+        base = git(self.root, 'rev-parse', 'HEAD')
+        (self.root / 'latin.txt').write_bytes((b'\xe9' * 99 + b'\n') * 8000)
+        self.commit('latin', 'latin.txt')
+        diff, reason = self.reviewed(base)
+        self.assertIsNone(diff)
+        self.assertIn('exceeds 2 MB', reason)
+
     def test_text_side_over_the_limit_is_withheld_next_to_a_binary_side(self):
         # Shown in full like any deleted text file, so 3 MB of old text is over the limit; documented.
         before = b''.join(b'row %07d\n' % i for i in range(250000))  # 3 MB
