@@ -150,6 +150,21 @@ class SandboxIntegrityTests(RepoCase):
         self.assertTrue(ws.is_protected('bench/score.py'))
         self.assertTrue(ws.is_protected('tool/__main__.py'))
 
+    def test_run_protects_program_path_that_reenters_repo(self):
+        (self.root / 'tools').mkdir()
+        (self.root / 'tools/check.py').write_text('')
+        protected = self.prepared_protection(['python3', '../' + self.root.resolve().name + '/tools/check.py'], [])
+        self.assertIn('tools/check.py', protected)
+
+    def test_run_protects_parent_packages_of_python_m_module(self):
+        # Importing bench.sub.score runs bench/__init__.py and bench/sub/__init__.py first.
+        (self.root / 'bench/sub').mkdir(parents=True)
+        for name in ('bench/__init__.py', 'bench/sub/__init__.py', 'bench/sub/score.py'):
+            (self.root / name).write_text('')
+        protected = self.prepared_protection(['python3', '-m', 'bench.sub.score'], [])
+        for name in ('bench/__init__.py', 'bench/sub/__init__.py', 'bench/sub/score.py'):
+            self.assertIn(name, protected)
+
     def test_already_protected_evaluator_leaves_config_unchanged(self):
         # An unchanged protected list keeps the config digest, so earlier runs stay resumable.
         (self.root / 'INTENT.md').write_text('Improve value')

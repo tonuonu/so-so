@@ -94,6 +94,25 @@ def fingerprint(root, patterns):
     return values
 
 
+def local_programs(root, commands):
+    """Repository-relative names of in-repo files that evaluator and check commands run."""
+    root = Path(root).resolve()
+    names = [arg for command in commands for arg in command]
+    for command in commands:
+        for flag, module in zip(command, command[1:]):
+            if flag == "-m":
+                # python3 -m a.b imports a/__init__.py (and a/b/__init__.py), then runs a/b.py or a/b/__main__.py.
+                parts = module.split(".")
+                names += ["/".join(parts[:i]) + "/__init__.py" for i in range(1, len(parts) + 1)]
+                names += ["/".join(parts) + ".py", "/".join(parts) + "/__main__.py"]
+    programs = []
+    for name in names:
+        path = Path(os.path.normpath(root / name))  # "a/../b" names "b", also via "../<repo>/b"
+        if path.is_relative_to(root) and path.is_file():
+            programs.append(path.relative_to(root).as_posix())
+    return list(dict.fromkeys(programs))
+
+
 def evaluate(root, config, budget):
     results = []
     for command in config.get("checks", []):
