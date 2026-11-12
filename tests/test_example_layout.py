@@ -41,6 +41,18 @@ class ExampleLayoutTests(unittest.TestCase):
         self.assertEqual(len(configurations), 3)
         self.assertTrue(all(c['models'] == pool['models'] and c['routes'] == pool['routes'] for c in configurations))
 
+    def test_self_metric_counts_subpackages_but_not_vendored_skills(self):
+        # Moving code into a subpackage must not lower the self-improvement score.
+        import ast, subprocess, sys
+        with tempfile.TemporaryDirectory() as tmp:
+            for name in ('soso/a.py', 'soso/sub/b.py', 'soso/skillpacks/vendor/c.py'):
+                path = Path(tmp) / name
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_text('x = 1\n')
+            result = subprocess.run([sys.executable, str(ROOT / 'scripts/evaluate_self.py')], cwd=tmp,
+                                    capture_output=True, text=True, check=True, timeout=30)
+        self.assertEqual(json.loads(result.stdout)['score'], 2 * sum(1 for _ in ast.walk(ast.parse('x = 1\n'))))
+
     def test_probe_requests_valid_role_response(self):
         with tempfile.TemporaryDirectory() as tmp:
             config = Path(tmp) / 'config.json'
