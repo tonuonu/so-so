@@ -179,6 +179,22 @@ class DashboardTests(unittest.TestCase):
                     self.assertEqual(r.read(),b'listed image')
                     self.assertEqual(r.headers['Content-Type'],'image/png')
 
+    def test_asset_requests_reuse_recent_image_inventory(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root=Path(tmp);managed,_,report=self.fixture(root)
+            result=report.parent/'result';result.mkdir();(result/'screen.png').write_bytes(b'listed image')
+            (managed/'unlisted.png').write_bytes(b'unlisted')
+            with Dashboard(root) as d, patch.object(Monitor,'snapshot',autospec=True,side_effect=Monitor.snapshot) as snapshot:
+                with urllib.request.urlopen(d.url+'api') as r:path=json.load(r)['images'][0]['path']
+                for _ in range(3):
+                    with urllib.request.urlopen(d.url+'asset/'+path) as r:self.assertEqual(r.read(),b'listed image')
+                with self.assertRaises(urllib.error.HTTPError) as caught:urllib.request.urlopen(d.url+'asset/.so-so/unlisted.png')
+                self.assertEqual(caught.exception.code,404);caught.exception.close()
+                self.assertEqual(snapshot.call_count,1)
+                with patch.object(Dashboard,'IMAGE_SECONDS',-1):  # an expired inventory is rebuilt
+                    with urllib.request.urlopen(d.url+'asset/'+path) as r:self.assertEqual(r.read(),b'listed image')
+                self.assertEqual(snapshot.call_count,2)
+
     def test_client_abort_is_not_logged_or_answered(self):
         import contextlib,io
         with tempfile.TemporaryDirectory() as tmp:
