@@ -198,6 +198,17 @@ class DashboardTests(unittest.TestCase):
                 self.assertTrue(Monitor(root).snapshot()['runner_active'])
             self.assertFalse(Monitor(root).snapshot()['runner_active'])
 
+    def test_malformed_dashboard_settings_never_stop_work(self):
+        import contextlib, io
+        from soso.dashboard import automatic
+        for settings in ({'dashboard': 'x'}, {'dashboard': {'host': 5}}, ['not', 'an', 'object']):
+            with self.subTest(settings=settings), tempfile.TemporaryDirectory() as tmp:
+                (Path(tmp)/'soso.json').write_text(json.dumps(settings))
+                with patch.dict('os.environ', {'SOSO_DASHBOARD': '1'}), contextlib.redirect_stdout(io.StringIO()) as output:
+                    with automatic(Path(tmp)) as dashboard:
+                        self.assertIsNone(dashboard)
+                self.assertIn('Dashboard unavailable', output.getvalue())
+
 class UsageTelemetryTests(unittest.TestCase):
     def test_parallel_usage_is_correlated_and_does_not_log_prompts(self):
         events=[];lock=threading.Lock();barrier=threading.Barrier(2)
