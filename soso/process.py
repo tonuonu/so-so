@@ -108,7 +108,9 @@ def git(root, *args):
     env = None
     if IDENTITY and ("scope" not in IDENTITY or common_dir(root) in IDENTITY["scope"]):
         env = {**{k: v for k, v in IDENTITY.items() if k != "scope"}, **os.environ}
-    result = execute(["git", "-c", "core.hooksPath=/dev/null", *args], root, timeout=60,
+    # Run no repository-configured programs: no hooks, and no fsmonitor hook, which could also report
+    # edited files as unchanged.
+    result = execute(["git", "-c", "core.hooksPath=/dev/null", "-c", "core.fsmonitor=false", *args], root, timeout=60,
                      limit=2_000_000, env=env)
     if result["returncode"] or result["timed_out"]:
         raise RuntimeError("git " + args[0] + ": " + result["output"][-4000:])

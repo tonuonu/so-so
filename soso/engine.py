@@ -99,6 +99,12 @@ def index_flags(root):
     return {x for x in git(root, "ls-files", "-v", "-z").split("\0") if x[:1] == "S" or x[:1].islower()}
 
 
+def fsmonitor_config(root):
+    """core.fsmonitor values from config files; runner Git commands override them on the command line."""
+    lines = git(root, "config", "--show-scope", "--get-all", "core.fsmonitor").splitlines()
+    return [line for line in lines if not line.startswith("command\t")]
+
+
 def nested_git(root):
     """Entries named .git below the worktree root: Git skips them and everything inside them."""
     found, top = set(), os.fspath(root)
@@ -459,7 +465,7 @@ class Run:
                 expected = continuation['commit']
             git(self.root, "worktree", "add", "--detach", str(path), expected)
             flagged = index_flags(path)  # e.g. skip-worktree entries a sparse checkout gives every worktree
-            nested = nested_git(path)
+            monitor, nested = fsmonitor_config(path), nested_git(path)
             if continuation and fingerprint(path, self.config['protected']) != self.pinned:
                 raise ValueError('retained candidate policy changed')
             if not continuation or continuation['phase'] == 'worker':
@@ -487,6 +493,9 @@ class Run:
             # A nested repository commits only as a gitlink: its files stay on disk, unrecorded and uncleaned.
             if any(line.split()[1] == "160000" for line in git(path, "diff-tree", "-r", base, result["commit"]).splitlines()):
                 result["evaluation"] = {"valid": False, "reason": "embedded repositories are not allowed"}
+            # An fsmonitor hook the worker configured can report its edits as unchanged to other Git users.
+            elif fsmonitor_config(path) != monitor:
+                result["evaluation"] = {"valid": False, "reason": "fsmonitor configuration changed"}
             # Index flags the worker set keep its on-disk edits out of the commit.
             elif index_flags(path) != flagged:
                 result["evaluation"] = {"valid": False, "reason": "index flags hide worktree changes"}

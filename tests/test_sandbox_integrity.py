@@ -134,6 +134,35 @@ class SandboxIntegrityTests(RepoCase):
         evaluation = self.hidden_score_run('mkdir -p pkg/.git && echo 999 > pkg/.git/bonus.txt', [sys.executable, '-c', code])
         self.assertEqual(evaluation, {'valid': False, 'reason': 'nested .git entries hide files from Git'})
 
+    def test_candidate_hiding_edits_with_an_fsmonitor_hook_is_invalid(self):
+        # A hook that reports no changes plus fsmonitor-valid bits hides the edit from status and staging.
+        hide = r"""h="$(git rev-parse --absolute-git-dir)/stub" && printf "#!/bin/sh\nprintf 'tok\\0'\n" > "$h" && chmod +x "$h" && git config core.fsmonitor "$h" && git status --porcelain > /dev/null && git update-index --fsmonitor-valid value.txt && echo 999 > value.txt"""
+        evaluation = self.hidden_score_run(hide)
+        self.assertEqual(evaluation, {'valid': False, 'reason': 'fsmonitor configuration changed'})
+
+    def test_runner_git_ignores_a_preconfigured_fsmonitor_hook(self):
+        # The hook is already configured, so no configuration change is detected; the runner's own
+        # Git commands must still see the edit, which then lands in the scored commit.
+        stub = Path(tempfile.mkdtemp()) / 'stub'
+        self.addCleanup(shutil.rmtree, stub.parent)
+        stub.write_text("#!/bin/sh\nprintf 'tok\\0'\n")
+        stub.chmod(0o755)
+        git(self.root, 'config', 'core.fsmonitor', str(stub))
+        steps = iter([{'tool': 'run', 'argv': ['sh', '-c', 'git status --porcelain > /dev/null && '
+                                                'git update-index --fsmonitor-valid value.txt && echo 7 > value.txt']},
+                      {'tool': 'write', 'path': 'notes.txt', 'content': 'tracked change'},
+                      {'tool': 'done', 'summary': 'done'}])
+        def answer(router, role, prompt, cwd, attempt=0, task=None):
+            router.budget.claim()
+            if role == 'reviewer': return {'approve': True}
+            return next(steps)
+        runner = Run(self.root, self.config(parallel=1, rounds=1), 'Improve', allow_exec=True)
+        with patch.object(Router, 'ask', answer), contextlib.redirect_stdout(io.StringIO()):
+            report = runner.run()
+        experiment = report['rounds'][0]['experiments'][0]
+        self.assertEqual(experiment['evaluation'].get('score'), 7, experiment['evaluation'])
+        self.assertEqual(git(self.root, 'show', experiment['commit'] + ':value.txt'), '7')
+
     def commit_submodule(self):
         # A base commit with a gitlink; candidate worktrees get an empty, uninitialised sub/.
         (self.root / 'sub').mkdir()
