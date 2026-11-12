@@ -63,32 +63,74 @@ Persistent delivery instead opens bounded new epochs while preserving its goal.
 Only one run owns a repository at a time (POSIX file lock in the common Git directory).
 Source must be clean. Worktrees and configuration are pinned to committed source;
 ignored caches are not copied into candidate worktrees. Submodule and large-data
-setup are the caller's responsibility. With command execution, settings that change
-how content is staged or checked out (`filter.*`, `core.attributesFile`,
-`core.autocrlf`, `core.eol`, `core.safecrlf`, `core.fsmonitor`, `core.worktree`,
-`core.sparseCheckout*`, `index.*`, and the `include.*`, `includeIf.*` and
-`extensions.worktreeConfig` settings that can bring such settings in), read with
-includes expanded from the repository config and each worktree's
-`config.worktree`, and `info/attributes` are recorded when a run's first
-candidate worktree is created; the record is kept in the run folder for resume.
-After each worker they are restored, under the run lock that also covers staging
-and the commit, and again before evaluation; each restore is logged as
-`repository_config_restored` with the key names, and the old and new values are
-kept in the candidate's record. This includes watched changes you make yourself
-during a run with command execution enabled; without it a worker cannot change
-config, so nothing is restored. Other config, such as remotes and branch
-tracking, is never touched. Before evaluation the files on disk are also compared
-with the commit through a fresh index, so a stat cache left by a worker's own
-`git add` cannot hide a difference. A candidate is rejected when it changed its
-own worktree-scope settings, changed shared ones while it was the only candidate
-running, was committed while a watched setting changed, has files that differ
-from its commit, adds or changes a gitlink (nested repository or submodule), sets
+setup are the caller's responsibility.
+
+A candidate is scored on exactly the commit that would be accepted. After the
+commit, every file in the candidate worktree is deleted (`git clean` against an
+empty index, which also removes ignored files and empty directories) and the
+commit is checked out again from an index rebuilt from it. Filters, `ident`,
+`eol`, `working-tree-encoding`, file modes and symlinks therefore apply as on a
+fresh clone with your configuration, paths outside a sparse checkout stay absent
+as in the baseline, and nothing the worker left on disk is scored. This costs
+about one checkout per candidate: on a synthetic 35,000-file repository on a
+local SSD it took 12-13 s, next to 6-15 s for `git worktree add` and 2-10 s
+for the comparison below. A candidate is rejected when anything survives the
+clean (for example a FIFO or a read-only folder), when a watched setting changes
+while the files are checked out, when the commit's attributes change how a
+protected file is written, when the checked-out files do not match the commit
+(for example paths that collide on a case-insensitive file system), and when it
+adds or changes a symlink while `core.symlinks` is false, since the checkout
+would write it as a plain file.
+
+With command execution, settings that change how content is staged or checked
+out (`filter.*`, `core.attributesFile`, `core.autocrlf`, `core.eol`,
+`core.safecrlf`, `core.fsmonitor`, `core.worktree`, `core.sparseCheckout*`,
+`core.symlinks`, `core.fileMode`, `sparse.*`, `index.*`, and the `include.*`,
+`includeIf.*` and `extensions.worktreeConfig` settings that can bring such
+settings in), read with includes expanded from the repository config and each
+worktree's `config.worktree`, `info/attributes`, and the bytes of every file the
+repository config names with `include.path` or `includeIf.*.path` (followed
+transitively, whatever the condition, at most 64 files of 1 MiB) are recorded
+when a run's first candidate worktree is created; the record is kept in the run
+folder for resume. After each worker they are restored, under the run lock that
+also covers staging and the commit, and again before the checkout; each restore
+is logged as `repository_config_restored` with the key or file names, and the
+old and new values are kept in the candidate's record. An included file gets its
+recorded bytes back (never written through a symlink); a value that comes from an
+included file is never overridden in `.git/config`. This includes watched changes
+you make yourself during a run with command execution enabled; without it a
+worker cannot change config, so nothing is restored. Other config, such as
+remotes and branch tracking, is never touched. When a difference cannot be
+restored (for example an `includeIf "hasconfig:remote.*.url:..."` that a new
+remote turned on), the candidate ends with an error naming the file, and
+`soso/unrestored.json` in the common Git directory makes every new run, including
+the next delivery epoch, refuse to start until the settings again match that
+run's record; delete that file to keep the current settings instead.
+
+Before the checkout, the worker's files are also compared with the commit through
+a fresh index, so a stat cache left by a worker's own `git add` cannot hide a
+difference. A candidate is rejected when it changed its own worktree-scope
+settings, changed shared ones while it was the only candidate running, was
+committed while a watched setting changed, has files that differ from its
+commit, adds or changes a gitlink (nested repository or submodule), sets
 skip-worktree or assume-unchanged index flags its fresh worktree did not have,
-leaves files inside a submodule directory, or
-creates an entry named `.git` below the worktree root. Worker tools
-cannot write inside a submodule directory. Runner-managed Git commands run without
-hooks or an fsmonitor hook (`core.hooksPath=/dev/null`, `core.fsmonitor=false`);
-do not rely on hooks as your evaluator, and expect no fsmonitor speed-up in them.
+leaves files inside a submodule directory, or creates an entry named `.git`
+below the worktree root. Worker tools cannot write inside a submodule directory.
+Runner-managed Git commands run without hooks or an fsmonitor hook
+(`core.hooksPath=/dev/null`, `core.fsmonitor=false`), without replace refs
+(`GIT_NO_REPLACE_OBJECTS=1`) and without advice messages (`GIT_ADVICE=0`); the
+reviewer's diff is built with `--no-ext-diff --no-textconv`. Do not rely on hooks
+as your evaluator, and expect no fsmonitor speed-up in them.
+
+Not covered: global, system and XDG Git configuration and `GIT_CONFIG_*`
+variables are neither watched nor restored, so a worker with command execution
+that edits your global config (for example a smudge filter) can still change
+what is checked out, here and in your other repositories. Replace refs a worker
+creates stay in the repository, where your own Git still honours them. A
+`-diff` or `binary` attribute in the commit still shows the reviewer only
+"Binary files differ" for that file. Two parallel workers can still race: a
+shared setting one changes and changes back while another candidate is checked
+out is not seen; run with `parallel` 1 when that matters.
 
 A run retains its result branch/worktree and candidate commit refs. Successful
 candidate commits are kept under `refs/soso/RUN_ID/`, including measured rejected
