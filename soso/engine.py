@@ -6,6 +6,7 @@ import hashlib
 import json
 import math
 import os
+import re
 from pathlib import Path
 import statistics
 import shutil
@@ -116,13 +117,31 @@ def nested_git(root):
     return found
 
 
+PYTHON = re.compile(r"(python|pypy)[0-9.]*[tw]?(\.exe)?", re.I)  # interpreter names, not python-dateutil
+VALUE_OPTIONS = {"--python", "-p", "--with", "--interpreter"}  # wrapper options whose value may look like python
+
+
 def _python_entry(command):
-    """("-m", module) or ("path", arg) that python runs, also behind a wrapper such as uv run or env;
-    None for -c, stdin or a command without python."""
-    start = next((i for i, arg in enumerate(command) if Path(arg).name.startswith("python")), None)
-    if start is None:
-        return None
-    args, i = command[start + 1:], 0
+    """("-m", module) or ("path", arg) that python runs, also behind wrappers such as env, uv run or
+    poetry run, or through coverage run -m and uv run -m; None for -c, stdin or a command without python."""
+    for i, arg in enumerate(command):
+        if PYTHON.fullmatch(Path(arg).name) and (i == 0 or command[i - 1] not in VALUE_OPTIONS):
+            return _python_options(command[i + 1:])
+    for i, arg in enumerate(command[:-1]):
+        if Path(arg).name.casefold() in ("coverage", "uv") and command[i + 1] == "run":
+            # These run a module themselves; an -m anywhere after "run" is treated as one.
+            for j, flag in enumerate(command[i + 2:], i + 2):
+                if flag in ("-m", "--module"):
+                    return ("-m", command[j + 1]) if j + 1 < len(command) else None
+                if flag.startswith("-m"):
+                    return ("-m", flag[2:])
+            return None
+    return None
+
+
+def _python_options(args):
+    """Python's own options: what -m, -c, a script path or a directory after them runs."""
+    i = 0
     while i < len(args):
         arg = args[i]
         if arg == "--":

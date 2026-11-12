@@ -362,6 +362,15 @@ class SandboxIntegrityTests(RepoCase):
             with self.subTest(command=command):
                 self.assertIn('a/b/__main__.py', local_programs(self.root, [command]))
 
+    def test_python_m_is_recognised_for_more_interpreters_and_runners(self):
+        (self.root / 'a').mkdir()
+        (self.root / 'a/b.py').write_text('')
+        for command in (['PYTHON3', '-m', 'a.b'], ['pypy3', '-m', 'a.b'], ['coverage', 'run', '-m', 'a.b'],
+                        ['uv', 'run', '-m', 'a.b'], ['uv', 'run', '--with', 'python-dateutil', 'python', '-m', 'a.b'],
+                        ['uv', 'run', '--python', 'python3.12', 'python', '-m', 'a.b'], ['python3.13t', '-m', 'a.b']):
+            with self.subTest(command=command):
+                self.assertIn('a/b/__main__.py', local_programs(self.root, [command]))
+
     def test_python_directory_argument_protects_its_main(self):
         (self.root / 'pkgdir').mkdir()
         (self.root / 'pkgdir/helper.py').write_text('')
