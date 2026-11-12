@@ -807,6 +807,55 @@ print(json.dumps({'score':100 if ok else 0,'complete':ok}))
             router.ask('worker', 'value=' + secret, self.repo)
         self.assertNotIn(secret, call.call_args.args[1])
 
+    def test_prompt_redacts_secret_escaped_by_embedded_json(self):
+        # Prompts embed json.dumps'd data, where a secret with a quote or backslash appears escaped.
+        config = {'models': {'test': {'kind': 'command'}}, 'routes': {'worker': ['test']}}
+        for secret in ('quote"secret-value', 'back\\slash-secret', '\\edge-secret\\'):
+            with self.subTest(secret=secret):
+                router = Router(config, Budget(1, 5), lambda *a, **k: None)
+                with patch.dict(os.environ, {'TEST_API_KEY': secret}), \
+                        patch.object(router, '_call', return_value='{"tool":"done"}') as call:
+                    router.ask('worker', 'data=' + json.dumps({'value': secret}), self.repo)
+                sent = call.call_args.args[1]
+                self.assertNotIn(json.dumps(secret)[1:-1], sent)
+                self.assertEqual(sent, 'data={"value": "[REDACTED]"}')
+
+    def test_setup_events_redact_environment_secrets(self):
+        secret = 'setup"secret\\value'
+        original = self.answer
+        def answer(router, role, prompt, cwd, attempt=0, task=None):
+            if 'Create a small acceptance contract' in prompt:
+                router.log('activity', task='uses ' + secret, **{'key ' + secret: 1})
+            return original(router, role, prompt, cwd, attempt)
+        self.answer = answer
+        with patch.dict(os.environ, {'SOSO_TEST_SECRET': secret}):
+            state = self.start()
+        text = (Path(state['report']).parent / 'setup-events.jsonl').read_text()
+        record = next(json.loads(line) for line in text.splitlines() if json.loads(line)['event'] == 'activity')
+        self.assertNotIn(json.dumps(secret)[1:-1], text)
+        self.assertEqual(record['task'], 'uses [REDACTED]')
+        self.assertEqual(record['key [REDACTED]'], 1)
+
+    def test_terminal_planning_or_review_error_is_recorded_in_epoch_report(self):
+        original = self.answer
+        for phase, error, message in (('plan', ValueError, 'planner returned no next step'),
+                                      ('review', RuntimeError, 'all routes failed: test: FileNotFoundError')):
+            with self.subTest(phase=phase):
+                def answer(router, role, prompt, cwd, attempt=0, task=None):
+                    if phase == 'plan' and role == 'planner' and 'Plan one small useful next milestone step' in prompt:
+                        router.budget.claim()
+                        return {'experiments': [{'task': ''}]}
+                    if phase == 'review' and prompt.startswith('Independently review this increment.'):
+                        raise RuntimeError(message)
+                    return original(router, role, prompt, cwd, attempt)
+                self.answer = answer
+                with self.assertRaisesRegex(error, message):
+                    self.start()
+                state = json.loads(max(self.repo.glob('.git/soso/goals/*/state.json'), key=os.path.getmtime).read_text())
+                self.assertEqual(state['status'], 'blocked')
+                report = json.loads(Path(state['active_epoch']).read_text())
+                self.assertEqual((report['status'], report.get('reason')), ('blocked', message))
+
     def test_interrupted_epoch_recovers_accepted_head(self):
         first = self.start()
         state_path = Path(first['report'])

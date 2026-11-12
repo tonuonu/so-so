@@ -19,7 +19,7 @@ from urllib.parse import urlsplit
 from .architecture import planning_reply
 from .engine import DEFAULTS, Run, atomic_json, evaluate, fingerprint, load_config, local_programs, resources
 from .models import ModelProtocolError, Budget, BudgetExceeded, HTTP_TRANSPORT, ModelUnavailable, Router, redact, redact_value
-from .process import IDENTITY, execute, git
+from .process import IDENTITY, common_dir, execute, git
 from .workspace import Workspace
 
 
@@ -151,6 +151,7 @@ def _identity(repo, persist=False):
                 git(repo, 'config', '--local', 'user.' + key, value)
             else:
                 IDENTITY.update({'GIT_AUTHOR_' + key.upper(): value, 'GIT_COMMITTER_' + key.upper(): value})
+                IDENTITY['scope'] = {*IDENTITY.get('scope', ()), common_dir(repo)}
 
 
 def _storage(repo):
@@ -554,6 +555,10 @@ class DeliveryEpoch(Run):
             self.report.update(status='budget_exhausted', reason=str(exc))
         except KeyboardInterrupt:
             self.report['status'] = 'interrupted'
+        except Exception as exc:
+            # start_goal blocks the goal; the epoch's own evidence says so too (checkpointed below).
+            self.report.update(status='blocked', reason=str(exc)[:2000])
+            raise
         finally:
             draft = self.report.get('draft')
             if (draft and git(self.integration, 'rev-parse', 'HEAD') == draft['commit']
@@ -689,7 +694,7 @@ def start_goal(repo: Path, intent: str | None = None, *, backend='auto', model=N
                 if not state.get('policy'):
                     def setup_log(event, **data):
                         with (folder / 'setup-events.jsonl').open('a') as stream:
-                            stream.write(json.dumps({'time': time.time(), 'event': event, **data}) + '\n')
+                            stream.write(json.dumps(redact_value({'time': time.time(), 'event': event, **data})) + '\n')
                     router = Router(config, Budget(min(config['max_calls'], 8), config['max_seconds']), setup_log)
                     contract = _contract(root, config, state['intent'], router, folder, state.get('setup_repair_reason', ''))
                     state.pop('setup_repair_reason', None)

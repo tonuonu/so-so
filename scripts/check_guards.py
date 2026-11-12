@@ -80,6 +80,28 @@ GUARDS = [
      ['test_delivery.DeliveryTests.test_prepared_contract_evaluator_is_verified_before_recovery']),
     ('soso/dashboard.py', "raise ValueError('unknown asset')", 'pass',
      ['test_dashboard.DashboardTests.test_http_requires_token_and_serves_no_arbitrary_files']),
+    ('soso/models.py', 'for form in (json.dumps(value)[1:-1], json.dumps(value, ensure_ascii=False)[1:-1], value):',
+     'for form in (value,):',
+     ['test_delivery.DeliveryTests.test_prompt_redacts_secret_escaped_by_embedded_json']),
+    ('soso/delivery.py', "json.dumps(redact_value({'time': time.time(), 'event': event, **data}))",
+     "json.dumps({'time': time.time(), 'event': event, **data})",
+     ['test_delivery.DeliveryTests.test_setup_events_redact_environment_secrets']),
+    ('soso/intent.py', "json.dumps(redact_value({'time': time.time(), 'event': event, **data}))",
+     "json.dumps({'time': time.time(), 'event': event, **data})",
+     ['test_intent.MarkdownPoolTests.test_setup_events_redact_environment_secrets']),
+    ('soso/delivery.py', "self.report.update(status='blocked', reason=str(exc)[:2000])", 'pass',
+     ['test_delivery.DeliveryTests.test_terminal_planning_or_review_error_is_recorded_in_epoch_report']),
+    ('soso/process.py', 'common_dir(root) in IDENTITY["scope"]', 'True',
+     ['test_core.IdentityTests.test_fallback_identity_stays_in_the_repository_it_was_derived_for']),
+    ('soso/delivery.py', "IDENTITY['scope'] = {*IDENTITY.get('scope', ()), common_dir(repo)}", 'pass',
+     ['test_core.IdentityTests.test_fallback_identity_stays_in_the_repository_it_was_derived_for']),
+    # Not a guard but a pin: anything start_goal adds to the epoch config must change the draft binding digest.
+    ('soso/delivery.py', "config['direction'] = 'max'", "config['direction'] = 'max'; config['added'] = True",
+     ['test_resume_digest.DraftBindingDigestTests.test_delivery_draft_binding_digest_is_pinned']),
+    ('soso/dashboard.py', 'p.is_symlink() for p in [candidate, *candidate.parents]', 'False for p in [candidate]',
+     ['test_dashboard.DashboardTests.test_listed_image_replaced_by_symlink_is_not_served_from_cache']),
+    ('soso/models.py', 'json.dumps(value, ensure_ascii=False)[1:-1], ', '',
+     ['test_run_reliability.RedactionTests.test_secret_in_text_built_without_ascii_escaping_is_redacted']),
 ]
 
 
