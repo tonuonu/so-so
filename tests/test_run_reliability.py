@@ -40,9 +40,10 @@ class RedactionTests(RepoCase):
         with patch.dict(os.environ, {'SOSO_TEST_SECRET': secret}):
             runner = Run(self.root, self.config(), 'Improve')
             runner.log('activity', task='uses ' + secret, **{'key ' + secret: 1})
-        text = (runner.folder / 'events.jsonl').read_text()
-        self.assertNotIn(secret, json.dumps(json.loads(text)))
-        self.assertIn('[REDACTED]', json.loads(text)['task'])
+        record = json.loads((runner.folder / 'events.jsonl').read_text())
+        self.assertFalse([k for k, v in record.items() if secret in k or secret in str(v)])
+        self.assertEqual(record['task'], 'uses [REDACTED]')
+        self.assertIn('key [REDACTED]', record)
 
     def test_numeric_secret_does_not_corrupt_checkpoint_numbers(self):
         with patch.dict(os.environ, {'SOSO_TEST_TOKEN': '1234567'}):
