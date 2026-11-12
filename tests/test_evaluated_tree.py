@@ -89,6 +89,21 @@ class EvaluatedTreeTests(RepoCase):
         self.assert_scored_as_committed(report, evaluate)
         self.assertEqual(report['best'], 1)
 
+    # 1b. attr.tree replaces the worktree's .gitattributes for checkout and diff alike.
+    def test_attribute_tree_cannot_change_how_the_commit_is_checked_out_or_reviewed(self):
+        (self.root / 'mod.py').write_text('def f():\n    return 0\n')
+        self.commit('module', 'mod.py')
+        evaluate = score_of('mod.f()', 'import mod\n')
+        tree = ('t="$(printf \'100644 blob %s\\t.gitattributes\\n\' "$(printf \'mod.py ident\\n* -diff\\n\' | '
+                'git hash-object -w --stdin)" | git mktree)" && git config attr.tree "$t"')
+        prompts = []
+        report = self.run_candidate([{'tool': 'run', 'argv': ['sh', '-c', tree]},
+                                     {'tool': 'write', 'path': 'mod.py', 'content': 'x = "$Id$"\ndef f():\n    return 999 if len(x) > 4 else 1\n'}],
+                                    evaluate, prompts=prompts, routes={'worker': ['test'], 'reviewer': ['test']})
+        self.assert_scored_as_committed(report, evaluate)
+        self.assertIn('local:attr.tree', self.restored_keys(report))
+        self.assertEqual(git(self.root, 'config', '--get', 'attr.tree', ok=(0, 1)), '')
+
     # 2. File types and modes Git records differently from the files on disk.
     STAGE_SYMLINK = 'echo 999 > value.txt && git update-index --cacheinfo "120000,$(git hash-object -w value.txt),value.txt"'
     EXECUTABLE = "999 if __import__('os').access('value.txt', __import__('os').X_OK) else " + VALUE
@@ -179,19 +194,34 @@ class EvaluatedTreeTests(RepoCase):
                                    {'tool': 'run', 'argv': ['sh', '-c', replace]}])
         self.assertIn('+999', diff)
 
+    # A worker that sets diff.* is rejected and restored (see below); the user's own external diff
+    # program or textconv driver, e.g. a structural diff tool, must not shape the reviewer's view either.
     def test_external_diff_does_not_hide_the_change_from_the_reviewer(self):
-        diff = self.reviewed_diff([{'tool': 'run', 'argv': ['sh', '-c', 'git config diff.external true']},
-                                   {'tool': 'write', 'path': 'value.txt', 'content': '999'}])
+        git(self.root, 'config', 'diff.external', 'true')
+        diff = self.reviewed_diff([{'tool': 'write', 'path': 'value.txt', 'content': '999'}])
         self.assertIn('+999', diff)
 
     def test_textconv_does_not_hide_the_change_from_the_reviewer(self):
-        # The diff reads attributes from the result worktree, so the diff driver comes from the base,
-        # as a common "*.py diff=python" would; only its unwatched textconv setting is the worker's.
+        # The diff reads attributes from the result worktree, so the diff driver comes from the base.
         (self.root / '.gitattributes').write_text('value.txt diff=hide\n')
         self.commit('attributes', '.gitattributes')
-        diff = self.reviewed_diff([{'tool': 'run', 'argv': ['sh', '-c', 'git config diff.hide.textconv true']},
-                                   {'tool': 'write', 'path': 'value.txt', 'content': '999'}])
+        git(self.root, 'config', 'diff.hide.textconv', 'true')
+        diff = self.reviewed_diff([{'tool': 'write', 'path': 'value.txt', 'content': '999'}])
         self.assertIn('+999', diff)
+
+    def test_diff_driver_settings_do_not_hide_the_change_from_the_reviewer(self):
+        # diff.<driver>.binary on a driver the base's attributes use shows only "Binary files differ".
+        (self.root / '.gitattributes').write_text('*.py diff=python\n')
+        (self.root / 'mod.py').write_text('x = 0\n')
+        self.commit('module', '.gitattributes', 'mod.py')
+        prompts = []
+        report = self.run_candidate([{'tool': 'run', 'argv': ['sh', '-c', 'git config diff.python.binary true']},
+                                     {'tool': 'write', 'path': 'mod.py', 'content': 'x = 999\n'},
+                                     {'tool': 'write', 'path': 'value.txt', 'content': '5'}],
+                                    prompts=prompts, routes={'worker': ['test'], 'reviewer': ['test']})
+        self.assertTrue(all('+x = 999' in prompt for prompt in prompts), prompts)  # reviewed only if it shows
+        self.assertIn('local:diff.python.binary', self.restored_keys(report))
+        self.assertEqual(self.experiment(report)['evaluation'], {'valid': False, 'reason': 'worker changed repository configuration'})
 
     def test_delivery_reviewer_diff_ignores_external_diff_and_textconv(self):
         (self.root / '.gitattributes').write_text('value.txt diff=hide\n')

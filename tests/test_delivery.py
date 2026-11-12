@@ -484,6 +484,28 @@ print(json.dumps({'score':100 if stage>=2 else 0,'complete':stage>=2}))
             self.start(resume_goal=first['goal_id'])
         worker.assert_not_called()
 
+    def test_interrupt_during_checkout_keeps_the_retained_draft(self):
+        # The checkout deletes every file before writing them again; an interrupt in between must not
+        # drop the draft that was retained before it.
+        from soso import engine
+        def work(router, task, path, config, log, index):
+            (Path(path) / 'stage.txt').write_text('2')
+            return {'finished': True}
+        checkout = engine.checkout
+        def interrupted(path, *args):
+            (Path(path) / 'stage.txt').unlink()
+            raise KeyboardInterrupt
+        with patch('soso.engine.worker', side_effect=work) as worker:
+            with patch('soso.engine.checkout', side_effect=interrupted):
+                first = self.start()
+            self.assertEqual(first['status'], 'interrupted')
+            self.assertEqual(first['draft']['phase'], 'evaluate')
+            with patch('soso.delivery.time.time', return_value=time.time() + 5), \
+                    patch('soso.engine.checkout', side_effect=checkout):
+                resumed = self.start(resume_goal=first['goal_id'])
+        self.assertEqual(resumed['status'], 'complete')
+        self.assertEqual(worker.call_count, 1)
+
     def test_interrupt_around_merge_preserves_or_reconciles_reviewed_draft(self):
         for after_merge in (False, True):
             with self.subTest(after_merge=after_merge):

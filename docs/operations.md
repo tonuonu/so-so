@@ -85,7 +85,8 @@ would write it as a plain file.
 With command execution, settings that change how content is staged or checked
 out (`filter.*`, `core.attributesFile`, `core.autocrlf`, `core.eol`,
 `core.safecrlf`, `core.fsmonitor`, `core.worktree`, `core.sparseCheckout*`,
-`core.symlinks`, `core.fileMode`, `sparse.*`, `index.*`, and the `include.*`,
+`core.symlinks`, `core.fileMode`, `sparse.*`, `attr.*`, `index.*`, `diff.*`
+(which shapes the reviewer's diff), and the `include.*`,
 `includeIf.*` and `extensions.worktreeConfig` settings that can bring such
 settings in), read with includes expanded from the repository config and each
 worktree's `config.worktree`, `info/attributes`, and the bytes of every file the
@@ -126,9 +127,11 @@ Not covered: global, system and XDG Git configuration and `GIT_CONFIG_*`
 variables are neither watched nor restored, so a worker with command execution
 that edits your global config (for example a smudge filter) can still change
 what is checked out, here and in your other repositories. Replace refs a worker
-creates stay in the repository, where your own Git still honours them. A
-`-diff` or `binary` attribute in the commit still shows the reviewer only
-"Binary files differ" for that file. Two parallel workers can still race: a
+creates stay in the repository, where your own Git still honours them. The
+reviewer's diff reads attributes from the result worktree, so a candidate's own
+`.gitattributes` does not change it, but your own `-diff` attributes and
+`diff.<driver>.binary` settings still show "Binary files differ" for those
+files. Two parallel workers can still race: a
 shared setting one changes and changes back while another candidate is checked
 out is not seen; run with `parallel` 1 when that matters.
 

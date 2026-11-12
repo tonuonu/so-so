@@ -105,7 +105,7 @@ def index_flags(root):
 # switches that can bring such settings in; other config (remotes, branches, user edits) is never touched.
 WATCHED = re.compile(r"filter\..*|include\..*|includeif\..*|extensions\.worktreeconfig|"
                      r"core\.(attributesfile|autocrlf|eol|safecrlf|fsmonitor|worktree|sparsecheckout.*)|index\..*|"
-                     r"core\.(symlinks|filemode)|sparse\..*", re.I)
+                     r"core\.(symlinks|filemode)|sparse\..*|attr\..*|diff\..*", re.I)  # diff.*: the reviewer's view
 INCLUDE = re.compile(r"include\.path|includeif\..*\.path", re.I)
 MAX_INCLUDED, MAX_CONFIG_BYTES = 64, 1 << 20
 
@@ -667,13 +667,14 @@ class Run:
         cleanup = True
         phase = 'worker'
         self.log("activity", phase="writing", candidate=index, task=task[:2500])
-        expected = None
+        expected = retained = None
         def retain():
-            nonlocal cleanup
-            if preserve and path.exists() and expected:
+            nonlocal cleanup, retained
+            # Once the commit is retained for evaluation, the checkout may leave the files half written.
+            if preserve and path.exists() and expected and retained != phase:
                 cleanup = False  # Keep the worktree if its durable checkpoint fails.
                 preserve(path, result, base, expected, name, phase)
-                cleanup = True
+                cleanup, retained = True, phase
         try:
             base = git(self.integration, "rev-parse", "HEAD")
             expected = base
