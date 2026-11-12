@@ -326,3 +326,16 @@ class LauncherTests(unittest.TestCase):
             fcntl.flock(probe, fcntl.LOCK_EX)
             with self.assertRaisesRegex(RuntimeError, 'another so-so process owns this project'):
                 launch(self.root, resume='')
+
+    def test_malformed_saved_entry_does_not_block_history(self):
+        from soso.history import update_history
+        managed = self.root / '.so-so'
+        for name, entry in (('list', []), ('text-time', {'updated_at': 'yesterday'}), ('huge-time', {'updated_at': 1e300}),
+                            ('number-title', {'updated_at': 1, 'title': 7}), ('good', {'updated_at': 2, 'title': 'Good'})):
+            (managed / 'projects' / name).mkdir(parents=True)
+            (managed / 'projects' / name / 'entry.json').write_text(json.dumps(entry))
+        update_history(managed, managed / 'projects/good', {'updated_at': 3, 'title': 'Good', 'status': 'running'})
+        index = (managed / 'README.md').read_text()
+        self.assertIn('[Good](projects/good/README.md)', index)
+        self.assertIn('[7](projects/number-title/README.md)', index)
+        self.assertNotIn('text-time', index)
