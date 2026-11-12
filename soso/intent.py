@@ -171,14 +171,28 @@ INVENTORY:
             'omitted, reordered or misinterpreted; do not approve merely because the JSON is structurally valid. '
             '\nUSER MARKDOWN:\n' + text + '\nVERIFIED INVENTORY:\n' + json.dumps(models) +
             '\nCOMPILED POLICY:\n' + json.dumps(pool))
-        # Review on another model when one answers; the compiler is only the last fallback.
+        # Review on another model when one answers; the compiler (and its aliases) is only the last fallback.
+        # A failing or off-protocol other reviewer is a failed route, not a failed setup.
+        def identity(name):
+            return {k: models[name][k] for k in adapter_keys if k in models[name]}
         compiler = answered.pop('configuration', None)
-        router.routes['configuration_review'] = sorted(preferred, key=lambda name: name == compiler)
+        same = [n for n in preferred if compiler is not None and identity(n) == identity(compiler)]
+        routes = [names for names in ([n for n in preferred if n not in same], same) if names] if same else [preferred]
         try:
-            review = router.ask('configuration_review', review_prompt, cwd,
-                                task='Review model policy fidelity to user Markdown')
-        except (BudgetExceeded, ModelUnavailable) as exc:
-            temporary.unlink(missing_ok=True)
+            for names in routes:
+                router.routes['configuration_review'] = names
+                try:
+                    review = router.ask('configuration_review', review_prompt, cwd,
+                                        task='Review model policy fidelity to user Markdown')
+                    break
+                except BudgetExceeded:
+                    raise
+                except RuntimeError as exc:
+                    if names is routes[-1]:
+                        raise
+                    log('policy_review_fallback', models=names, error=type(exc).__name__)
+        except BaseException as exc:
+            temporary.unlink(missing_ok=True)  # never leave an unreviewed policy behind
             if isinstance(exc, BudgetExceeded):
                 raise ModelUnavailable(reason='model setup epoch exhausted; retry after a pause') from None
             raise
@@ -186,7 +200,7 @@ INVENTORY:
         reason = str(review.get('reason', 'review must explicitly approve with a boolean'))[:2000]
         reviewer = answered.pop('configuration_review', None)
         log('policy_review', attempt=attempt, approve=approved, reason=reason, compiled_by=compiler, reviewed_by=reviewer,
-            independent=compiler is not None and reviewer not in (None, compiler),
+            independent=None not in (compiler, reviewer) and identity(reviewer) != identity(compiler),
             policy_sha256=hashlib.sha256(json.dumps(pool, sort_keys=True).encode()).hexdigest())
         if not approved:
             temporary.unlink(missing_ok=True)

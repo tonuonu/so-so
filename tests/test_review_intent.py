@@ -70,6 +70,55 @@ class IntentCompilerReviewTests(unittest.TestCase):
         self.assertEqual(calls, [('tiny', False), ('tiny', True)])
         self.assertFalse(reviews[0]['independent'])
 
+    def test_off_protocol_independent_reviewer_falls_back_to_compiler(self):
+        calls = []
+        def infer(router, model, *args):
+            review = args[0].startswith('Independently review this compiled model policy')
+            calls.append((model['model'], review))
+            if review and model['model'] == 'capable':
+                return 'safe'  # e.g. a guard model that never answers in JSON
+            return json.dumps({'approve': True, 'reason': 'Faithful policy.'} if review else POLICY)
+        with tempfile.TemporaryDirectory() as folder, \
+                patch('soso.intent.configure_models', return_value=INVENTORY), \
+                patch('soso.intent.shutil.which', return_value=None), patch.object(Router, '_call', infer):
+            pool = resolve_pool(TEXT, Path(folder))
+            pools = Path(folder) / '.so-so/pools'
+            self.assertFalse(list(pools.glob('*.pending')))
+            reviews = [json.loads(line) for line in (pools / 'setup-events.jsonl').read_text().splitlines()]
+        self.assertEqual(pool['models']['worker']['model'], 'tiny')
+        self.assertEqual(calls, [('tiny', False)] + [('capable', True)] * 3 + [('tiny', True)])
+        self.assertFalse([r for r in reviews if r['event'] == 'policy_review'][0]['independent'])
+
+    def test_failed_policy_review_leaves_no_pending_policy(self):
+        def infer(router, model, *args):
+            return 'not json' if args[0].startswith('Independently review') else json.dumps(POLICY)
+        with tempfile.TemporaryDirectory() as folder, \
+                patch('soso.intent.configure_models', return_value=INVENTORY), \
+                patch('soso.intent.shutil.which', return_value=None), patch.object(Router, '_call', infer):
+            with self.assertRaises(RuntimeError):  # off-protocol reviewers, then the setup budget
+                resolve_pool(TEXT, Path(folder))
+            self.assertFalse(list((Path(folder) / '.so-so/pools').glob('*.pending')))
+
+    def test_alias_of_the_compiler_is_not_an_independent_reviewer(self):
+        # Two inventory keys for the same adapter identity are one model, whichever alias answers.
+        inventory = {'models': {'small': INVENTORY['models']['small'], 'small2': {**INVENTORY['models']['small'], 'timeout': 61}},
+                     'routes': {'worker': ['small', 'small2']}}
+        policy = {'aliases': {'worker': 'small'}, 'routes': {'worker': ['worker']}}
+        def infer(router, model, *args):
+            if not args[0].startswith('Independently review'):
+                return json.dumps(policy)
+            if model.get('timeout') != 61:
+                raise OSError('compiler alias unreachable')
+            return json.dumps({'approve': True, 'reason': 'Faithful policy.'})
+        with tempfile.TemporaryDirectory() as folder, \
+                patch('soso.intent.configure_models', return_value=inventory), \
+                patch('soso.intent.shutil.which', return_value=None), patch.object(Router, '_call', infer):
+            resolve_pool('Use tiny for everything.', Path(folder))
+            events = [json.loads(line) for line in (Path(folder) / '.so-so/pools/setup-events.jsonl').read_text().splitlines()]
+        review = [e for e in events if e['event'] == 'policy_review'][0]
+        self.assertEqual((review['compiled_by'], review['reviewed_by']), ('small', 'small2'))
+        self.assertFalse(review['independent'])
+
     def check_repair(self, settings):
         bad = {**POLICY, 'settings': settings}
         with tempfile.TemporaryDirectory() as folder, \
