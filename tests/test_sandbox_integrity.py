@@ -314,7 +314,37 @@ class SandboxIntegrityTests(RepoCase):
                   'echo 999 > value.txt')
         evaluation = self.hidden_score_run(change)
         self.assertFalse(evaluation['valid'])
-        self.assertIn('could not restore', self.events('experiment')[0]['error'])
+        self.assertIn('repair them there', self.events('experiment')[0]['error'])
+
+    def test_failed_restore_of_an_included_setting_leaves_repository_config_untouched(self):
+        # The user's include supplies core.eol; the worker changes it there and also writes info/attributes.
+        # No local override may be written into .git/config; the attributes are still restored.
+        included = self.common_dir() / 'user-include'
+        included.write_text('[core]\n\teol = lf\n')
+        git(self.root, 'config', 'include.path', str(included))
+        config = (self.common_dir() / 'config').read_bytes()
+        change = ('c="$(git rev-parse --git-common-dir)" && printf "[core]\n\teol = crlf\n" > "$c/user-include" && '
+                  'printf "*.bin binary\n" > "$c/info/attributes" && echo 5 > value.txt')
+        evaluation = self.hidden_score_run(change)
+        self.assertFalse(evaluation['valid'])
+        experiment = self.events('experiment')[0]
+        self.assertIn(str(included.resolve()), experiment['error'])
+        self.assertIn('core.eol', experiment['error'])
+        self.assertEqual((self.common_dir() / 'config').read_bytes(), config)
+        self.assertFalse((self.common_dir() / 'info/attributes').exists())
+        self.assertEqual(self.restored_keys(experiment), ['info/attributes'])
+        self.assertEqual([e['keys'] for e in self.events('repository_config_restored')], [['info/attributes']])
+
+    def test_commit_comparison_leaves_the_candidate_index_untouched(self):
+        # Later checks read the candidate's index (worker-set flags, status), so the comparison must use
+        # its own index: read-tree into the real one would drop flags and staged state.
+        from soso.engine import differs_from_commit
+        (self.root / 'value.txt').write_text('7')
+        git(self.root, 'add', 'value.txt')
+        git(self.root, 'update-index', '--assume-unchanged', 'evaluate.py')
+        before = (git(self.root, 'ls-files', '-v'), git(self.root, 'diff', '--cached', '--name-only'))
+        self.assertEqual(differs_from_commit(self.root, 'HEAD', set()), ['value.txt'])
+        self.assertEqual((git(self.root, 'ls-files', '-v'), git(self.root, 'diff', '--cached', '--name-only')), before)
 
     def test_user_setting_during_a_run_without_exec_is_left_alone(self):
         # Without command execution a worker cannot change config, so nothing is blamed or restored.
@@ -353,7 +383,7 @@ class SandboxIntegrityTests(RepoCase):
         run_id = sorted(p.name for p in self.common_dir().glob('soso/*-*') if p.is_dir())[-1]
         git(self.root, 'config', 'core.autocrlf', 'true')
         resumed = Run(self.root, {**config, 'allow_exec': True}, 'Improve', allow_exec=True, resume=run_id)
-        self.assertEqual(resumed.watched[0], [])
+        self.assertEqual(resumed.watched[0], ([], []))
         self.assertIsNone(resumed.watched[1])
 
     def test_failed_restore_ends_the_candidate_with_an_error(self):
@@ -376,7 +406,7 @@ class SandboxIntegrityTests(RepoCase):
             report = runner.run()
         experiment = report['rounds'][0]['experiments'][0]
         self.assertIn('could not restore', experiment.get('error', ''))
-        self.assertEqual(set(self.restored_keys(experiment)), {'local:core.autocrlf'})  # one entry per attempt
+        self.assertEqual(self.restored_keys(experiment), ['local:core.autocrlf'])  # logged once
 
     def parallel_run(self, plans, observe=None):
         # Candidates 0 and 1 run together; candidate 0 starts first and finishes after candidate 1's change.
