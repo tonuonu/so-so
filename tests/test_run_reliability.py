@@ -385,5 +385,34 @@ class FailureBackoffTests(unittest.TestCase):
             self.assertLess(restarted.cooldowns['m'], time.time() + 60)
 
 
+class LauncherFailureTests(unittest.TestCase):
+    def test_failed_goal_is_recorded_as_blocked(self):
+        from soso.launch import launch
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder).resolve() / 'project'
+            root.mkdir()
+            (root / 'INTENT.md').write_text('Build a calculator.')
+            pool = {'models': {'w': {'kind': 'command', 'command': ['false']}}, 'routes': {'worker': ['w']}}
+            secret = 'launcher-secret-value'
+            with patch.dict(os.environ, {'SOSO_TEST_SECRET': secret}), \
+                 patch('soso.launch.resolve_pool', return_value=pool), \
+                 patch('soso.launch.start_goal', side_effect=ValueError('invalid delivery baseline ' + secret)), \
+                 self.assertRaisesRegex(ValueError, 'invalid delivery baseline'):
+                launch(root)
+            active = json.loads((root / '.so-so/active.json').read_text())
+            entry = json.loads(next((root / '.so-so').rglob('entry.json')).read_text())
+            for record in (active, entry):
+                self.assertEqual(record['status'], 'blocked')
+                self.assertIn('invalid delivery baseline', record['reason'])
+                self.assertNotIn(secret, record['reason'])
+                self.assertIsNone(record['next_retry_at'])
+            done = {'goal_id': active['goal_id'], 'status': 'complete', 'worktree': str(root), 'report': str(root / 'r.json')}
+            with patch('soso.launch.start_goal', return_value=done):
+                launch(root)
+            active = json.loads((root / '.so-so/active.json').read_text())
+            self.assertEqual(active['status'], 'complete')
+            self.assertIsNone(active['reason'])
+
+
 if __name__ == '__main__':
     unittest.main()

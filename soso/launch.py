@@ -293,13 +293,18 @@ def launch(cwd: Path, goal: str | None = None, intent_file: str | None = None, r
                 options = {'ignore_project_config': True} if optimization_requested(project) else {}
                 result = start_goal(project, goal, models_path=entry.get('models_path'), resume_goal=entry['goal_id'], **options)
             entry.update(goal_id=result.get('goal_id'), status=result['status'], phase=entry['mode'],
-                         next_retry_at=result.get('next_retry_at'), report=result.get('report'), worktree=result.get('worktree'))
+                         next_retry_at=result.get('next_retry_at'), report=result.get('report'), worktree=result.get('worktree'),
+                         reason=result.get('reason'))
             _save(managed, folder, entry)
             return {**result, 'source': str(source), 'snapshot': str(project), 'excluded': excluded[:100], 'resume_id': entry['resume_id']}
         except KeyboardInterrupt:
             entry.update(status='interrupted', goal_id=entry.get('goal_id') or _goal_id(project))
             _save(managed, folder, entry)
             return entry
+        except Exception as exc:
+            entry.update(status='blocked', reason=redact(str(exc))[:2000], next_retry_at=None)
+            _save(managed, folder, entry)
+            raise
 
 
 def main(argv=None):
