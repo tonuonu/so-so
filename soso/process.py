@@ -104,6 +104,10 @@ def common_dir(root):
     return os.path.realpath(os.path.join(root, result["output"].strip()))
 
 
+class OutputLimit(RuntimeError):
+    """Git printed more than the runner reads: the output would be cut short."""
+
+
 def git(root, *args, ok=(0,), env=None, stdin=None):
     extra, env = env, dict(os.environ)
     if IDENTITY and ("scope" not in IDENTITY or common_dir(root) in IDENTITY["scope"]):
@@ -119,5 +123,5 @@ def git(root, *args, ok=(0,), env=None, stdin=None):
     if result["returncode"] not in ok or result["timed_out"]:
         raise RuntimeError("git " + args[0] + ": " + result["output"][-4000:])
     if result["truncated"]:
-        raise RuntimeError("Git output exceeds limit")
+        raise OutputLimit("Git output exceeds limit")
     return result["output"].strip()

@@ -197,20 +197,26 @@ class EvaluatedTreeTests(RepoCase):
         diff = self.reviewed_diff([{'tool': 'write', 'path': 'value.txt', 'content': '999'}])
         self.assertIn('+999', diff)
 
+    @contextlib.contextmanager
+    def old_git(self):
+        """Git before 2.40: --attr-source is unknown, and the runner knows it."""
+        real = engine.git
+        def old(root, *args, **kwargs):
+            if any(str(arg).startswith('--attr-source') for arg in args):
+                raise RuntimeError('git: unknown option')
+            return real(root, *args, **kwargs)
+        with patch('soso.engine.git', old), patch('soso.engine.supports_attr_source', return_value=False, create=True):
+            yield
+
     # A worker that sets diff.* is rejected and restored (see below); the user's own external diff
     # program or textconv driver, e.g. a structural diff tool, must not shape the reviewer's view either.
     def reviewed_diffs(self, steps):
         """The reviewer's diff with this Git, and with one that lacks --attr-source (before 2.40)."""
-        real = engine.git
-        def old_git(root, *args, **kwargs):
-            if any(str(arg).startswith('--attr-source') for arg in args):
-                raise RuntimeError('git: unknown option')
-            return real(root, *args, **kwargs)
         diffs = [self.reviewed_diff(steps)]
         for path in self.common_dir().glob('soso/*-*/result'):
             git(self.root, 'worktree', 'remove', '--force', str(path))  # back to the same base for the next run
         git(self.root, 'checkout', '-q', '--', 'value.txt')
-        with patch('soso.engine.git', old_git):
+        with self.old_git():
             diffs.append(self.reviewed_diff(steps))
         return diffs
 
@@ -476,8 +482,83 @@ class EvaluatedTreeTests(RepoCase):
         report = self.run_candidate([{'tool': 'run', 'argv': ['sh', '-c', f'printf "[core]\\n\\teol = crlf\\n" >> "{included}"']},
                                      {'tool': 'write', 'path': 'value.txt', 'content': '5'}])
         evidence = self.experiment(report)['config_restored']
+        self.assertTrue(evidence[0].pop('kept'))  # the replaced file itself is kept privately, see below
         self.assertEqual(evidence, [{'key': 'included:' + str(included.resolve()), 'restored': [], 'found': ['core.eol=crlf']}])
         self.assertNotIn('secret-token', json.dumps(report))
+
+    def test_include_whose_condition_never_holds_does_not_stop_runs(self):
+        # Git never reads it, so neither its syntax nor its size may fail a candidate.
+        broken = self.common_dir() / 'never-included'
+        for content in ('this is not [a config file\n', '# padding\n' * 120000):
+            broken.write_text(content)
+            git(self.root, 'config', 'includeIf.gitdir:/nonexistent/.path', str(broken))
+            for allow_exec in (False, True):
+                with self.subTest(size=len(content), allow_exec=allow_exec):
+                    self.assert_valid(self.run_candidate([{'tool': 'write', 'path': 'value.txt', 'content': '5'}],
+                                                         allow_exec=allow_exec))
+                    git(self.root, 'checkout', '-q', '--', 'value.txt')
+
+    def test_folder_put_in_place_of_an_included_file_is_moved_aside(self):
+        included = self.common_dir() / 'user-include'
+        included.write_text('[core]\n\teol = lf\n')
+        git(self.root, 'config', 'include.path', str(included))
+        report = self.run_candidate([{'tool': 'write', 'path': 'value.txt', 'content': '5'},
+                                     {'tool': 'run', 'argv': ['sh', '-c', f'rm "{included}" && mkdir "{included}" && echo x > "{included}/f"']}])
+        self.assertEqual(included.read_text(), '[core]\n\teol = lf\n')
+        kept = [Path(change['kept']) for change in self.experiment(report)['config_restored'] if change.get('kept')]
+        self.assertEqual([(path / 'f').read_text() for path in kept], ['x\n'])
+        self.assertEqual(self.experiment(report)['evaluation'], {'valid': False, 'reason': 'worker changed repository configuration'})
+
+    def test_every_failed_restore_blocks_new_runs(self):
+        # Not only the checked differences: any error while restoring leaves the marker behind.
+        for error in (RuntimeError, OSError):
+            with self.subTest(error=error.__name__):
+                real, calls = engine.replace_refs, []
+                def failing(path):
+                    calls.append(path)
+                    if len(calls) > 1:  # the baseline is recorded; the first restore fails
+                        raise error('cannot read refs')
+                    return real(path)
+                with patch('soso.engine.replace_refs', failing):
+                    report = self.run_candidate([{'tool': 'write', 'path': 'value.txt', 'content': '5'}])
+                    self.assertIn('could not restore' if error is OSError else 'cannot read refs',
+                                  self.experiment(report)['error'])
+                    marker = json.loads((self.common_dir() / 'soso/unrestored.json').read_text())
+                    self.assertEqual(marker['run'], report['run_id'])
+                    with self.assertRaisesRegex(ValueError, 'could not restore'):  # the refs still cannot be read
+                        Run(self.root, self.config(), 'Improve', allow_exec=True)
+                # Once they can, nothing differs from the record: the next run finds it repaired.
+                Run(self.root, self.config(), 'Improve', allow_exec=True)
+                self.assertFalse((self.common_dir() / 'soso/unrestored.json').exists())
+
+    def test_oversized_include_is_never_rewritten_from_a_partial_record(self):
+        included = self.common_dir() / 'user-include'
+        included.write_text('[core]\n\teol = lf\n' + '# padding\n' * 120000)
+        git(self.root, 'config', 'include.path', str(included))
+        report = self.run_candidate([{'tool': 'run', 'argv': ['sh', '-c', f'printf "[core]\\n\\teol = crlf\\n" >> "{included}"']},
+                                     {'tool': 'write', 'path': 'value.txt', 'content': '5'}])
+        self.assertTrue(included.read_text().endswith('eol = crlf\n'))  # left for the user, not cut short
+        self.assertIn('repair them there', self.experiment(report)['error'])
+
+    def test_replaced_included_file_is_kept_privately_as_evidence(self):
+        included = self.common_dir() / 'user-include'
+        included.write_text('# the user\'s settings\n')
+        git(self.root, 'config', 'include.path', str(included))
+        report = self.run_candidate([{'tool': 'run', 'argv': ['sh', '-c', self.PLANT]}])
+        kept = Path(self.experiment(report)['config_restored'][0]['kept'])
+        self.assertIn(self.STUB_FILTER, kept.read_text())
+        self.assertEqual(kept.stat().st_mode & 0o777, 0o600)
+        self.assertTrue(kept.is_relative_to(self.common_dir() / 'soso' / report['run_id']))
+
+    def test_runner_commits_ignore_repository_hooks(self):
+        # A pre-commit hook would refuse the commit, and a hook's side effects could feed the evaluator.
+        hook = self.common_dir() / 'hooks/pre-commit'
+        hook.parent.mkdir(exist_ok=True)
+        ran = self.common_dir() / 'hook-ran'
+        hook.write_text(f'#!/bin/sh\ntouch "{ran}"\nexit 1\n')
+        hook.chmod(0o755)
+        self.assert_valid(self.run_candidate([{'tool': 'write', 'path': 'value.txt', 'content': '5'}], allow_exec=False))
+        self.assertFalse(ran.exists())
 
     # Symlinks, the reviewer's attributes, untracked files and replace refs.
     def test_symlink_out_of_the_worktree_is_not_scored(self):
@@ -491,11 +572,11 @@ class EvaluatedTreeTests(RepoCase):
                                      {'tool': 'write', 'path': 'value.txt', 'content': '5'}])
         self.assertEqual(self.experiment(report)['evaluation'], {'valid': False, 'reason': 'symlinks must stay inside the worktree'})
 
-    def two_round_review(self):
+    def two_round_review(self, plans=None, allow_exec=False):
         # Round 1 adds a visible -diff attribute; round 2's change must still reach the reviewer as text.
-        plans = iter([[{'tool': 'write', 'path': '.gitattributes', 'content': 'value.txt -diff\n'},
-                       {'tool': 'write', 'path': 'value.txt', 'content': '5'}],
-                      [{'tool': 'write', 'path': 'value.txt', 'content': '999'}]])
+        plans = iter(plans or [[{'tool': 'write', 'path': '.gitattributes', 'content': 'value.txt -diff\n'},
+                                {'tool': 'write', 'path': 'value.txt', 'content': '5'}],
+                               [{'tool': 'write', 'path': 'value.txt', 'content': '999'}]])
         steps, prompts = iter(()), []
         def answer(router, role, prompt, cwd, attempt=0, task=None):
             nonlocal steps
@@ -509,10 +590,41 @@ class EvaluatedTreeTests(RepoCase):
                 step = next(steps)
             return step
         runner = Run(self.root, self.config(parallel=1, rounds=2, patience=2,
-                                            routes={'worker': ['test'], 'reviewer': ['test']}), 'Improve', allow_exec=False)
+                                            routes={'worker': ['test'], 'reviewer': ['test']}), 'Improve', allow_exec=allow_exec)
         with patch.object(Router, 'ask', answer), contextlib.redirect_stdout(io.StringIO()):
             report = runner.run()
         return report, prompts
+
+    def test_diff_over_the_output_limit_is_withheld_and_not_approved(self):
+        # The full diff exceeds what the runner reads; it must not fall back to the attributes' view.
+        big = ("python3 -c \"open('big.py', 'w').write('import os\\n' + 'x = 1  # padding\\n' * 150000 + "
+               "'os.system(\\'true\\')\\n')\"")
+        report, prompts = self.two_round_review([
+            [{'tool': 'write', 'path': '.gitattributes', 'content': 'big.py -diff\n'},
+             {'tool': 'write', 'path': 'value.txt', 'content': '5'}],
+            [{'tool': 'run', 'argv': ['sh', '-c', big]}, {'tool': 'write', 'path': 'value.txt', 'content': '999'}]],
+            allow_exec=True)
+        self.assertEqual(len(prompts), 1)
+        self.assertFalse(report['rounds'][1]['experiments'][0]['review']['approve'])
+        self.assertEqual(report['best'], 5)
+
+    def test_old_git_review_sees_through_quoted_tabbed_and_unprefixed_names(self):
+        # Without --attr-source, names come from --numstat -z, not from parsing patch text.
+        for name, setting in (('mé.py', None), ('tab\there.py', None), ('plain.py', 'diff.noprefix')):
+            with self.subTest(name=name):
+                if setting:
+                    git(self.root, 'config', setting, 'true')
+                quoted = '"' + name.replace('\t', '\\t') + '"' if '\t' in name else name
+                (self.root / '.gitattributes').write_text(quoted + ' -diff\n')
+                (self.root / name).write_text('x = 0\n')
+                self.commit('attributes', '.gitattributes', name)
+                base = git(self.root, 'rev-parse', 'HEAD')
+                (self.root / name).write_text('x = 999\n')
+                self.commit('candidate', name)
+                with self.old_git():
+                    self.assertIsNone(engine.review_diff(self.root, base, 'HEAD'))
+                if setting:
+                    git(self.root, 'config', '--unset', setting)
 
     def test_attributes_accepted_earlier_do_not_hide_a_later_change_from_the_reviewer(self):
         report, prompts = self.two_round_review()
@@ -521,12 +633,7 @@ class EvaluatedTreeTests(RepoCase):
         self.assertEqual(report['best'], 999)
 
     def test_without_attr_source_a_text_file_shown_as_binary_is_not_approved(self):
-        real = engine.git
-        def old_git(root, *args, **kwargs):
-            if any(str(arg).startswith('--attr-source') for arg in args):
-                raise RuntimeError('git: unknown option')
-            return real(root, *args, **kwargs)
-        with patch('soso.engine.git', old_git):
+        with self.old_git():
             report, prompts = self.two_round_review()
         self.assertEqual(len(prompts), 1)  # the second candidate never reaches a model with a blind diff
         self.assertEqual(report['rounds'][1]['experiments'][0]['review']['approve'], False)
@@ -540,16 +647,11 @@ class EvaluatedTreeTests(RepoCase):
         self.commit('candidate', 'value.txt')
         commit = git(self.root, 'rev-parse', 'HEAD')
         git(self.root, 'checkout', '-q', '--detach', base)
-        real = engine.git
-        def old_git(root, *args, **kwargs):
-            if any(str(arg).startswith('--attr-source') for arg in args):
-                raise RuntimeError('git: unknown option')
-            return real(root, *args, **kwargs)
         asked = []
         epoch = SimpleNamespace(integration=self.root, router=SimpleNamespace(ask=lambda *a, **k: asked.append(a)),
                                 intent='Improve', contract={}, report={'baseline': {}})
         candidate = {'commit': commit, 'evaluation': {}}
-        with patch('soso.engine.git', old_git):
+        with self.old_git():
             self.assertFalse(DeliveryEpoch.review(epoch, candidate))
         self.assertEqual(asked, [])
         self.assertFalse(candidate['review']['approve'])
