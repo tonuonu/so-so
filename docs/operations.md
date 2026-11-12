@@ -150,12 +150,17 @@ is not clean enough to start a run, even if you set it to `no`), and run without
 2.46 or newer). The reviewer's diff is built with `--no-ext-diff --no-textconv`
 and with attributes from an empty tree (`--attr-source`, where a probe shows Git accepts it), so
 no `-diff`, `binary` or diff driver in the repository's `.gitattributes` hides a
-change. A candidate is not sent to the reviewer, and is not approved, when a file
-that is text on either side (no NUL bytes) still shows only as binary (with an
-older Git, through your own `info/attributes` or `core.attributesFile`, or because
-the candidate added a NUL byte), or when its diff or such a file is larger than the
-2 MB the runner reads: a diff is never shown cut short, so such a candidate can
-never be accepted. A new file that holds a NUL byte from the start counts as binary. Do not rely on hooks as your evaluator, and
+change. A file Git still shows only as binary (with an older Git, through your own
+`info/attributes` or `core.attributesFile`, or because a NUL byte was added or
+removed) is shown again as text when either side is text as Git judges it: no NUL
+byte in its first 8000 bytes, and not empty. Both sides are read by blob id, never
+through the file name, so binary files of any size stay approvable and are never
+read whole. A diff the reviewer would receive larger than the 2 MB the runner reads
+is never shown cut short: the candidate is not sent to the reviewer and not
+approved, with the reason "the diff exceeds 2 MB; split the change into smaller
+ones"; a side that cannot be read is withheld the same way, with its own reason. In
+persistent delivery such a reason goes back to the worker as repair feedback. Do
+not rely on hooks as your evaluator, and
 expect no fsmonitor speed-up in them.
 
 Not covered: global, system and XDG Git configuration, the attributes file that
