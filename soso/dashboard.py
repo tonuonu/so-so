@@ -384,7 +384,10 @@ class Dashboard:
                         mime = {'': 'text/html; charset=utf-8', 'dashboard.js': 'text/javascript', 'dashboard.css': 'text/css'}[route]
                     elif route.startswith('asset/'):
                         relative = route[6:]
-                        if relative not in owner.listed_images():
+                        candidate = owner.monitor.root / relative
+                        # The inventory may be up to IMAGE_SECONDS old: recheck that no link was swapped in since.
+                        if relative not in owner.listed_images() or any(
+                                p.is_symlink() for p in [candidate, *candidate.parents] if p.is_relative_to(owner.monitor.root)):
                             raise ValueError('unknown asset')
                         path = owner.monitor.path(owner.monitor.root / relative)
                         data = path.read_bytes()
@@ -402,7 +405,7 @@ class Dashboard:
                     self.send_header('Content-Security-Policy', "default-src 'self'; object-src 'none'; frame-ancestors 'none'; base-uri 'none'")
                     self.end_headers()
                     self.wfile.write(data)
-                except (BrokenPipeError, ConnectionResetError):
+                except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError):
                     return  # the client closed the connection; nothing to log or answer
                 except Exception as exc:
                     # Unknown routes and assets are 404; anything else is a monitor defect, logged once per reason.

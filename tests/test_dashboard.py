@@ -195,6 +195,17 @@ class DashboardTests(unittest.TestCase):
                     with urllib.request.urlopen(d.url+'asset/'+path) as r:self.assertEqual(r.read(),b'listed image')
                 self.assertEqual(snapshot.call_count,2)
 
+    def test_listed_image_replaced_by_symlink_is_not_served_from_cache(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root=Path(tmp);managed,_,report=self.fixture(root)
+            result=report.parent/'result';result.mkdir();(result/'screen.png').write_bytes(b'listed image')
+            (managed/'secret.json').write_text('{"token":"x"}')
+            with Dashboard(root) as d:
+                with urllib.request.urlopen(d.url+'api') as r:path=json.load(r)['images'][0]['path']
+                (result/'screen.png').unlink();(result/'screen.png').symlink_to(managed/'secret.json')
+                with self.assertRaises(urllib.error.HTTPError) as caught:urllib.request.urlopen(d.url+'asset/'+path)
+                self.assertEqual(caught.exception.code,404);caught.exception.close()
+
     def test_client_abort_is_not_logged_or_answered(self):
         import contextlib,io
         with tempfile.TemporaryDirectory() as tmp:
@@ -202,7 +213,7 @@ class DashboardTests(unittest.TestCase):
             with Dashboard(root) as d:
                 handler=d.server.RequestHandlerClass
                 for route in ('api',''):
-                    for error in (BrokenPipeError,ConnectionResetError):
+                    for error in (BrokenPipeError,ConnectionResetError,ConnectionAbortedError):
                         with self.subTest(route=route,error=error.__name__), contextlib.redirect_stderr(io.StringIO()) as errors, \
                                 patch.object(handler,'end_headers',side_effect=error), patch.object(handler,'send_error') as send_error:
                             with self.assertRaises(Exception):urllib.request.urlopen(d.url+route)
