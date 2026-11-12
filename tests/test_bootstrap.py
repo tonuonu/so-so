@@ -155,6 +155,23 @@ class BootstrapTests(unittest.TestCase):
                 self.assertFalse((cwd / '.so-so').exists())
                 self.assertFalse(log.exists())
 
+    def test_help_never_runs_a_tool_from_an_unchecked_state_directory(self):
+        # Help skips the .so-so ownership check, so it must not execute anything stored there.
+        with tempfile.TemporaryDirectory() as folder:
+            root, env, log = self.shell_fixture(folder)
+            (Path(folder) / 'bin/python3').unlink()
+            cwd = Path(folder) / 'elsewhere'
+            (cwd / '.so-so/tools').mkdir(parents=True)
+            marker = Path(folder) / 'uv-ran'
+            uv = cwd / '.so-so/tools/uv'
+            uv.write_text(f'#!/bin/sh\n: > {marker}\n')
+            uv.chmod(0o755)
+            result = subprocess.run([str(root / 'so-so'), '--help'], cwd=cwd, env=env,
+                                    capture_output=True, text=True, timeout=10)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertIn('usage: so-so', result.stdout)
+            self.assertFalse(marker.exists())
+
     def test_resume_of_bundled_assignment_prepares_its_check_tools(self):
         with tempfile.TemporaryDirectory() as folder:
             root, env, log = self.shell_fixture(folder)
