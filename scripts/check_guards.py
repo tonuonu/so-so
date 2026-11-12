@@ -43,6 +43,9 @@ GUARDS = [
      ['test_delivery.DeliveryTests.test_prepared_contract_evaluator_is_verified_before_recovery']),
     ('soso/dashboard.py', "raise ValueError('unknown asset')", 'pass',
      ['test_dashboard.DashboardTests.test_http_requires_token_and_serves_no_arbitrary_files']),
+    ('soso/models.py', 'text = text.replace(json.dumps(value)[1:-1], "[REDACTED]").replace(value, "[REDACTED]")',
+     'text = text.replace(value, "[REDACTED]")',
+     ['test_delivery.DeliveryTests.test_prompt_redacts_secret_escaped_by_embedded_json']),
 ]
 
 

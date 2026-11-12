@@ -743,6 +743,19 @@ print(json.dumps({'score':100 if ok else 0,'complete':ok}))
             router.ask('worker', 'value=' + secret, self.repo)
         self.assertNotIn(secret, call.call_args.args[1])
 
+    def test_prompt_redacts_secret_escaped_by_embedded_json(self):
+        # Prompts embed json.dumps'd data, where a secret with a quote or backslash appears escaped.
+        config = {'models': {'test': {'kind': 'command'}}, 'routes': {'worker': ['test']}}
+        for secret in ('quote"secret-value', 'back\\slash-secret', '\\edge-secret\\'):
+            with self.subTest(secret=secret):
+                router = Router(config, Budget(1, 5), lambda *a, **k: None)
+                with patch.dict(os.environ, {'TEST_API_KEY': secret}), \
+                        patch.object(router, '_call', return_value='{"tool":"done"}') as call:
+                    router.ask('worker', 'data=' + json.dumps({'value': secret}), self.repo)
+                sent = call.call_args.args[1]
+                self.assertNotIn(json.dumps(secret)[1:-1], sent)
+                self.assertEqual(sent, 'data={"value": "[REDACTED]"}')
+
     def test_interrupted_epoch_recovers_accepted_head(self):
         first = self.start()
         state_path = Path(first['report'])
