@@ -83,7 +83,8 @@ adds or changes a symlink while `core.symlinks` is false (the checkout would
 write it as a plain file), and when it adds or changes a symlink whose target is
 absolute or resolves outside the worktree. In persistent delivery the goal
 worktree is checked out again the same way before each epoch's baseline, because
-`merge --ff-only` rewrites only the files that changed.
+`merge --ff-only` rewrites only the files that changed; when an interrupt cuts that
+checkout short, resuming the goal finishes it.
 
 With command execution, settings that change how content is staged or checked
 out (`filter.*`, `core.attributesFile`, `core.autocrlf`, `core.eol`,
@@ -96,7 +97,9 @@ includes expanded from the repository config and each worktree's
 and the bytes of every file the repository config names with `include.path` or
 `includeIf.*.path` (followed transitively, whatever the condition, at most 64
 files of 1 MiB, a symlinked one at its target) are recorded when a run's first
-candidate worktree is created. The record is kept, owner-readable only, in the
+candidate worktree is created. `info/` files are also recorded at their target
+when they are symlinks; a device such as `/dev/null` is not recorded, since
+nothing could be put back into it. The record is kept, owner-readable only, in the
 run folder for resume.
 
 After each worker they are restored, under the run lock that also covers staging
@@ -104,9 +107,11 @@ and the commit, and again before the checkout. Each restore is logged as
 `repository_config_restored` with the key, file or ref names, and the old and
 new values are kept in the candidate's record. An included file gets its
 recorded bytes back, through a new file renamed into place with the old file's
-mode, only when the watched values it supplies changed; its other content is
-neither logged nor reverted, and a FIFO, symlink or other non-file put in its
-place is replaced at once. A value that comes from an included file is never
+mode, only when the watched values that included files supply changed; the
+evidence lists those values, never the file's other content. Every recorded
+include whose bytes differ is then put back, including unrelated edits in it,
+while an include edit that changes no watched value is kept. A FIFO, symlink or
+other non-file put in place of a recorded include is replaced at once. A value that comes from an included file is never
 overridden in `.git/config`. Replace refs the worker added or changed are
 removed or put back. This includes watched changes you make yourself during a
 run with command execution enabled; without it a worker cannot change config,
@@ -118,7 +123,9 @@ common Git directory makes every new run, including the next delivery epoch,
 refuse to start until the settings again match that run's record. They are
 compared in a temporary detached worktree, as candidates read them, so
 `includeIf "onbranch:..."` and `"gitdir:..."` conditions hold as they did when
-recorded. Delete that file to keep the current settings instead.
+recorded; a run killed during that check can leave a `soso/probe-*` worktree,
+which `git worktree remove --force` removes. Delete that file to keep the current
+settings instead.
 
 Before the checkout, the worker's files are also compared with the commit through
 a fresh index, so a stat cache left by a worker's own `git add` cannot hide a
@@ -131,17 +138,22 @@ leaves files inside a submodule directory, or creates an entry named `.git`
 below the worktree root. Worker tools cannot write inside a submodule directory.
 Runner-managed Git commands run without hooks or an fsmonitor hook
 (`core.hooksPath=/dev/null`, `core.fsmonitor=false`), list untracked files
-whatever `status.showUntrackedFiles` says, and run without replace refs
+whatever `status.showUntrackedFiles` says (so a repository with untracked files
+is not clean enough to start a run, even if you set it to `no`), and run without replace refs
 (`GIT_NO_REPLACE_OBJECTS=1`) and without advice messages (`GIT_ADVICE=0`, Git
 2.46 or newer). The reviewer's diff is built with `--no-ext-diff --no-textconv`
 and with attributes from an empty tree (`--attr-source`, Git 2.40 or newer), so
-no `-diff`, `binary` or diff driver in the repository hides a change; with an
+no `-diff`, `binary` or diff driver in the repository's `.gitattributes` hides a
+change. Your own `info/attributes` and the file `core.attributesFile` names still
+apply there, so a `-diff` you set in them still shows those files to the reviewer
+only as binary. With an
 older Git, a candidate whose text file still shows only as binary is not sent to
 the reviewer and is not approved. Do not rely on hooks as your evaluator, and
 expect no fsmonitor speed-up in them.
 
-Not covered: global, system and XDG Git configuration and `GIT_CONFIG_*`
-variables are neither watched nor restored, so a worker with command execution
+Not covered: global, system and XDG Git configuration, the attributes file that
+`core.attributesFile` (or the XDG default) names, and `GIT_CONFIG_*` variables
+are neither watched nor restored, so a worker with command execution
 that edits your global config (for example a smudge filter) can still change
 what is checked out, here and in your other repositories. Likewise, a process a
 worker leaves running detached from its process group can still write into the
