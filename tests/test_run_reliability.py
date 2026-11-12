@@ -35,6 +35,14 @@ class RepoCase(unittest.TestCase):
 
 
 class RedactionTests(RepoCase):
+    def test_secret_in_text_built_without_ascii_escaping_is_redacted(self):
+        from soso.models import redact
+        secret = 'pässwörd"value'  # worker prompts embed JSON built with ensure_ascii=False
+        with patch.dict(os.environ, {'SOSO_TEST_SECRET': secret}):
+            text = redact(json.dumps({'note': 'uses ' + secret}, ensure_ascii=False))
+        self.assertNotIn('pässwörd', text)
+        self.assertEqual(json.loads(text), {'note': 'uses [REDACTED]'})
+
     def test_secret_needing_json_escape_is_redacted_in_events(self):
         secret = 'ab"cd\\ef-secret'
         with patch.dict(os.environ, {'SOSO_TEST_SECRET': secret}):
