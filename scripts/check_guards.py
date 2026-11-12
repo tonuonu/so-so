@@ -22,6 +22,8 @@ GUARDS = [
      ['test_core.ProcessTests.test_descendant_cleanup']),
     ('soso/engine.py', 'git(path, "clean", "-ffdqX")', 'pass',
      ['test_sandbox_integrity.SandboxIntegrityTests.test_candidate_is_evaluated_without_ignored_files']),
+    ('soso/engine.py', ' and "review" not in x]', ']',
+     ['test_run_reliability.IncompleteRoundTests.test_rejected_candidate_is_not_reviewed_again_on_resume']),
     ('soso/engine.py', 'raise ValueError("worker changed Git history")', 'pass',
      ['test_guards.GuardTests.test_worker_cannot_commit_candidate_history']),
     ('soso/engine.py', 'raise ValueError("protected files cannot be symlinks")', 'pass',
@@ -44,8 +46,12 @@ GUARDS = [
 ]
 
 
+# An inherited GIT_DIR or GIT_WORK_TREE would point the snapshot's Git commands at a real repository.
+ENV = {**{k: v for k, v in os.environ.items() if not k.startswith('GIT_')}, 'PYTHONDONTWRITEBYTECODE': '1'}
+
+
 def tests_fail(root, tests):
-    env = {**os.environ, 'PYTHONPATH': os.pathsep.join([str(root / 'tests'), str(root)])}
+    env = {**ENV, 'PYTHONPATH': os.pathsep.join([str(root / 'tests'), str(root)])}
     result = subprocess.run([sys.executable, '-m', 'unittest', *tests], cwd=root, env=env,
                             capture_output=True, text=True, timeout=900)
     return result.returncode != 0, result.stderr[-3000:]
@@ -57,7 +63,7 @@ def snapshot(source, root):
     for argv in (['init', '-q', '-b', 'main'], ['add', '-A'],
                  ['-c', 'user.name=check', '-c', 'user.email=check@example.invalid', '-c', 'commit.gpgsign=false',
                   '-c', 'core.hooksPath=/dev/null', 'commit', '-q', '-m', 'snapshot']):
-        subprocess.run(['git', *argv], cwd=root, check=True, capture_output=True)
+        subprocess.run(['git', *argv], cwd=root, env=ENV, check=True, capture_output=True)
 
 
 def main():
@@ -75,9 +81,18 @@ def main():
             if original.count(guard) != 1:
                 problems.append(f'{file}: guard text must occur exactly once: {guard}')
                 continue
-            path.write_text(original.replace(guard, disabled))
+            mutant = original.replace(guard, disabled)
+            try:
+                compile(mutant, file, 'exec')  # a syntax error would fail the tests for the wrong reason
+            except SyntaxError as exc:
+                problems.append(f'{file}: disabled guard does not compile ({exc.msg}): {guard.strip()}')
+                continue
+            path.write_text(mutant)
             try:
                 failed, _ = tests_fail(root, tests)
+            except subprocess.TimeoutExpired:
+                problems.append(f'{file}: tests timed out with this guard disabled: {guard.strip()}')
+                continue
             finally:
                 path.write_text(original)
             print(('red   ' if failed else 'GREEN ') + file + ': ' + guard.strip(), flush=True)
