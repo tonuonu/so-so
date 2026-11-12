@@ -8,6 +8,12 @@ from .skills import prelude, read_skill
 from .models import BudgetExceeded, redact
 
 
+def gitlinks(root):
+    """Gitlink (submodule) paths of HEAD; ls-tree -d lists only trees and gitlinks, so it stays small."""
+    entries = git(root, "ls-tree", "-r", "-d", "-z", "HEAD").split("\0")
+    return [entry.split("\t", 1)[1] for entry in entries if entry.startswith("160000 ")]
+
+
 class Workspace:
     def __init__(self, root, protected, allow_exec=False, timeout=30, verification=None, budget=None):
         self.root = Path(root).resolve()
@@ -40,8 +46,7 @@ class Workspace:
     def in_gitlink(self, name):
         """Git neither records nor cleans files under a gitlink (submodule) directory."""
         if self.gitlinks is None:
-            entries = git(self.root, "ls-tree", "-r", "-d", "-z", "HEAD").split("\0")  # trees and gitlinks only
-            self.gitlinks = [e.split("\t", 1)[1].casefold() for e in entries if e.startswith("160000 ")]
+            self.gitlinks = [link.casefold() for link in gitlinks(self.root)]
         name = PurePosixPath(name).as_posix().casefold()
         return any(name == link or name.startswith(link + "/") for link in self.gitlinks)
 

@@ -14,7 +14,7 @@ import time
 import uuid
 from .models import Budget, BudgetExceeded, ModelProtocolError, ModelUnavailable, Router, redact_value
 from .process import execute, git
-from .workspace import Workspace, worker
+from .workspace import Workspace, gitlinks, worker
 from .skills import prelude
 from .architecture import planning_reply
 
@@ -470,6 +470,9 @@ class Run:
             # skip-worktree ("S") and assume-unchanged (lowercase) entries keep on-disk edits out of the commit.
             elif any(x[:1] == "S" or x[:1].islower() for x in git(path, "ls-files", "-v", "-z").split("\0")):
                 result["evaluation"] = {"valid": False, "reason": "index flags hide worktree changes"}
+            # Git neither records nor cleans files in a submodule directory; fresh worktrees leave it empty.
+            elif any(any((path / link).iterdir()) for link in gitlinks(path) if (path / link).is_dir()):
+                result["evaluation"] = {"valid": False, "reason": "files inside a submodule directory"}
             else:
                 result["evaluation"] = evaluate(path, self.config, self.budget)
             if (git(path, "rev-parse", "HEAD") != result["commit"]

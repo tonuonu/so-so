@@ -65,8 +65,8 @@ Source must be clean. Worktrees and configuration are pinned to committed source
 ignored caches are not copied into candidate worktrees. Submodule and large-data
 setup are the caller's responsibility; a candidate that adds or changes a gitlink
 (nested repository or submodule), or hides on-disk edits with skip-worktree or
-assume-unchanged index flags, is rejected before evaluation, and worker tools
-cannot write inside a submodule directory. Git hooks are disabled for runner-managed
+assume-unchanged index flags, or leaves files inside a submodule directory, is
+rejected before evaluation; worker tools cannot write inside a submodule directory. Git hooks are disabled for runner-managed
 Git commands; do not rely on hooks as your evaluator.
 
 A run retains its result branch/worktree and candidate commit refs. Successful

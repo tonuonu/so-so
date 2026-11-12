@@ -124,6 +124,26 @@ class SandboxIntegrityTests(RepoCase):
             with self.subTest(name=name), self.assertRaisesRegex(PermissionError, 'submodule'):
                 ws.tool({'tool': 'write', 'path': name, 'content': '1'})
 
+    def test_candidate_with_files_inside_a_submodule_directory_is_invalid(self):
+        # Command execution bypasses the write tool; a fresh worktree leaves submodule directories empty.
+        self.commit_submodule()
+        code = ("import json\nfrom pathlib import Path\nbonus=Path('sub/bonus.txt')\n"
+                "print(json.dumps({'score':int(Path('value.txt').read_text())+(int(bonus.read_text()) if bonus.exists() else 0)}))\n")
+        steps = iter([{'tool': 'run', 'argv': ['sh', '-c', 'echo 999 > sub/bonus.txt']},
+                      {'tool': 'write', 'path': 'notes.txt', 'content': 'tracked change'},
+                      {'tool': 'done', 'summary': 'done'}])
+        def answer(router, role, prompt, cwd, attempt=0, task=None):
+            router.budget.claim()
+            if role == 'reviewer': return {'approve': True}
+            return next(steps)
+        runner = Run(self.root, self.config(evaluate=[sys.executable, '-c', code], parallel=1, rounds=1), 'Improve',
+                     allow_exec=True)
+        with patch.object(Router, 'ask', answer), contextlib.redirect_stdout(io.StringIO()):
+            report = runner.run()
+        experiment = report['rounds'][0]['experiments'][0]
+        self.assertEqual(experiment['evaluation'], {'valid': False, 'reason': 'files inside a submodule directory'})
+        self.assertEqual(report['best'], 0)
+
     def test_protection_ignores_case(self):
         # Case-insensitive filesystems (macOS default) map EVALUATE.PY onto evaluate.py.
         ws = Workspace(self.root, ['evaluate.py', 'tests/*'])
