@@ -153,6 +153,29 @@ class IncompleteRoundTests(RepoCase):
         self.assertEqual(resumed['status'], 'round_limit')
         self.assertEqual(git(runner.integration, 'show', 'HEAD:value.txt'), '1')
 
+    def test_rejected_candidate_is_not_reviewed_again_on_resume(self):
+        from soso.models import ModelUnavailable
+        config = self.config(parallel=2, rounds=1, routes={'worker': ['test'], 'reviewer': ['test']})
+        def first(router, role, prompt, cwd, attempt=0, task=None):
+            if role == 'reviewer':
+                return {'approve': False, 'reason': 'rejected'}
+            return self.answer(False)(router, role, prompt, cwd, attempt, task)
+        def resumed(router, role, prompt, cwd, attempt=0, task=None):
+            if role == 'reviewer':
+                return {'approve': True}  # a later, more lenient review must not revive the rejection
+            raise ModelUnavailable(None, 'workers offline')
+        runner = Run(self.root, config, 'Improve')
+        with patch('soso.models.Router.ask', first), contextlib.redirect_stdout(io.StringIO()):
+            report = runner.run()
+        self.assertEqual(report['rounds'][0]['outcome'], 'incomplete')
+        import time as clock
+        later = clock.time() + 60
+        with patch('soso.models.Router.ask', resumed), patch('soso.engine.time.time', side_effect=lambda: later), \
+             contextlib.redirect_stdout(io.StringIO()):
+            report = Run(self.root, config, 'Improve', resume=runner.run_id).run()
+        self.assertEqual(report['best'], 0)
+        self.assertEqual(git(runner.integration, 'show', 'HEAD:value.txt'), '0')
+
     def test_interrupted_round_keeps_its_record(self):
         runner = Run(self.root, self.config(parallel=2), 'Improve')
         with patch('soso.engine.concurrent.futures.as_completed', side_effect=KeyboardInterrupt):
@@ -218,6 +241,32 @@ class OptimizationEpochTests(unittest.TestCase):
         self.assertIn('before completing a round', result['reason'])
         self.assertEqual(len(result['epochs']), 3)
         self.assertTrue(all(e['status'] == 'budget_exhausted' for e in result['epochs']))
+
+    def test_relaunch_after_stall_block_gets_a_full_stall_allowance(self):
+        self.config['max_calls'] = 1
+        self.assertEqual(self.launch()['status'], 'blocked')
+        result = self.launch()
+        self.assertEqual(result['status'], 'blocked')
+        self.assertEqual(len(result['epochs']), 6)
+
+    def test_provider_outage_epochs_do_not_count_as_stalled(self):
+        # Each epoch first waits on the provider, then its wall time runs out; then the provider is back.
+        outage = [{'status': 'waiting', 'reason': 'provider down', 'rounds': []},
+                  {'status': 'budget_exhausted', 'reason': 'wall time exhausted', 'rounds': []}]
+        steps = outage * 4 + [{'status': 'plateau', 'plateau': 1, 'rounds': [{'outcome': 'no_improvement'}]}]
+        reports = Path(self.tmp.name)
+        class ScriptedRun:
+            def __init__(run, root, config, intent, allow_exec=False, resume=None):
+                run.run_id = resume or 'epoch%d' % len(list(reports.glob('epoch*.json')))
+                run.report_path = reports / (run.run_id + '.json')
+                run.report_path.write_text('{}')
+                run.integration = Path(root)
+            def run(run):
+                return steps.pop(0)
+        with patch('soso.optimize.Run', ScriptedRun):
+            result = self.launch()
+        self.assertEqual([e['status'] for e in result['epochs']], ['budget_exhausted'] * 4 + ['plateau'])
+        self.assertEqual(result['status'], 'optimized', result.get('reason'))
 
     def test_invalid_baseline_epoch_is_not_resumed(self):
         self.gate.unlink()
@@ -306,10 +355,10 @@ class DeterministicRouteFailureTests(unittest.TestCase):
         with patch('soso.models.execute', return_value=self.envelope({'status': 522})), self.assertRaises(ModelUnavailable):
             router.ask('worker', 'prompt', Path.cwd())
 
-    def test_unusable_success_body_is_bounded_protocol_failure(self):
+    def html_proxy(self):
+        """Loopback server answering every request with HTTP 200 and an HTML page."""
         import http.server
         import threading
-        from soso.models import ModelProtocolError
         class Handler(http.server.BaseHTTPRequestHandler):
             def do_POST(self):
                 self.rfile.read(int(self.headers['Content-Length']))
@@ -323,15 +372,28 @@ class DeterministicRouteFailureTests(unittest.TestCase):
         server = http.server.ThreadingHTTPServer(('127.0.0.1', 0), Handler)
         thread = threading.Thread(target=server.serve_forever, daemon=True)
         thread.start()
-        try:
-            router = self.router({'kind': 'openai', 'url': f'http://127.0.0.1:{server.server_port}/v1', 'model': 'x'})
-            with self.assertRaises(ModelProtocolError):
-                router.ask('worker', 'prompt', Path.cwd())
-            self.assertEqual(router.budget.calls, 3)
-        finally:
+        def stop():
             server.shutdown()
             server.server_close()
             thread.join()
+        self.addCleanup(stop)
+        return {'kind': 'openai', 'url': f'http://127.0.0.1:{server.server_port}/v1', 'model': 'x'}
+
+    def test_unusable_success_body_is_bounded_terminal_failure(self):
+        from soso.models import ModelUnavailable
+        router = self.router(self.html_proxy())
+        with self.assertRaises(RuntimeError) as raised:
+            router.ask('worker', 'prompt', Path.cwd())
+        self.assertNotIsInstance(raised.exception, ModelUnavailable)
+        self.assertIn('all routes failed', str(raised.exception))
+        self.assertEqual(router.budget.calls, 3)
+
+    def test_unusable_success_body_falls_back_to_next_route(self):
+        from soso.models import Budget, Router
+        healthy = {'kind': 'command', 'command': ['sh', '-c', 'cat >/dev/null; echo \'{"tool":"done"}\'']}
+        router = Router({'delivery': True, 'models': {'proxy': self.html_proxy(), 'healthy': healthy},
+                         'routes': {'worker': ['proxy', 'healthy']}}, Budget(10, 30), lambda *a, **k: None)
+        self.assertEqual(router.ask('worker', 'prompt', Path.cwd()), {'tool': 'done'})
 
     def test_delivery_blocks_with_reason_instead_of_waiting_forever(self):
         from soso.delivery import start_goal
@@ -418,7 +480,8 @@ class LauncherFailureTests(unittest.TestCase):
                 self.assertNotIn(secret, record['reason'])
                 self.assertIsNone(record['next_retry_at'])
             done = {'goal_id': active['goal_id'], 'status': 'complete', 'worktree': str(root), 'report': str(root / 'r.json')}
-            with patch('soso.launch.start_goal', return_value=done):
+            # Model discovery stays stubbed: an unpatched lookup waits forever on a host with no models.
+            with patch('soso.launch.resolve_pool', return_value=pool), patch('soso.launch.start_goal', return_value=done):
                 launch(root)
             active = json.loads((root / '.so-so/active.json').read_text())
             self.assertEqual(active['status'], 'complete')

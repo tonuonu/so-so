@@ -56,6 +56,8 @@ def optimize_project(project: Path, intent: str, folder: Path, models_path=None,
             total = previous.get('plateau', 0) + (0 if any(r.get('accepted') for r in previous.get('rounds', [])) else total)
             epoch['plateau'] = total
         state['plateau'] = total
+    if state.get('status') == 'blocked':
+        state['stalled_epochs'] = 0  # relaunching a blocked task is a deliberate new attempt
     if state.get('config_sha256') and (not config_path.is_file() or hashlib.sha256(config_path.read_bytes()).hexdigest() != state['config_sha256']):
         raise ValueError('frozen optimization configuration changed')
 
@@ -67,13 +69,15 @@ def optimize_project(project: Path, intent: str, folder: Path, models_path=None,
     def stalled(report):
         """Epochs whose budget ends before any completed round never reach plateau."""
         progressed = any(r.get('outcome') in ('accepted', 'no_improvement') for r in report.get('rounds', []))
+        if not progressed and state['epochs'] and state['epochs'][-1].get('provider_waits'):
+            return False  # its budget went to waiting out a provider outage, not to stalled work
         state['stalled_epochs'] = 0 if progressed else state.get('stalled_epochs', 0) + 1
         if state['stalled_epochs'] < STALLED_EPOCHS:
             return False
         state.update(status='blocked', run_id=None, next_retry_at=None, reason=str(state['stalled_epochs'])
                      + ' consecutive epochs exhausted their budget before completing a round'
                      + (' (last: ' + str(report['reason']) + ')' if report.get('reason') else '')
-                     + '; increase max_calls or max_seconds if the budget is too small')
+                     + '; the budget is frozen with this task, so start a new task with a larger max_calls or max_seconds')
         checkpoint()
         return True
 
@@ -167,6 +171,8 @@ def optimize_project(project: Path, intent: str, folder: Path, models_path=None,
                 return state
             except ModelUnavailable as exc:
                 state['failures'] += 1
+                if state.get('run_id') and state['epochs']:
+                    state['epochs'][-1]['provider_waits'] = state['epochs'][-1].get('provider_waits', 0) + 1
                 state.update(status='waiting', reason=str(exc), next_retry_at=max(time.time() + 1, exc.retry_at) if exc.retry_at is not None else
                              time.time() + min(900, 30 * 2 ** min(state['failures'] - 1, 5)))
                 print('Waiting: ' + str(exc) + '. Retrying automatically at ' + time.strftime('%H:%M:%S', time.localtime(state['next_retry_at'])) + '. Ctrl+C pauses the run.', flush=True)
