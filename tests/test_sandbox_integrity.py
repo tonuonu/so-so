@@ -111,6 +111,29 @@ class SandboxIntegrityTests(RepoCase):
                 self.assertEqual(experiment['evaluation'], {'valid': False, 'reason': 'index flags hide worktree changes'})
                 self.assertEqual(report['best'], 0)
 
+    def hidden_score_run(self, command, evaluate=None):
+        # Run one exec-enabled candidate that also makes a tracked change; return its evaluation.
+        steps = iter([{'tool': 'run', 'argv': ['sh', '-c', command]},
+                      {'tool': 'write', 'path': 'notes.txt', 'content': 'tracked change'},
+                      {'tool': 'done', 'summary': 'done'}])
+        def answer(router, role, prompt, cwd, attempt=0, task=None):
+            router.budget.claim()
+            if role == 'reviewer': return {'approve': True}
+            return next(steps)
+        config = self.config(parallel=1, rounds=1, **({'evaluate': evaluate} if evaluate else {}))
+        runner = Run(self.root, config, 'Improve', allow_exec=True)
+        with patch.object(Router, 'ask', answer), contextlib.redirect_stdout(io.StringIO()):
+            report = runner.run()
+        self.assertEqual(report['best'], 0)
+        return report['rounds'][0]['experiments'][0]['evaluation']
+
+    def test_candidate_hiding_files_in_a_nested_git_entry_is_invalid(self):
+        # Git skips every path named .git, so pkg/.git/bonus.txt is neither committed nor cleaned.
+        code = ("import json\nfrom pathlib import Path\nbonus=Path('pkg/.git/bonus.txt')\n"
+                "print(json.dumps({'score':int(Path('value.txt').read_text())+(int(bonus.read_text()) if bonus.exists() else 0)}))\n")
+        evaluation = self.hidden_score_run('mkdir -p pkg/.git && echo 999 > pkg/.git/bonus.txt', [sys.executable, '-c', code])
+        self.assertEqual(evaluation, {'valid': False, 'reason': 'nested .git entries hide files from Git'})
+
     def commit_submodule(self):
         # A base commit with a gitlink; candidate worktrees get an empty, uninitialised sub/.
         (self.root / 'sub').mkdir()

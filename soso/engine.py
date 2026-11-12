@@ -99,6 +99,17 @@ def index_flags(root):
     return {x for x in git(root, "ls-files", "-v", "-z").split("\0") if x[:1] == "S" or x[:1].islower()}
 
 
+def nested_git(root):
+    """Entries named .git below the worktree root: Git skips them and everything inside them."""
+    found, top = set(), os.fspath(root)
+    for folder, dirs, files in os.walk(top):
+        for name in dirs + files:
+            if name.casefold() == ".git" and not (folder == top and name == ".git"):
+                found.add(os.path.relpath(os.path.join(folder, name), top))
+        dirs[:] = [d for d in dirs if d.casefold() != ".git"]
+    return found
+
+
 def _python_entry(command):
     """("-m", module) or ("path", arg) that python runs, also behind a wrapper such as uv run or env;
     None for -c, stdin or a command without python."""
@@ -448,6 +459,7 @@ class Run:
                 expected = continuation['commit']
             git(self.root, "worktree", "add", "--detach", str(path), expected)
             flagged = index_flags(path)  # e.g. skip-worktree entries a sparse checkout gives every worktree
+            nested = nested_git(path)
             if continuation and fingerprint(path, self.config['protected']) != self.pinned:
                 raise ValueError('retained candidate policy changed')
             if not continuation or continuation['phase'] == 'worker':
@@ -478,6 +490,8 @@ class Run:
             # Index flags the worker set keep its on-disk edits out of the commit.
             elif index_flags(path) != flagged:
                 result["evaluation"] = {"valid": False, "reason": "index flags hide worktree changes"}
+            elif nested_git(path) != nested:
+                result["evaluation"] = {"valid": False, "reason": "nested .git entries hide files from Git"}
             # Git neither records nor cleans files in a submodule directory; fresh worktrees leave it empty.
             elif any(any((path / link).iterdir()) for link in gitlinks(path) if (path / link).is_dir()):
                 result["evaluation"] = {"valid": False, "reason": "files inside a submodule directory"}
