@@ -532,12 +532,14 @@ class EvaluatedTreeTests(RepoCase):
                 self.assertFalse((self.common_dir() / 'soso/unrestored.json').exists())
 
     def test_oversized_include_is_never_rewritten_from_a_partial_record(self):
+        # A record of only its first MiB would put that back over the whole file: the rest would be lost.
         included = self.common_dir() / 'user-include'
         included.write_text('[core]\n\teol = lf\n' + '# padding\n' * 120000)
         git(self.root, 'config', 'include.path', str(included))
-        report = self.run_candidate([{'tool': 'run', 'argv': ['sh', '-c', f'printf "[core]\\n\\teol = crlf\\n" >> "{included}"']},
+        edit = f"p = '{included}'; s = open(p).read(); open(p, 'w').write(s.replace('eol = lf', 'eol = crlf', 1))"
+        report = self.run_candidate([{'tool': 'run', 'argv': [sys.executable, '-c', edit]},
                                      {'tool': 'write', 'path': 'value.txt', 'content': '5'}])
-        self.assertTrue(included.read_text().endswith('eol = crlf\n'))  # left for the user, not cut short
+        self.assertEqual(included.read_text(), '[core]\n\teol = crlf\n' + '# padding\n' * 120000)  # left whole, for the user
         self.assertIn('repair them there', self.experiment(report)['error'])
 
     def test_replaced_included_file_is_kept_privately_as_evidence(self):
