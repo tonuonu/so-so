@@ -150,15 +150,34 @@ class DashboardTests(unittest.TestCase):
 
     def test_http_requires_token_and_serves_no_arbitrary_files(self):
         with tempfile.TemporaryDirectory() as tmp:
-            root=Path(tmp);self.fixture(root)
+            root=Path(tmp);managed,_,report=self.fixture(root)
+            # Every requested target exists, so a 404 reflects the guard rather than a missing file.
+            (root/'outside.png').write_bytes(b'outside');(root/'soso.json').write_text('{}')
+            (managed/'unlisted.png').write_bytes(b'unlisted')
+            result=report.parent/'result';result.mkdir();(result/'screen.png').write_bytes(b'listed image')
             with Dashboard(root) as d:
                 self.assertEqual(d.server.server_address[0],'127.0.0.1')
                 with urllib.request.urlopen(d.url+'api') as r:
                     self.assertEqual(json.load(r)['best'],90)
                     self.assertIn("frame-ancestors 'none'",r.headers['Content-Security-Policy'])
-                for url in [d.url.replace(d.token,'wrong')+'api',d.url+'asset/../../outside.png',d.url+'../soso.json']:
-                    with self.assertRaises(urllib.error.HTTPError):urllib.request.urlopen(url)
+                for url in [d.url.replace(d.token,'wrong')+'api',d.url+'asset/../outside.png',d.url+'asset/%2e%2e/outside.png',
+                            d.url+'../soso.json',d.url+'asset/active.json',d.url+'asset/unlisted.png']:
+                    with self.subTest(url=url.replace(d.token,'TOKEN')):
+                        with self.assertRaises(urllib.error.HTTPError) as caught:urllib.request.urlopen(url)
+                        self.assertEqual(caught.exception.code,404);caught.exception.close()
                 with urllib.request.urlopen(d.url) as r:self.assertIn(b'Run monitor',r.read())
+
+    def test_listed_result_image_is_served(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root=Path(tmp);_,_,report=self.fixture(root)
+            result=report.parent/'result';result.mkdir();(result/'screen.png').write_bytes(b'listed image')
+            with Dashboard(root) as d:
+                with urllib.request.urlopen(d.url+'api') as r:
+                    images=json.load(r)['images']
+                self.assertEqual([x['name'] for x in images],['screen.png'])
+                with urllib.request.urlopen(d.url+'asset/'+images[0]['path']) as r:
+                    self.assertEqual(r.read(),b'listed image')
+                    self.assertEqual(r.headers['Content-Type'],'image/png')
 
     def test_milestone_progress_requires_evidence_from_accepted_candidate(self):
         with tempfile.TemporaryDirectory() as tmp:
