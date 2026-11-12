@@ -772,6 +772,26 @@ print(json.dumps({'score':100 if ok else 0,'complete':ok}))
         self.assertEqual(record['task'], 'uses [REDACTED]')
         self.assertEqual(record['key [REDACTED]'], 1)
 
+    def test_terminal_planning_or_review_error_is_recorded_in_epoch_report(self):
+        original = self.answer
+        for phase, error, message in (('plan', ValueError, 'planner returned no next step'),
+                                      ('review', RuntimeError, 'all routes failed: test: FileNotFoundError')):
+            with self.subTest(phase=phase):
+                def answer(router, role, prompt, cwd, attempt=0, task=None):
+                    if phase == 'plan' and role == 'planner' and 'Plan one small useful next milestone step' in prompt:
+                        router.budget.claim()
+                        return {'experiments': [{'task': ''}]}
+                    if phase == 'review' and prompt.startswith('Independently review this increment.'):
+                        raise RuntimeError(message)
+                    return original(router, role, prompt, cwd, attempt)
+                self.answer = answer
+                with self.assertRaisesRegex(error, message):
+                    self.start()
+                state = json.loads(max(self.repo.glob('.git/soso/goals/*/state.json'), key=os.path.getmtime).read_text())
+                self.assertEqual(state['status'], 'blocked')
+                report = json.loads(Path(state['active_epoch']).read_text())
+                self.assertEqual((report['status'], report.get('reason')), ('blocked', message))
+
     def test_interrupted_epoch_recovers_accepted_head(self):
         first = self.start()
         state_path = Path(first['report'])

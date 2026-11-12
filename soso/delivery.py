@@ -553,6 +553,10 @@ class DeliveryEpoch(Run):
             self.report.update(status='budget_exhausted', reason=str(exc))
         except KeyboardInterrupt:
             self.report['status'] = 'interrupted'
+        except Exception as exc:
+            # start_goal blocks the goal; the epoch's own evidence says so too (checkpointed below).
+            self.report.update(status='blocked', reason=str(exc)[:2000])
+            raise
         finally:
             draft = self.report.get('draft')
             if (draft and git(self.integration, 'rev-parse', 'HEAD') == draft['commit']
