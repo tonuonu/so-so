@@ -431,6 +431,9 @@ class Run:
             # A nested repository commits only as a gitlink: its files stay on disk, unrecorded and uncleaned.
             if any(line.split()[1] == "160000" for line in git(path, "diff-tree", "-r", base, result["commit"]).splitlines()):
                 result["evaluation"] = {"valid": False, "reason": "embedded repositories are not allowed"}
+            # skip-worktree ("S") and assume-unchanged (lowercase) entries keep on-disk edits out of the commit.
+            elif any(x[:1] == "S" or x[:1].islower() for x in git(path, "ls-files", "-v", "-z").split("\0")):
+                result["evaluation"] = {"valid": False, "reason": "index flags hide worktree changes"}
             else:
                 result["evaluation"] = evaluate(path, self.config, self.budget)
             if (git(path, "rev-parse", "HEAD") != result["commit"]

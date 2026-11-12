@@ -30,6 +30,8 @@ GUARDS = [
      ['test_sandbox_integrity.SandboxIntegrityTests.test_agents_md_name_check_ignores_case']),
     ('soso/engine.py', 'if any(line.split()[1] == "160000"', 'if False and any(line.split()[1] == "160000"',
      ['test_sandbox_integrity.SandboxIntegrityTests.test_candidate_adding_embedded_repository_is_invalid']),
+    ('soso/engine.py', 'x[:1] == "S" or x[:1].islower()', 'False',
+     ['test_sandbox_integrity.SandboxIntegrityTests.test_candidate_hiding_worktree_changes_with_index_flags_is_invalid']),
     ('soso/engine.py', 'git(path, "clean", "-ffdqX")', 'pass',
      ['test_delivery.DeliveryTests.test_candidate_ignored_shadow_files_do_not_raise_accepted_score']),
     ('soso/delivery.py', "git(root, 'clean', '-ffdqX')", 'None',

@@ -72,6 +72,26 @@ class SandboxIntegrityTests(RepoCase):
         self.assertEqual(experiment['evaluation'], {'valid': False, 'reason': 'embedded repositories are not allowed'})
         self.assertEqual(report['best'], 0)
 
+    def test_candidate_hiding_worktree_changes_with_index_flags_is_invalid(self):
+        # The flagged edit stays on disk but out of the commit, so the score would not match the tree.
+        for flag in ('--skip-worktree', '--assume-unchanged'):
+            with self.subTest(flag=flag):
+                hide = f'git update-index {flag} value.txt && echo 999 > value.txt'
+                steps = iter([{'tool': 'run', 'argv': ['sh', '-c', hide]},
+                              {'tool': 'write', 'path': 'notes.txt', 'content': 'tracked change'},
+                              {'tool': 'done', 'summary': 'done'}])
+                def answer(router, role, prompt, cwd, attempt=0, task=None):
+                    router.budget.claim()
+                    if role == 'reviewer': return {'approve': True}
+                    return next(steps)
+                runner = Run(self.root, self.config(parallel=1, rounds=1), 'Improve', allow_exec=True)
+                with patch.object(Router, 'ask', answer), contextlib.redirect_stdout(io.StringIO()):
+                    report = runner.run()
+                experiment = report['rounds'][0]['experiments'][0]
+                self.assertTrue(experiment.get('commit'), experiment)
+                self.assertEqual(experiment['evaluation'], {'valid': False, 'reason': 'index flags hide worktree changes'})
+                self.assertEqual(report['best'], 0)
+
     def commit_submodule(self):
         # A base commit with a gitlink; candidate worktrees get an empty, uninitialised sub/.
         (self.root / 'sub').mkdir()
