@@ -2,7 +2,6 @@
 import concurrent.futures
 import contextlib
 import fcntl
-import functools
 import base64
 import hashlib
 import json
@@ -197,11 +196,15 @@ def outside(root, links):
         or os.path.commonpath([top, os.path.realpath(os.path.join(top, link))]) != top)]
 
 
-@functools.cache
-def supports_attr_source():
-    """Whether this Git has the --attr-source option (2.40 or newer)."""
-    found = re.search(r"(\d+)\.(\d+)", execute(["git", "--version"], "/", timeout=30)["output"])
-    return bool(found) and tuple(map(int, found.groups())) >= (2, 40)
+ATTR_SOURCE = {}  # whether this Git accepts the global --attr-source option, probed once
+
+
+def supports_attr_source(root, tree):
+    """Whether this Git has --attr-source: probed by running it, not inferred from a version number."""
+    if "probed" not in ATTR_SOURCE:
+        probe = execute(["git", "--attr-source=" + tree, "rev-parse", "--git-dir"], root, timeout=30)
+        ATTR_SOURCE["probed"] = probe["returncode"] == 0 and not probe["timed_out"]
+    return ATTR_SOURCE["probed"]
 
 
 def review_diff(root, base, commit):
@@ -209,18 +212,20 @@ def review_diff(root, base, commit):
 
     No external diff program or textconv, and, where Git has --attr-source, attributes from an empty tree, so
     no -diff, binary or diff driver in the repository's .gitattributes hides a change. A file Git still shows
-    only as binary (an older Git, or the user's own attributes) must hold a NUL byte, and a diff or blob larger
-    than the runner reads is withheld instead of being cut short."""
-    options = ["--attr-source=" + git(root, "mktree", stdin="")] if supports_attr_source() else []
+    only as binary (an older Git, or the user's own attributes) must hold a NUL byte on both sides, and a diff or
+    blob larger than the runner reads is withheld instead of being cut short."""
+    empty = git(root, "mktree", stdin="")
+    options = ["--attr-source=" + empty] if supports_attr_source(root, empty) else []
     try:
         diff = git(root, *options, "diff", "--no-ext-diff", "--no-textconv", base, commit)
         # Names as Git stores them, unquoted and without prefixes; "-\t-" marks a file shown as binary.
         stats = git(root, *options, "diff", "--numstat", "-z", "--no-renames", "--no-ext-diff", "--no-textconv", base, commit)
         for entry in stats.split("\0"):
             name = entry[4:] if entry.startswith("-\t-\t") else None
-            blob = name and git(root, "rev-parse", "--verify", "-q", f"{commit}:{name}", ok=(0, 1))
-            if blob and "\0" not in git(root, "cat-file", "blob", blob):
-                return None
+            for side in (base, commit) if name else ():  # either side as text: e.g. one NUL byte added to hide it
+                blob = git(root, "rev-parse", "--verify", "-q", f"{side}:{name}", ok=(0, 1))
+                if blob and "\0" not in git(root, "cat-file", "blob", blob):
+                    return None
     except OutputLimit:
         return None
     return diff

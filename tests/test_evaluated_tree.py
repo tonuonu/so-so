@@ -610,6 +610,15 @@ class EvaluatedTreeTests(RepoCase):
         self.assertFalse(report['rounds'][1]['experiments'][0]['review']['approve'])
         self.assertEqual(report['best'], 5)
 
+    def test_text_file_turned_binary_by_a_nul_byte_is_not_approved(self):
+        # One NUL byte makes Git show only "Binary files differ" for a file the base held as text.
+        (self.root / 'data.txt').write_text('safe\n')
+        self.commit('data', 'data.txt')
+        base = git(self.root, 'rev-parse', 'HEAD')
+        (self.root / 'data.txt').write_bytes(b'gamed\n\0')
+        self.commit('candidate', 'data.txt')
+        self.assertIsNone(engine.review_diff(self.root, base, 'HEAD'))
+
     def test_old_git_review_sees_through_quoted_tabbed_and_unprefixed_names(self):
         # Without --attr-source, names come from --numstat -z, not from parsing patch text.
         for name, setting in (('mé.py', None), ('tab\there.py', None), ('plain.py', 'diff.noprefix')):

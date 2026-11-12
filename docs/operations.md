@@ -115,7 +115,7 @@ include whose bytes differ is then put back, including unrelated edits in it,
 while an include edit that changes no watched value is kept. A FIFO, symlink,
 folder or other non-file put in place of a recorded include is replaced at once.
 Whatever a restore replaces is first kept, owner-only, under `replaced/` in the
-run folder (a folder is moved there whole), and the candidate's record names it as
+run folder (a folder is moved there whole, a file's first MiB is copied), and the candidate's record names it as
 `kept`, so your unrelated edits can be recovered. A value that comes from an
 included file is never overridden in `.git/config`. Replace refs the worker added or changed are
 removed or put back. This includes watched changes you make yourself during a
@@ -148,12 +148,14 @@ whatever `status.showUntrackedFiles` says (so a repository with untracked files
 is not clean enough to start a run, even if you set it to `no`), and run without replace refs
 (`GIT_NO_REPLACE_OBJECTS=1`) and without advice messages (`GIT_ADVICE=0`, Git
 2.46 or newer). The reviewer's diff is built with `--no-ext-diff --no-textconv`
-and with attributes from an empty tree (`--attr-source`, Git 2.40 or newer), so
+and with attributes from an empty tree (`--attr-source`, where a probe shows Git accepts it), so
 no `-diff`, `binary` or diff driver in the repository's `.gitattributes` hides a
 change. A candidate is not sent to the reviewer, and is not approved, when a file
-without NUL bytes still shows only as binary (with an older Git, or through your
-own `info/attributes` or `core.attributesFile`), or when its diff or such a file
-is larger than the 2 MB the runner reads; a diff is never shown cut short. Do not rely on hooks as your evaluator, and
+that is text on either side (no NUL bytes) still shows only as binary (with an
+older Git, through your own `info/attributes` or `core.attributesFile`, or because
+the candidate added a NUL byte), or when its diff or such a file is larger than the
+2 MB the runner reads: a diff is never shown cut short, so such a candidate can
+never be accepted. A new file that holds a NUL byte from the start counts as binary. Do not rely on hooks as your evaluator, and
 expect no fsmonitor speed-up in them.
 
 Not covered: global, system and XDG Git configuration, the attributes file that
