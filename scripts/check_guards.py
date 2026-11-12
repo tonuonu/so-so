@@ -58,6 +58,9 @@ GUARDS = [
      ['test_core.IdentityTests.test_fallback_identity_stays_in_the_repository_it_was_derived_for']),
     ('soso/delivery.py', "IDENTITY['scope'] = {*IDENTITY.get('scope', ()), common_dir(repo)}", 'pass',
      ['test_core.IdentityTests.test_fallback_identity_stays_in_the_repository_it_was_derived_for']),
+    # Not a guard but a pin: anything start_goal adds to the epoch config must change the draft binding digest.
+    ('soso/delivery.py', "config['direction'] = 'max'", "config['direction'] = 'max'; config['added'] = True",
+     ['test_resume_digest.DraftBindingDigestTests.test_delivery_draft_binding_digest_is_pinned']),
 ]
 
 
