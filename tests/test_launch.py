@@ -340,6 +340,17 @@ class LauncherTests(unittest.TestCase):
         self.assertIn('[7](projects/number-title/README.md)', index)
         self.assertNotIn('text-time', index)
 
+    def test_malformed_saved_entry_does_not_block_resume(self):
+        from soso.launch import _resume_snapshot
+        first = self.run_goal('First task')
+        managed = self.root / '.so-so'
+        for name, text in (('list', '[]'), ('text', '"entry"'), ('number-fingerprint', '{"fingerprint": 7}'), ('torn', '{')):
+            (managed / 'projects' / name).mkdir(parents=True)
+            (managed / 'projects' / name / 'entry.json').write_text(text)
+        self.assertEqual(_resume_snapshot(managed, first['resume_id'])[3], 'First task')
+        with self.assertRaisesRegex(ValueError, 'saved task not found'):
+            _resume_snapshot(managed, 'list')
+
     def test_saved_task_lookup_used_by_shell_launcher_returns_assignment(self):
         # ./so-so resume reads the saved assignment through _resume_snapshot(...)[3].
         from soso.launch import _resume_snapshot

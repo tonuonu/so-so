@@ -181,9 +181,14 @@ def _resume_snapshot(managed, task_id):
         path = folder / 'entry.json'
         if folder.is_symlink() or not path.is_file() or path.is_symlink():
             continue
-        entry = json.loads(path.read_text())
+        try:
+            entry = json.loads(path.read_text())
+        except ValueError:
+            entry = None
+        if not isinstance(entry, dict):
+            continue  # One malformed snapshot entry must not block resuming another, as in history.py.
         fingerprint = entry.get('fingerprint', '')
-        if task_id in (folder.name, entry.get('goal_id')) or (len(task_id) >= 8 and fingerprint.startswith(task_id)):
+        if task_id in (folder.name, entry.get('goal_id')) or (len(task_id) >= 8 and isinstance(fingerprint, str) and fingerprint.startswith(task_id)):
             matches.append((folder, entry))
     if len(matches) != 1:
         raise ValueError('saved task ID is ambiguous' if matches else 'saved task not found; see .so-so/README.md')
