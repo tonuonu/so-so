@@ -73,6 +73,10 @@ class ModelUnavailable(RuntimeError):
         self.retry_at = retry_at
 
 
+class InvalidProviderResponse(ValueError):
+    """A transport reply that is no model response at all, such as a proxy page or an oversized body."""
+
+
 class RetryableModelFailure(RuntimeError):
     """A CLI process or HTTP 5xx failure without a recognized cause; it may be transient."""
 
@@ -510,6 +514,9 @@ class Router:
                     'invalid_schema': 'response must match the requested role schema'}[problem]
                 self.log('model_protocol_error', role=role, model=name,
                          attempt=attempt + 1, problem=problem, detail=detail, retrying=attempt < 2)
+                if attempt == 2 and isinstance(exc, InvalidProviderResponse):
+                    # The provider, not the model, failed: the next route may still answer.
+                    raise RuntimeError(name + ': provider returned no usable response after 3 attempts') from None
                 if attempt == 2:
                     raise ModelProtocolError(name + ': ' + problem + ' after 3 attempts (' + role + '): ' + detail) from None
                 packet = prompt + ('\n\nPROTOCOL REPAIR: ' + detail + '. '
@@ -630,11 +637,11 @@ class Router:
             reason = f"inference request timed out after {timeout:g}s" if result["timed_out"] else "inference transport exited unexpectedly"
             raise ModelUnavailable(reason=reason + " (" + host + ")")
         if result["truncated"]:
-            raise ValueError("inference response exceeds size limit")
+            raise InvalidProviderResponse("inference response exceeds size limit")
         envelope = json.loads(result["output"])
         if envelope["status"] == -1:
             self.telemetry.usage = {"error_kind": "invalid_response"}
-            raise ValueError("inference response is not JSON within the size limit")
+            raise InvalidProviderResponse("inference response is not JSON within the size limit")
         if envelope["status"] in (0, 408, 425, 429, 500, 502, 503, 504):
             reason = "inference connection failed or timed out" if envelope["status"] == 0 else "inference service returned HTTP " + str(envelope["status"])
             self.telemetry.usage = {"error_kind": "temporary_provider_failure"}
