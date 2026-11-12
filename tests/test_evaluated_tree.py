@@ -9,6 +9,7 @@ import json
 import os
 from pathlib import Path
 import re
+import subprocess
 import sys
 import tempfile
 from types import SimpleNamespace
@@ -607,17 +608,114 @@ class EvaluatedTreeTests(RepoCase):
             [{'tool': 'run', 'argv': ['sh', '-c', big]}, {'tool': 'write', 'path': 'value.txt', 'content': '999'}]],
             allow_exec=True)
         self.assertEqual(len(prompts), 1)
-        self.assertFalse(report['rounds'][1]['experiments'][0]['review']['approve'])
+        review = report['rounds'][1]['experiments'][0]['review']
+        self.assertFalse(review['approve'])
+        self.assertIn('exceeds 2 MB', review['reason'])  # the cause, so the worker can split the change
         self.assertEqual(report['best'], 5)
 
-    def test_text_file_turned_binary_by_a_nul_byte_is_not_approved(self):
-        # One NUL byte makes Git show only "Binary files differ" for a file the base held as text.
-        (self.root / 'data.txt').write_text('safe\n')
-        self.commit('data', 'data.txt')
+    def reviewed(self, base, commit='HEAD'):
+        """review_diff's (diff, reason); reason is set when the change is withheld from the reviewer."""
+        result = engine.review_diff(self.root, base, commit)
+        return result if isinstance(result, tuple) else (result, None if result is not None else 'withheld')
+
+    def change(self, name, before, after):
+        """Commit before, then after, as name; return the first commit."""
+        (self.root / name).write_bytes(before)
+        self.commit('before', name)
         base = git(self.root, 'rev-parse', 'HEAD')
-        (self.root / 'data.txt').write_bytes(b'gamed\n\0')
-        self.commit('candidate', 'data.txt')
-        self.assertIsNone(engine.review_diff(self.root, base, 'HEAD'))
+        (self.root / name).write_bytes(after)
+        self.commit('after', name)
+        return base
+
+    def test_text_file_turned_binary_by_a_nul_byte_is_shown_as_text(self):
+        # One NUL byte makes Git show only "Binary files differ" for a file the base held as text.
+        diff, reason = self.reviewed(self.change('data.txt', b'safe\n', b'gamed\n\0'))
+        self.assertIsNone(reason)
+        self.assertIn('-safe', diff)
+        self.assertIn('+gamed', diff)
+
+    def test_large_binary_files_are_approvable(self):
+        blob = bytes(range(256)) * 9000  # 2.3 MB, with a NUL byte at the start
+        for name, before, after in (('added.bin', b'', blob), ('changed.bin', blob, blob[::-1])):
+            with self.subTest(name=name):
+                diff, reason = self.reviewed(self.change(name, before, after))
+                self.assertIsNone(reason)
+                self.assertIn('Binary files', diff)
+
+    def test_emptied_or_filled_placeholder_is_approvable(self):
+        for name, before, after in (('filled.bin', b'', b'\0\1\2 data'), ('emptied.bin', b'\0\1\2 data', b'')):
+            with self.subTest(name=name):
+                diff, reason = self.reviewed(self.change(name, before, after))
+                self.assertIsNone(reason)
+                self.assertIn(name, diff)
+
+    def test_conversion_to_text_and_a_removed_nul_are_shown_as_text(self):
+        for name, before, after, line in (('notes.txt', 'hello\n'.encode('utf-16'), b'hello\n', '+hello'),
+                                          ('clean.txt', b'value\n\0', b'value\n', '-\0')):
+            with self.subTest(name=name):
+                diff, reason = self.reviewed(self.change(name, before, after))
+                self.assertIsNone(reason)
+                self.assertIn(line, diff)
+
+    def test_old_git_shows_a_committed_lockfile_marked_minus_diff_as_text(self):
+        (self.root / '.gitattributes').write_text('package-lock.json -diff\n')
+        self.commit('attributes', '.gitattributes')
+        base = self.change('package-lock.json', b'{"lockfileVersion": 2}\n', b'{"lockfileVersion": 3}\n')
+        with self.old_git():
+            diff, reason = self.reviewed(base)
+        self.assertIsNone(reason)
+        self.assertIn('+{"lockfileVersion": 3}', diff)
+
+    def lockfile_change(self, size=1):
+        """A text file marked -diff in the repository, changed: binary-shown on an older Git."""
+        (self.root / '.gitattributes').write_text('*.lock -diff\n')
+        self.commit('attributes', '.gitattributes')
+        return self.change(f'deps{size}.lock', b'version = 1\n' * size, b'version = 2\n' * size)
+
+    def test_side_that_cannot_be_read_is_withheld(self):
+        base = self.lockfile_change()
+        with self.old_git(), patch('soso.engine.blob_kind', return_value=None):
+            diff, reason = self.reviewed(base)
+        self.assertIsNone(diff)
+        self.assertIn('could not read deps1.lock', reason)
+
+    def test_files_that_cannot_be_matched_are_withheld(self):
+        base = self.lockfile_change()
+        real = engine.git
+        def one_short(root, *args, **kwargs):  # the numstat listing loses its first entry
+            output = real(root, *args, **kwargs)
+            return output.split('\0', 1)[1] if '--numstat' in args else output
+        with self.old_git(), patch('soso.engine.git', one_short):
+            self.assertEqual(self.reviewed(base), (None, "could not match the diff's files to show them"))
+
+    def test_text_shown_for_binary_marked_files_counts_toward_the_limit(self):
+        # Each file's text is under 2 MB, but together with the rest the reviewer would get more.
+        base = git(self.root, 'rev-parse', 'HEAD')
+        self.lockfile_change(90000)  # about 1.1 MB as text
+        self.change('more.lock', b'a = 1\n' * 200000, b'a = 2\n' * 200000)
+        with self.old_git():
+            diff, reason = self.reviewed(base)
+        self.assertIn('exceeds 2 MB', reason)
+
+    def test_stderr_never_mixes_into_parsed_listings(self):
+        base = self.lockfile_change()
+        with self.old_git(), patch.dict(os.environ, {'GIT_TRACE': '1'}):  # Git then writes to stderr
+            diff, reason = self.reviewed(base)
+        self.assertIsNone(reason)
+        self.assertIn('+version = 2', diff)
+
+    def test_file_name_that_is_not_utf8_is_never_shown_only_as_binary(self):
+        # Built from raw ids, so no checkout is needed (macOS cannot write this name).
+        (self.common_dir() / 'info/attributes').write_text('*.py -diff\n')  # applies whatever --attr-source says
+        def commit_with(content, parent):
+            blob = subprocess.run(['git', 'hash-object', '-w', '--stdin'], cwd=self.root, input=content,
+                                  capture_output=True, check=True).stdout.strip()
+            tree = subprocess.run(['git', 'mktree'], cwd=self.root, input=b'100644 blob ' + blob + b'\t\xff.py\n',
+                                  capture_output=True, check=True).stdout.decode().strip()
+            return git(self.root, '-c', 'commit.gpgsign=false', 'commit-tree', tree, '-p', parent, '-m', 'raw')
+        base = commit_with(b'x = 0\n', git(self.root, 'rev-parse', 'HEAD'))
+        diff, reason = self.reviewed(base, commit_with(b'x = 999\n', base))
+        self.assertTrue(reason or '+x = 999' in diff, diff)
 
     def test_old_git_review_sees_through_quoted_tabbed_and_unprefixed_names(self):
         # Without --attr-source, names come from --numstat -z, not from parsing patch text.
@@ -633,7 +731,9 @@ class EvaluatedTreeTests(RepoCase):
                 (self.root / name).write_text('x = 999\n')
                 self.commit('candidate', name)
                 with self.old_git():
-                    self.assertIsNone(engine.review_diff(self.root, base, 'HEAD'))
+                    diff, reason = self.reviewed(base)
+                self.assertIsNone(reason)
+                self.assertIn('+x = 999', diff)
                 if setting:
                     git(self.root, 'config', '--unset', setting)
 
@@ -643,14 +743,14 @@ class EvaluatedTreeTests(RepoCase):
         self.assertIn('+999', prompts[1])
         self.assertEqual(report['best'], 999)
 
-    def test_without_attr_source_a_text_file_shown_as_binary_is_not_approved(self):
+    def test_without_attr_source_a_text_file_shown_as_binary_is_shown_as_text(self):
         with self.old_git():
             report, prompts = self.two_round_review()
-        self.assertEqual(len(prompts), 1)  # the second candidate never reaches a model with a blind diff
-        self.assertEqual(report['rounds'][1]['experiments'][0]['review']['approve'], False)
-        self.assertEqual(report['best'], 5)
+        self.assertEqual(len(prompts), 2)
+        self.assertIn('+999', prompts[1])  # rendered as text despite -diff
+        self.assertEqual(report['best'], 999)
 
-    def test_delivery_reviewer_is_not_asked_about_a_text_file_shown_as_binary(self):
+    def test_delivery_reviewer_sees_a_text_file_shown_as_binary_as_text(self):
         (self.root / '.gitattributes').write_text('value.txt -diff\n')
         self.commit('attributes', '.gitattributes')
         base = git(self.root, 'rev-parse', 'HEAD')
@@ -659,13 +759,30 @@ class EvaluatedTreeTests(RepoCase):
         commit = git(self.root, 'rev-parse', 'HEAD')
         git(self.root, 'checkout', '-q', '--detach', base)
         asked = []
-        epoch = SimpleNamespace(integration=self.root, router=SimpleNamespace(ask=lambda *a, **k: asked.append(a)),
+        def ask(role, prompt, cwd, task=None):
+            asked.append(prompt)
+            return {'approve': True, 'useful': True}
+        epoch = SimpleNamespace(integration=self.root, router=SimpleNamespace(ask=ask),
                                 intent='Improve', contract={}, report={'baseline': {}})
         candidate = {'commit': commit, 'evaluation': {}}
         with self.old_git():
-            self.assertFalse(DeliveryEpoch.review(epoch, candidate))
+            self.assertTrue(DeliveryEpoch.review(epoch, candidate))
+        self.assertIn('+999', asked[0])
+
+    def test_delivery_withholds_an_oversized_diff_and_tells_the_worker_why(self):
+        base = git(self.root, 'rev-parse', 'HEAD')
+        (self.root / 'big.py').write_text('x = 1  # padding\n' * 150000)
+        self.commit('candidate', 'big.py')
+        commit = git(self.root, 'rev-parse', 'HEAD')
+        git(self.root, 'checkout', '-q', '--detach', base)
+        asked = []
+        epoch = SimpleNamespace(integration=self.root, router=SimpleNamespace(ask=lambda *a, **k: asked.append(a)),
+                                intent='Improve', contract={}, report={'baseline': {}})
+        candidate = {'commit': commit, 'evaluation': {}}
+        self.assertFalse(DeliveryEpoch.review(epoch, candidate))
         self.assertEqual(asked, [])
-        self.assertFalse(candidate['review']['approve'])
+        # useful with a reason: repair_candidate keeps the draft and hands the reason to the worker
+        self.assertEqual((candidate['review']['useful'], 'exceeds 2 MB' in candidate['review']['reason']), (True, True))
 
     def test_untracked_files_are_committed_when_the_worker_hides_them_from_status(self):
         report = self.run_candidate([{'tool': 'run', 'argv': ['sh', '-c', 'git config status.showUntrackedFiles no']},

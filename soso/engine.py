@@ -16,7 +16,7 @@ import threading
 import time
 import uuid
 from .models import Budget, BudgetExceeded, ModelProtocolError, ModelUnavailable, Router, redact_value
-from .process import OutputLimit, execute, git
+from .process import GIT_OUTPUT_LIMIT, OutputLimit, blob_head, execute, git
 from .workspace import Workspace, gitlinks, worker
 from .skills import prelude
 from .architecture import planning_reply
@@ -207,28 +207,55 @@ def supports_attr_source(root, tree):
     return ATTR_SOURCE["probed"]
 
 
-def review_diff(root, base, commit):
-    """The change as text for a reviewer, or None when it cannot be shown in full and must not be approved.
+def blob_kind(root, blob):
+    """As Git judges a blob: "absent" (all-zero id), "empty", "binary" (a NUL byte in its first 8000 bytes) or
+    "text"; None when it cannot be read."""
+    if not blob.strip("0"):
+        return "absent"
+    try:
+        size = int(git(root, "cat-file", "-s", blob, quiet=True))
+    except (RuntimeError, ValueError):
+        return None
+    return "empty" if not size else "binary" if b"\0" in blob_head(root, blob) else "text"
 
-    No external diff program or textconv, and, where Git has --attr-source, attributes from an empty tree, so
-    no -diff, binary or diff driver in the repository's .gitattributes hides a change. A file Git still shows
-    only as binary (an older Git, or the user's own attributes) must hold a NUL byte on both sides, and a diff or
-    blob larger than the runner reads is withheld instead of being cut short."""
+
+def review_diff(root, base, commit):
+    """(diff, None) for a reviewer, or (None, reason) when the change cannot be shown in full.
+
+    No external diff program or textconv, and, where Git accepts --attr-source, attributes from an empty tree,
+    so no -diff, binary or diff driver in the repository's .gitattributes hides a change. A file Git still shows
+    only as binary (an older Git, the user's own attributes, a NUL byte added or removed) is shown again as text
+    whenever either side is text; sides are read by blob id from --raw, never through a file name. Only a diff
+    larger than the runner reads, or a side that cannot be read, is withheld."""
     empty = git(root, "mktree", stdin="")
     options = ["--attr-source=" + empty] if supports_attr_source(root, empty) else []
+    too_large = f"the diff exceeds {GIT_OUTPUT_LIMIT // 1_000_000} MB; split the change into smaller ones"
     try:
         diff = git(root, *options, "diff", "--no-ext-diff", "--no-textconv", base, commit)
-        # Names as Git stores them, unquoted and without prefixes; "-\t-" marks a file shown as binary.
-        stats = git(root, *options, "diff", "--numstat", "-z", "--no-renames", "--no-ext-diff", "--no-textconv", base, commit)
-        for entry in stats.split("\0"):
-            name = entry[4:] if entry.startswith("-\t-\t") else None
-            for side in (base, commit) if name else ():  # either side as text: e.g. one NUL byte added to hide it
-                blob = git(root, "rev-parse", "--verify", "-q", f"{side}:{name}", ok=(0, 1))
-                if blob and "\0" not in git(root, "cat-file", "blob", blob):
-                    return None
+        # The same files in the same order: ":mode mode old new status", name; and "added\tdeleted\tname".
+        raw = git(root, "diff", "--raw", "-z", "--no-abbrev", "--no-renames", base, commit, quiet=True).split("\0")
+        stats = [entry for entry in git(root, *options, "diff", "--numstat", "-z", "--no-renames", "--no-ext-diff",
+                                        "--no-textconv", base, commit, quiet=True).split("\0") if entry]
+        changes = list(zip(raw[0::2], raw[1::2]))
+        if len(changes) != len(stats):
+            return None, "could not match the diff's files to show them"
+        for (meta, name), stat in zip(changes, stats):
+            old_mode, new_mode, *blobs = meta.lstrip(":").split()[:4]
+            if not stat.startswith("-\t-\t") or "160000" in (old_mode, new_mode):
+                continue
+            kinds = [blob_kind(root, blob) for blob in blobs]
+            if None in kinds:
+                return None, f"could not read {name} to show it"
+            if "text" in kinds:  # e.g. -diff, an older Git or one NUL byte added: show the bytes as text
+                nothing = git(root, "hash-object", "-w", "-t", "blob", "--stdin", stdin="")
+                diff += (f"\n(Git shows {name} as binary; the change as text:)\n"
+                         + git(root, "diff", "--text", "--no-ext-diff", "--no-textconv",
+                               *(blob if blob.strip("0") else nothing for blob in blobs)))
+                if len(diff) > GIT_OUTPUT_LIMIT:
+                    return None, too_large
     except OutputLimit:
-        return None
-    return diff
+        return None, too_large
+    return diff, None
 
 
 def included(path, config):
@@ -681,9 +708,9 @@ class Run:
     def review(self, candidate):
         if "reviewer" not in self.config["routes"]:
             return True
-        diff = review_diff(self.integration, "HEAD", candidate["commit"])
-        if diff is None:  # never ask a model to approve a change it cannot see
-            candidate["review"] = {"approve": False, "reason": "the diff shows a text file as binary"}
+        diff, withheld = review_diff(self.integration, "HEAD", candidate["commit"])
+        if withheld:  # never ask a model to approve a change it cannot see
+            candidate["review"] = {"approve": False, "reason": withheld}
             return False
         # Do not silently review a truncated patch.
         prompt = (prelude('reviewer') + 'Review this measured candidate for correctness, evaluator gaming and scope. '

@@ -6,12 +6,12 @@ import subprocess
 import time
 
 
-def execute(argv, cwd, timeout=60, stdin=None, limit=16000, env=None):
+def execute(argv, cwd, timeout=60, stdin=None, limit=16000, env=None, stderr=True):
     if not isinstance(argv, list) or not argv or not all(isinstance(x, str) for x in argv):
         raise ValueError("command must be a nonempty array of strings")
     started = time.monotonic()
     proc = subprocess.Popen(argv, cwd=cwd, stdin=subprocess.PIPE,
-                            stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                            stdout=subprocess.PIPE, stderr=subprocess.STDOUT if stderr else subprocess.DEVNULL,
                             start_new_session=True, env=env, bufsize=0)
     chunks = bytearray()
     total = 0
@@ -104,11 +104,27 @@ def common_dir(root):
     return os.path.realpath(os.path.join(root, result["output"].strip()))
 
 
+GIT_OUTPUT_LIMIT = 2_000_000  # bytes of Git output the runner reads
+
+
+def blob_head(root, blob, size=8000):
+    """The first size bytes of a blob, without reading the rest: where Git looks for a NUL byte."""
+    proc = subprocess.Popen(["git", "cat-file", "blob", blob], cwd=root, stdout=subprocess.PIPE,
+                            stderr=subprocess.DEVNULL, env={**os.environ, "GIT_NO_REPLACE_OBJECTS": "1"})
+    try:
+        return proc.stdout.read(size)
+    finally:
+        proc.kill()
+        proc.wait()
+        proc.stdout.close()
+
+
 class OutputLimit(RuntimeError):
     """Git printed more than the runner reads: the output would be cut short."""
 
 
-def git(root, *args, ok=(0,), env=None, stdin=None):
+def git(root, *args, ok=(0,), env=None, stdin=None, quiet=False):
+    """Git's output, stripped; quiet leaves stderr out, for output that is parsed."""
     extra, env = env, dict(os.environ)
     if IDENTITY and ("scope" not in IDENTITY or common_dir(root) in IDENTITY["scope"]):
         env = {**{k: v for k, v in IDENTITY.items() if k != "scope"}, **env}
@@ -119,7 +135,7 @@ def git(root, *args, ok=(0,), env=None, stdin=None):
     # edited files as unchanged. Status lists untracked files as by default, whatever the repository says.
     result = execute(["git", "-c", "core.hooksPath=/dev/null", "-c", "core.fsmonitor=false",
                       "-c", "status.showUntrackedFiles=normal", *args], root, timeout=60,
-                     stdin=stdin, limit=2_000_000, env=env)
+                     stdin=stdin, limit=GIT_OUTPUT_LIMIT, env=env, stderr=not quiet)
     if result["returncode"] not in ok or result["timed_out"]:
         raise RuntimeError("git " + args[0] + ": " + result["output"][-4000:])
     if result["truncated"]:

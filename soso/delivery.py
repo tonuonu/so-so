@@ -436,10 +436,9 @@ class DeliveryEpoch(Run):
 
     def review(self, candidate):
         base = git(self.integration, 'rev-parse', 'HEAD')
-        diff = review_diff(self.integration, base, candidate['commit'])
-        if diff is None:  # never ask a model to approve a change it cannot see
-            candidate['review'] = {'approve': False, 'useful': False, 'reason': 'the diff shows a text file as binary',
-                                   'head': candidate['commit']}
+        diff, withheld = review_diff(self.integration, base, candidate['commit'])
+        if withheld:  # never ask a model to approve a change it cannot see; repair_candidate hands the reason back
+            candidate['review'] = {'approve': False, 'useful': True, 'reason': withheld, 'head': candidate['commit']}
             return False
         reply = self.router.ask('reviewer', 'Independently review this increment. This is NOT final acceptance. '
                     'Approve a useful nonregressing partial increment even when the goal is incomplete or milestones '
