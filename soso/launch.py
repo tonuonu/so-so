@@ -303,7 +303,7 @@ def launch(cwd: Path, goal: str | None = None, intent_file: str | None = None, r
 
 
 def main(argv=None):
-    parser = argparse.ArgumentParser(description='Read INTENT.md and carry out its goal; source files are preserved.')
+    parser = argparse.ArgumentParser(prog='so-so', description='Read INTENT.md and carry out its goal; source files are preserved.')
     parser.add_argument('goal', nargs='?', help='optional assignment instead of INTENT.md')
     parser.add_argument('task_id', nargs='?', help='optional saved task ID after resume')
     parser.add_argument('--intent', metavar='PATH', help='read the assignment from a Markdown file')

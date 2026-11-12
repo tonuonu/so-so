@@ -301,3 +301,10 @@ class LauncherTests(unittest.TestCase):
         self.assertIn('INTENT.md', result.stdout)
         self.assertNotIn('--backend', result.stdout)
         self.assertNotIn('--models', result.stdout)
+
+    def test_root_executable_help_names_program_and_leaves_no_state(self):
+        script = Path(__file__).resolve().parents[1] / 'so-so'
+        result = subprocess.run([str(script), '--help'], cwd=self.root, capture_output=True, text=True, timeout=10)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertTrue(result.stdout.startswith('usage: so-so '), result.stdout)
+        self.assertFalse((self.root / '.so-so').exists())
