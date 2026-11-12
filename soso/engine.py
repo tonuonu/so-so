@@ -86,7 +86,7 @@ def fingerprint(root, patterns):
     ws = Workspace(root, patterns)
     values = {}
     for name in ws.files():
-        if ws.is_protected(name) or Path(name).name == "AGENTS.md":
+        if ws.is_protected(name) or Path(name).name.casefold() == "agents.md":
             file = ws.path(name)
             if file.is_symlink():
                 raise ValueError("protected files cannot be symlinks")

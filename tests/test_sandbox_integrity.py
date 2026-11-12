@@ -6,7 +6,7 @@ import unittest
 from unittest.mock import patch
 from test_core import RepoCase
 from soso.cli import main
-from soso.engine import Run
+from soso.engine import Run, fingerprint
 from soso.models import Router
 from soso.workspace import Workspace
 
@@ -45,6 +45,25 @@ class SandboxIntegrityTests(RepoCase):
         self.assertTrue(experiment.get('commit'), experiment)
         self.assertEqual(experiment['evaluation']['score'], 0)
         self.assertEqual(report['best'], 0)
+
+    def test_protection_ignores_case(self):
+        # Case-insensitive filesystems (macOS default) map EVALUATE.PY onto evaluate.py.
+        ws = Workspace(self.root, ['evaluate.py', 'tests/*'])
+        for name in ('EVALUATE.PY', 'Tests/t.py', 'TESTS/new.py'):
+            with self.subTest(name=name), self.assertRaises(PermissionError):
+                ws.tool({'tool': 'write', 'path': name, 'content': 'x'})
+        self.assertIn('print(json.dumps', (self.root / 'evaluate.py').read_text())
+
+    def test_agents_md_name_check_ignores_case(self):
+        # Workspace.instructions reads sub/agents.md as sub/AGENTS.md on a case-insensitive filesystem.
+        (self.root / 'sub').mkdir()
+        (self.root / 'sub/agents.md').write_text('rules')
+        ws = Workspace(self.root, [])
+        for name in ('sub/agents.md', 'sub/Agents.MD'):
+            with self.subTest(name=name), self.assertRaises(PermissionError):
+                ws.tool({'tool': 'write', 'path': name, 'content': 'other rules'})
+        self.assertEqual((self.root / 'sub/agents.md').read_text(), 'rules')
+        self.assertIn('sub/agents.md', fingerprint(self.root, []))
 
     def test_run_protects_in_repo_evaluator_and_check_programs(self):
         (self.root / 'bench').mkdir()

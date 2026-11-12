@@ -31,7 +31,8 @@ class Workspace:
 
     def is_protected(self, name):
         name = PurePosixPath(name).as_posix()  # "./a//b" names the same file as "a/b"
-        return any(fnmatch.fnmatch(name, pattern) for pattern in self.protected)
+        # Case-insensitive filesystems (macOS default) map EVALUATE.PY onto evaluate.py.
+        return any(fnmatch.fnmatchcase(name.casefold(), pattern.casefold()) for pattern in self.protected)
 
     def instructions(self, name="."):
         path = self.path(name)
@@ -119,7 +120,7 @@ class Workspace:
                     "content": content, "truncated": len(full) > len(content), "instructions": rules}
         if op not in ("write", "replace", "delete"):
             raise ValueError("unknown tool: " + str(op))
-        if self.is_protected(name) or path.name == "AGENTS.md":
+        if self.is_protected(name) or path.name.casefold() == "agents.md":
             raise PermissionError("protected file")
         if path.is_symlink() or any(p.is_symlink() for p in path.parents if p != self.root.parent):
             raise PermissionError("writes through symlinks are forbidden")
