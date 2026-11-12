@@ -31,8 +31,10 @@ class Workspace:
 
     def is_protected(self, name):
         name = PurePosixPath(name).as_posix()  # "./a//b" names the same file as "a/b"
-        # Case-insensitive filesystems (macOS default) map EVALUATE.PY onto evaluate.py.
-        return any(fnmatch.fnmatchcase(name.casefold(), pattern.casefold()) for pattern in self.protected)
+        # Case-insensitive filesystems (macOS default) map EVALUATE.PY onto evaluate.py; the pattern
+        # as written must also match, since casefolding it changes classes such as [!A-Z].
+        return any(fnmatch.fnmatchcase(name, pattern) or fnmatch.fnmatchcase(name.casefold(), pattern.casefold())
+                   for pattern in self.protected)
 
     def instructions(self, name="."):
         path = self.path(name)

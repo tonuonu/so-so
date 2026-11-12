@@ -20,6 +20,8 @@ GUARDS = [
      ['test_core.WorkspaceTests.test_internal_symlink_is_not_writable']),
     ('soso/workspace.py', 'fnmatch.fnmatchcase(name.casefold(), pattern.casefold())', 'fnmatch.fnmatchcase(name, pattern)',
      ['test_sandbox_integrity.SandboxIntegrityTests.test_protection_ignores_case']),
+    ('soso/workspace.py', 'fnmatch.fnmatchcase(name, pattern) or ', '',
+     ['test_sandbox_integrity.SandboxIntegrityTests.test_protection_keeps_case_sensitive_character_classes']),
     ('soso/workspace.py', 'path.name.casefold() == "agents.md"', 'path.name == "AGENTS.md"',
      ['test_sandbox_integrity.SandboxIntegrityTests.test_agents_md_name_check_ignores_case']),
     ('soso/engine.py', 'Path(name).name.casefold() == "agents.md"', 'Path(name).name == "AGENTS.md"',

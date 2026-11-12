@@ -91,6 +91,19 @@ class SandboxIntegrityTests(RepoCase):
         self.assertEqual((self.root / 'sub/agents.md').read_text(), 'rules')
         self.assertIn('sub/agents.md', fingerprint(self.root, []))
 
+    def test_protection_keeps_case_sensitive_character_classes(self):
+        # Casefolding a pattern turns [!A-Z] into [!a-z]; the pattern as written must still match.
+        patterns = ['[!A-Z]*.lock', '[!a-z]*', 'data/[!A-Z]*']
+        (self.root / 'data').mkdir()
+        for name in ('poetry.lock', 'Makefile', 'data/golden.json'):
+            (self.root / name).write_text('original')
+        ws = Workspace(self.root, patterns)
+        for name in ('poetry.lock', 'Makefile', 'data/golden.json'):
+            with self.subTest(name=name), self.assertRaises(PermissionError):
+                ws.tool({'tool': 'write', 'path': name, 'content': 'changed'})
+            self.assertEqual((self.root / name).read_text(), 'original')
+        self.assertLessEqual({'poetry.lock', 'Makefile', 'data/golden.json'}, set(fingerprint(self.root, patterns)))
+
     def test_run_protects_in_repo_evaluator_and_check_programs(self):
         (self.root / 'bench').mkdir()
         (self.root / 'bench/score.py').write_text("print('{\"score\":0}')\n")
