@@ -388,6 +388,9 @@ class Run:
             if preserve:
                 retain()  # Persist before evaluation or review can exhaust the epoch.
             self.log("activity", phase="testing", candidate=index)
+            # Score exactly the committed tree, as the baseline was: experiment worktrees start
+            # fresh, so every ignored file here is uncommitted worker output.
+            git(path, "clean", "-ffdqX")
             result["evaluation"] = evaluate(path, self.config, self.budget)
             if (git(path, "rev-parse", "HEAD") != result["commit"]
                     or fingerprint(path, self.config["protected"]) != self.pinned
