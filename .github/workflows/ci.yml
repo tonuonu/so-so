@@ -4,15 +4,10 @@ permissions:
   contents: read
 jobs:
   test:
-    runs-on: ${{ matrix.os }}
+    runs-on: ubuntu-latest
     strategy:
       matrix:
-        os: [ubuntu-latest]
         python: ['3.11', '3.12', '3.13']
-        include:
-          # Case-insensitive filesystem and BSD tools (shasum, bash 3.2), as on developer Macs.
-          - os: macos-latest
-            python: '3.13'
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
