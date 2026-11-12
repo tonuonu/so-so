@@ -72,6 +72,38 @@ class SandboxIntegrityTests(RepoCase):
         self.assertEqual(experiment['evaluation'], {'valid': False, 'reason': 'embedded repositories are not allowed'})
         self.assertEqual(report['best'], 0)
 
+    def commit_submodule(self):
+        # A base commit with a gitlink; candidate worktrees get an empty, uninitialised sub/.
+        (self.root / 'sub').mkdir()
+        identity = ('-c', 'user.name=t', '-c', 'user.email=t@example.invalid', '-c', 'commit.gpgsign=false')
+        git(self.root / 'sub', 'init', '-q')
+        (self.root / 'sub/f.txt').write_text('x')
+        git(self.root / 'sub', 'add', 'f.txt')
+        git(self.root / 'sub', *identity, 'commit', '-qm', 'nested')
+        git(self.root, 'add', 'sub')
+        git(self.root, *identity, 'commit', '-qm', 'add submodule')
+
+    def test_tool_refuses_writes_inside_a_base_submodule(self):
+        # Git neither records nor cleans files under a gitlink, so they would feed the evaluator unseen.
+        self.commit_submodule()
+        code = ("import json\nfrom pathlib import Path\nbonus=Path('sub/bonus.txt')\n"
+                "print(json.dumps({'score':int(Path('value.txt').read_text())+(int(bonus.read_text()) if bonus.exists() else 0)}))\n")
+        steps = iter([{'tool': 'write', 'path': 'sub/bonus.txt', 'content': '999'},
+                      {'tool': 'write', 'path': 'notes.txt', 'content': 'tracked change'},
+                      {'tool': 'done', 'summary': 'done'}])
+        def answer(router, role, prompt, cwd, attempt=0, task=None):
+            router.budget.claim()
+            if role == 'reviewer': return {'approve': True}
+            return next(steps)
+        runner = Run(self.root, self.config(evaluate=[sys.executable, '-c', code], parallel=1, rounds=1), 'Improve')
+        with patch.object(Router, 'ask', answer), contextlib.redirect_stdout(io.StringIO()):
+            report = runner.run()
+        self.assertEqual(report['best'], 0)
+        ws = Workspace(self.root, [])
+        for name in ('sub', 'sub/bonus.txt', './SUB/x.txt'):
+            with self.subTest(name=name), self.assertRaisesRegex(PermissionError, 'submodule'):
+                ws.tool({'tool': 'write', 'path': name, 'content': '1'})
+
     def test_protection_ignores_case(self):
         # Case-insensitive filesystems (macOS default) map EVALUATE.PY onto evaluate.py.
         ws = Workspace(self.root, ['evaluate.py', 'tests/*'])

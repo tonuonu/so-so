@@ -22,6 +22,8 @@ GUARDS = [
      ['test_sandbox_integrity.SandboxIntegrityTests.test_protection_ignores_case']),
     ('soso/workspace.py', 'fnmatch.fnmatchcase(name, pattern) or ', '',
      ['test_sandbox_integrity.SandboxIntegrityTests.test_protection_keeps_case_sensitive_character_classes']),
+    ('soso/workspace.py', 'raise PermissionError("submodule paths are not writable")', 'pass',
+     ['test_sandbox_integrity.SandboxIntegrityTests.test_tool_refuses_writes_inside_a_base_submodule']),
     ('soso/workspace.py', 'path.name.casefold() == "agents.md"', 'path.name == "AGENTS.md"',
      ['test_sandbox_integrity.SandboxIntegrityTests.test_agents_md_name_check_ignores_case']),
     ('soso/engine.py', 'Path(name).name.casefold() == "agents.md"', 'Path(name).name == "AGENTS.md"',

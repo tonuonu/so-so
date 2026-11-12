@@ -17,6 +17,7 @@ class Workspace:
         self.seen_rules = set()
         self.verification = verification or []
         self.budget = budget
+        self.gitlinks = None
 
     def path(self, name):
         path = Path(name)
@@ -35,6 +36,14 @@ class Workspace:
         # as written must also match, since casefolding it changes classes such as [!A-Z].
         return any(fnmatch.fnmatchcase(name, pattern) or fnmatch.fnmatchcase(name.casefold(), pattern.casefold())
                    for pattern in self.protected)
+
+    def in_gitlink(self, name):
+        """Git neither records nor cleans files under a gitlink (submodule) directory."""
+        if self.gitlinks is None:
+            entries = git(self.root, "ls-tree", "-r", "-d", "-z", "HEAD").split("\0")  # trees and gitlinks only
+            self.gitlinks = [e.split("\t", 1)[1].casefold() for e in entries if e.startswith("160000 ")]
+        name = PurePosixPath(name).as_posix().casefold()
+        return any(name == link or name.startswith(link + "/") for link in self.gitlinks)
 
     def instructions(self, name="."):
         path = self.path(name)
@@ -124,6 +133,8 @@ class Workspace:
             raise ValueError("unknown tool: " + str(op))
         if self.is_protected(name) or path.name.casefold() == "agents.md":
             raise PermissionError("protected file")
+        if self.in_gitlink(name):
+            raise PermissionError("submodule paths are not writable")
         if path.is_symlink() or any(p.is_symlink() for p in path.parents if p != self.root.parent):
             raise PermissionError("writes through symlinks are forbidden")
         if (str(path.parent), rules) not in self.seen_rules and rules:
