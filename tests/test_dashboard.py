@@ -435,11 +435,12 @@ class DashboardTests(unittest.TestCase):
     def test_slow_client_gets_the_whole_image(self):
         # The request timeout bounds each send; a large image to a slow reader must not be cut short.
         # Each 64 KiB send has a 30x margin over the reader's pause, so load cannot fail it, while the whole
-        # body takes about 4.7 s: a single send bounded by the timeout as a whole would be cut short.
+        # body (9 MB, under the 10 MB image limit) takes about 7 s: a single send bounded by the timeout as a
+        # whole would be cut short, even with a fully grown Linux send buffer (about 4 MB) holding part of it.
         import socket,time
         with tempfile.TemporaryDirectory() as tmp, patch.object(Dashboard,'REQUEST_SECONDS',1.5):
             root=Path(tmp);_,_,report=self.fixture(root)
-            result=report.parent/'result';result.mkdir();(result/'big.png').write_bytes(b'x'*6_000_000)
+            result=report.parent/'result';result.mkdir();(result/'big.png').write_bytes(b'x'*9_000_000)
             with Dashboard(root) as d:
                 with urllib.request.urlopen(d.url+'api',timeout=10) as r:path=json.load(r)['images'][0]['path']
                 received=b''
@@ -450,7 +451,7 @@ class DashboardTests(unittest.TestCase):
                         time.sleep(0.05)  # about 1.3 MB/s: the whole body takes longer than the timeout
                 head,_,body=received.partition(b'\r\n\r\n')
                 self.assertIn(b' 200 ',head.split(b'\r\n')[0])
-                self.assertEqual(len(body),6_000_000)
+                self.assertEqual(len(body),9_000_000)
 
     def test_idle_connections_are_closed(self):
         import socket,time
