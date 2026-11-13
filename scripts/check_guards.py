@@ -403,6 +403,10 @@ GUARDS = [
      ['test_run_reliability.ParallelWorktreeTests.test_sibling_candidates_never_add_or_remove_worktrees_at_once']),
     ('soso/engine.py', 'with self.worktrees, contextlib.suppress(RuntimeError):', 'with contextlib.suppress(RuntimeError):',
      ['test_run_reliability.ParallelWorktreeTests.test_sibling_candidates_never_add_or_remove_worktrees_at_once']),
+    # Launcher, dashboard and entry-point review.
+    ('so-so', '    # Help skips the .so-so ownership check, so it never runs the runtime stored there.\n'
+     '    if [ -n "$so_so_help" ]; then\n        so_so_usage\n    fi\n    so_so_root="$so_so_state/runtime"',
+     '    so_so_root="$so_so_state/runtime"', ['test_bootstrap.BootstrapTests.test_help_never_runs_an_unchecked_managed_runtime']),
 ]
 
 
