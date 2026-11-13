@@ -403,6 +403,8 @@ GUARDS = [
      ['test_run_reliability.ParallelWorktreeTests.test_sibling_candidates_never_add_or_remove_worktrees_at_once']),
     ('soso/engine.py', 'with self.worktrees, contextlib.suppress(RuntimeError):', 'with contextlib.suppress(RuntimeError):',
      ['test_run_reliability.ParallelWorktreeTests.test_sibling_candidates_never_add_or_remove_worktrees_at_once']),
+    ('soso/intent.py', "models = {name: model for name, model in models.items() if model.get('kind') == 'ollama'}", 'pass',
+     ['test_intent.MarkdownPoolTests.test_local_only_never_sends_the_intent_to_a_cli_adapter']),
     ('soso/models.py', '        if key in CONTROL_FIELDS:\n            redacted[key] = value\n        elif',
      '        if False:\n            pass\n        elif',
      ['test_run_reliability.RedactionTests.test_control_fields_keep_a_secret_value_free_text_does_not',

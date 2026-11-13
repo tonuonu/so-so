@@ -93,10 +93,15 @@ def load_model_pool(path):
     return result
 
 
+def env_local_only():
+    """SOSO_LOCAL_ONLY: automatic selection uses local (Ollama) inference only."""
+    return os.environ.get('SOSO_LOCAL_ONLY', '').lower() in ('1', 'true', 'yes')
+
+
 def configure_models(config, backend='auto', model=None):
     """Return a config copy; explicit backend/model replace configured routes."""
     config = dict(config)
-    env_local = os.environ.get('SOSO_LOCAL_ONLY', '').lower() in ('1', 'true', 'yes')
+    env_local = env_local_only()
     if backend == 'auto' and model is None and config.get('models'):
         if not env_local:
             return config
