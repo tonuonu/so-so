@@ -731,13 +731,11 @@ class Run:
             self.report["reason"] = str(exc)
             self.report["next_retry_at"] = max(time.time() + 1, exc.retry_at) if exc.retry_at is not None else time.time() + 30
         except BudgetExceeded as exc:
-            self.report["status"] = "budget_exhausted"
-            self.report["reason"] = str(exc)
+            self.report.update(status="budget_exhausted", reason=str(exc))
         except KeyboardInterrupt:
             self.report["status"] = "interrupted"
         except Exception as exc:
-            self.report["status"] = "error"
-            self.report["reason"] = str(exc)
+            self.report.update(status="error", reason=str(exc))
         finally:
             self.report.setdefault("baseline", {"valid": False, "reason": "baseline not evaluated"})
             self.checkpoint()
@@ -1044,8 +1042,7 @@ class Run:
                 return result
             result["commit"] = expected = git(path, "rev-parse", "HEAD")
             phase = 'evaluate'
-            if preserve:
-                retain()  # Persist before evaluation or review can exhaust the epoch.
+            retain()  # Persist before evaluation or review can exhaust the epoch.
             self.log("activity", phase="testing", candidate=index)
             # A sibling may have changed watched settings since; compare and check out with the repository's
             # own. Outside the lock (which logging also takes): unsettled() then sees any change meanwhile.
@@ -1105,21 +1102,16 @@ class Run:
         except (ModelUnavailable, BudgetExceeded, KeyboardInterrupt, SystemExit) as exc:
             retain()
             if isinstance(exc, ModelUnavailable):
-                result["unavailable"] = {"retry_at": exc.retry_at, "reason": str(exc)}
-                result["evaluation"] = {"valid": False, "reason": str(exc)}
+                result.update(unavailable={"retry_at": exc.retry_at, "reason": str(exc)}, evaluation={"valid": False, "reason": str(exc)})
             elif isinstance(exc, BudgetExceeded):
-                result["budget_exhausted"] = True
-                result["error"] = str(exc)
-                result["evaluation"] = {"valid": False, "reason": "budget exhausted"}
+                result.update(budget_exhausted=True, error=str(exc), evaluation={"valid": False, "reason": "budget exhausted"})
             elif isinstance(exc, SystemExit) or not preserve:
                 raise
             else:
-                result['interrupted'] = True
-                result['evaluation'] = {'valid': False, 'reason': 'interrupted'}
+                result.update(interrupted=True, evaluation={'valid': False, 'reason': 'interrupted'})
         except Exception as exc:
-            result["error"] = str(exc)[:2000]
-            result["error_kind"] = type(exc).__name__
-            result["evaluation"] = {"valid": False, "reason": type(exc).__name__}
+            result.update(error=str(exc)[:2000], error_kind=type(exc).__name__,
+                          evaluation={"valid": False, "reason": type(exc).__name__})
         finally:
             with self.lock:
                 self.active_experiments -= 1
