@@ -117,7 +117,7 @@ instead of requiring a wide table. Accumulated request time includes in-flight
 requests and sums parallel requests; it is not run wall-clock duration. Unfinished historical calls
 cannot become live when a new epoch starts. Unmatched stopped calls have unknown
 duration rather than an increasing timer. Token totals require provider telemetry;
-GPU utilization, RAM use, live token streaming and billing are not measured here.
+CPU and GPU utilization, RAM use, live token streaming and billing are not measured here.
 
 Secondary details, history and visual assets use expandable sections. The page
 has one brand heading, clear focus outlines, a skip link, stable connection
