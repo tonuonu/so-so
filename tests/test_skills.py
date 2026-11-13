@@ -12,6 +12,14 @@ class SkillTests(unittest.TestCase):
     def test_traversal_rejected(self):
         for name in ('../LICENSE','/etc/passwd','unknown'):
             with self.assertRaises(ValueError): read_skill(name)
+    def test_page_bounds_must_be_finite_integers(self):
+        # JSON reads 1e999 as infinity; int() of it raised OverflowError, which the worker loop does not catch.
+        self.assertEqual(read_skill('test-driven-development',2.0,3.0)['start'],2)
+        for value in (float('inf'),float('-inf'),float('nan'),2.5,'abc','2',True,None):
+            for key in ('start','lines'):
+                with self.subTest(key=key,value=value):
+                    with self.assertRaises(Exception) as caught:read_skill('test-driven-development',**{key:value})
+                    self.assertIsInstance(caught.exception,ValueError)
     def test_role_packet(self):
         self.assertIn('test-driven-development',prelude('worker'))
         self.assertIn('writing-plans',prelude('planner'))

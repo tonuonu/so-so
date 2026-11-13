@@ -450,6 +450,8 @@ GUARDS = [
     ('soso/cli.py', "1 if result['status'] == 'blocked' else ", '', ['test_cli.CliTests.test_goal_exit_codes_match_the_launcher']),
     ('soso/cli.py', 'except (TypeError, AttributeError) as exc:', 'except () as exc:',
      ['test_cli.CliTests.test_malformed_config_is_a_one_line_error']),
+    ('soso/skills.py', 'if type(value) is int or type(value) is float and value.is_integer():', 'if True:',
+     ['test_skills.SkillTests.test_page_bounds_must_be_finite_integers']),
 ]
 
 
