@@ -102,7 +102,11 @@ when they are symlinks. A device such as `/dev/null`, an include target too larg
 or too numerous to record, and one Git cannot parse (for example behind an
 `includeIf` that never holds) are not recorded and never stop a run; a watched
 change they bring in cannot be restored and fails closed, as below. The record is
-kept, owner-readable only, in the run folder for resume.
+kept, owner-readable only, in the run folder for resume. In persistent delivery,
+resuming a goal whose last epoch never finished (for example after a kill)
+compares the settings with that epoch's record before the next epoch, through
+`soso/unrestored.json` as described below, so a setting its worker left in place
+does not become the next baseline.
 
 After each worker they are restored, under the run lock that also covers staging
 and the commit, and again before the checkout. Each restore is logged as

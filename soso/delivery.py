@@ -644,6 +644,7 @@ def start_goal(repo: Path, intent: str | None = None, *, backend='auto', model=N
             state['head'] = git(Path(state['worktree']), 'rev-parse', 'HEAD')
             _save(folder, state)
         root = Path(state['worktree'])
+        goal_exec = state.get('allow_exec', True)  # --no-exec on a resume narrows only this run
         if not state.get('policy') and (folder / 'config.json').exists() and (root / POLICY / 'contract.json').exists():
             recovered = json.loads((folder / 'config.json').read_text())
             contract = json.loads((root / POLICY / 'contract.json').read_text())
@@ -674,6 +675,11 @@ def start_goal(repo: Path, intent: str | None = None, *, backend='auto', model=N
             # Interrupted contract generation may leave only its own policy file.
             pending = '\n'.join(line for line in pending.splitlines() if not line[3:].startswith(POLICY + '/'))
         active_report = state.get('active_epoch')
+        record = Path(active_report).parent / 'watched-config.json' if active_report else None
+        if goal_exec and record and record.is_file() and not (storage / 'unrestored.json').exists():
+            # That epoch never finished: a watched setting its worker changed may still be in place. The next
+            # epoch's Run compares the settings with its record first and refuses to start until they match.
+            atomic_json(storage / 'unrestored.json', {'run': record.parent.name, 'file': str(storage.parent / 'config')})
         if active_report and Path(active_report).is_file():
             active = json.loads(Path(active_report).read_text())
             current = git(root, 'rev-parse', 'HEAD')

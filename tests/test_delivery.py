@@ -577,6 +577,26 @@ print(json.dumps({'score':10*stage+(50 if expanded else 0),'complete':False}))
             third = self.start(resume_goal=first['goal_id'])
         self.assertEqual(third['status'], 'complete')
         self.assertEqual((Path(third['worktree']) / 'stage.txt').read_text(), '2')
+    def test_killed_epoch_leaves_no_watched_setting_for_the_next_baseline(self):
+        # A worker with exec changed a watched setting and the process was killed before the restore.
+        first = self.start()
+        state_path = Path(first['report'])
+        state = json.loads(state_path.read_text())
+        state.update(active_epoch=first['epochs'][-1]['report'], epochs=state['epochs'][:-1], status='running')
+        state_path.write_text(json.dumps(state))
+        git(self.repo, 'config', '--local', 'filter.evil.clean', 'cat')
+        runs = set((self.repo / '.git/soso').iterdir())
+        with patch('soso.delivery.time.time', return_value=time.time() + 5), \
+                self.assertRaisesRegex(ValueError, 'could not restore'):
+            self.start(resume_goal=first['goal_id'])
+        self.assertEqual(json.loads(state_path.read_text())['status'], 'blocked')
+        records = [run / 'watched-config.json' for run in set((self.repo / '.git/soso').iterdir()) - runs]
+        self.assertFalse([r for r in records if r.is_file() and 'filter.evil' in r.read_text()])
+        git(self.repo, 'config', '--local', '--unset', 'filter.evil.clean')  # put back as recorded
+        with patch('soso.delivery.time.time', return_value=time.time() + 10):
+            resumed = self.start(resume_goal=first['goal_id'])
+        self.assertEqual(resumed['status'], 'complete')
+
     def test_completion_review_source_shows_the_implementation_not_protected_files(self):
         self.repo.joinpath('AGENTS.md').write_text('Project rules. ' * 300)
         def work(router, task, path, config, log, index):

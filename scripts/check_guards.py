@@ -403,6 +403,9 @@ GUARDS = [
      ['test_run_reliability.ParallelWorktreeTests.test_sibling_candidates_never_add_or_remove_worktrees_at_once']),
     ('soso/engine.py', 'with self.worktrees, contextlib.suppress(RuntimeError):', 'with contextlib.suppress(RuntimeError):',
      ['test_run_reliability.ParallelWorktreeTests.test_sibling_candidates_never_add_or_remove_worktrees_at_once']),
+    # A killed epoch's record is compared before the next epoch, so its worker's setting is no baseline.
+    ('soso/delivery.py', "atomic_json(storage / 'unrestored.json', {'run': record.parent.name,", "(lambda *a: None)(None, {'run': record.parent.name,",
+     ['test_delivery.DeliveryTests.test_killed_epoch_leaves_no_watched_setting_for_the_next_baseline']),
     ('soso/delivery.py', "ws = Workspace(self.integration, self.config['protected'])", 'ws = Workspace(self.integration, [])',
      ['test_delivery.DeliveryTests.test_completion_review_source_shows_the_implementation_not_protected_files']),
     ('soso/intent.py', "models = {name: model for name, model in models.items() if model.get('kind') == 'ollama'}", 'pass',
