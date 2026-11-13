@@ -192,6 +192,53 @@ class IncompleteRoundTests(RepoCase):
         self.assertEqual([r['outcome'] for r in report['rounds']], ['incomplete'])
 
 
+class ParallelWorktreeTests(RepoCase):
+    def test_sibling_candidates_never_add_or_remove_worktrees_at_once(self):
+        # Git does not lock .git/worktrees: an add or remove that reads a sibling's half-written admin files
+        # dies ("failed to read .git/worktrees/<id>/commondir: Success"). The first add and the first remove
+        # each wait for a second worktree command, which can only arrive if the runner lets them overlap.
+        import threading
+        from soso import engine
+        real_git, lock = engine.git, threading.Lock()
+        running, overlaps, held = [], [], set()  # running: (command, event set when another command enters)
+
+        def observed(root, *args, **kw):
+            command = args[:2]
+            if command not in (('worktree', 'add'), ('worktree', 'remove')) or '-b' in args:
+                return real_git(root, *args, **kw)  # the result worktree is added before any candidate
+            mine = (command, threading.Event())
+            with lock:
+                for other, entered in running:
+                    overlaps.append((other, command))
+                    entered.set()
+                running.append(mine)
+                hold = command not in held
+                held.add(command)
+            try:
+                if hold:
+                    mine[1].wait(2)
+                return real_git(root, *args, **kw)
+            finally:
+                with lock:
+                    running.remove(mine)
+
+        together = threading.Barrier(2, timeout=30)  # both candidates reach their removes at the same time
+
+        def work(router, task, path, config, log, index):
+            together.wait()
+            return {'finished': True}
+
+        runner = Run(self.root, self.config(rounds=1, parallel=2), 'Improve')
+        with patch('soso.engine.git', observed), patch('soso.engine.worker', side_effect=work), \
+                patch('soso.engine.resources', return_value={'cpus': 2}), contextlib.redirect_stdout(io.StringIO()):
+            report = runner.run()
+        experiments = report['rounds'][0]['experiments']
+        self.assertEqual(overlaps, [])
+        self.assertEqual(len(experiments), 2)
+        self.assertFalse([e['error'] for e in experiments if e.get('error')])
+        self.assertEqual(git(self.root, 'worktree', 'list', '--porcelain').count('worktree '), 2)  # source + result
+
+
 class OptimizationEpochTests(unittest.TestCase):
     def setUp(self):
         import hashlib

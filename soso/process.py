@@ -3,15 +3,16 @@ import os
 import selectors
 import signal
 import subprocess
+import threading
 import time
 
 
-def execute(argv, cwd, timeout=60, stdin=None, limit=16000, env=None):
+def execute(argv, cwd, timeout=60, stdin=None, limit=16000, env=None, stderr=True):
     if not isinstance(argv, list) or not argv or not all(isinstance(x, str) for x in argv):
         raise ValueError("command must be a nonempty array of strings")
     started = time.monotonic()
     proc = subprocess.Popen(argv, cwd=cwd, stdin=subprocess.PIPE,
-                            stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                            stdout=subprocess.PIPE, stderr=subprocess.STDOUT if stderr else subprocess.DEVNULL,
                             start_new_session=True, env=env, bufsize=0)
     chunks = bytearray()
     total = 0
@@ -104,18 +105,58 @@ def common_dir(root):
     return os.path.realpath(os.path.join(root, result["output"].strip()))
 
 
-def git(root, *args, ok=(0,), env=None):
-    extra, env = env, None
+GIT_OUTPUT_LIMIT = 2_000_000  # bytes of Git output the runner reads
+
+
+def blob_head(root, blob, size, whole=False, timeout=60):
+    """Exactly the first size bytes of a blob, without reading the rest; None when Git fails, stalls past
+    timeout seconds (its process group is then killed, as execute does) or gives fewer bytes. With whole (the
+    blob is size bytes long) Git is read to its end, so its own exit code decides."""
+    proc = subprocess.Popen(["git", "cat-file", "blob", blob], cwd=root, stdout=subprocess.PIPE,
+                            stderr=subprocess.DEVNULL, start_new_session=True,
+                            env={**os.environ, "GIT_NO_REPLACE_OBJECTS": "1"})
+    def kill():
+        try:
+            os.killpg(proc.pid, signal.SIGKILL)  # the whole group: a child could hold the pipe open
+        except (ProcessLookupError, PermissionError):
+            proc.kill()
+    deadline = threading.Timer(timeout, kill)
+    deadline.start()
+    finished = None
+    try:
+        data = proc.stdout.read(size)
+        if whole:
+            data += proc.stdout.read(1)  # nothing more: the end of the output, then the exit code
+            finished = proc.wait()
+    finally:
+        deadline.cancel()
+        kill()
+        code = proc.wait()
+        proc.stdout.close()
+    # A whole read must end in success; a partial one may also be stopped by us after the bytes asked for.
+    ok = finished == 0 if whole else code in (0, -signal.SIGKILL)
+    return data if len(data) == size and ok else None
+
+
+class OutputLimit(RuntimeError):
+    """Git printed more than the runner reads: the output would be cut short."""
+
+
+def git(root, *args, ok=(0,), env=None, stdin=None, quiet=False):
+    """Git's output, stripped; quiet leaves stderr out, for output that is parsed."""
+    extra, env = env, dict(os.environ)
     if IDENTITY and ("scope" not in IDENTITY or common_dir(root) in IDENTITY["scope"]):
-        env = {**{k: v for k, v in IDENTITY.items() if k != "scope"}, **os.environ}
-    if extra:
-        env = {**(env or os.environ), **extra}
+        env = {**{k: v for k, v in IDENTITY.items() if k != "scope"}, **env}
+    # Objects as stored: replace refs could show the reviewer and the checkout other content than the
+    # commit holds. No advice either: it goes to stderr, which is read together with the output.
+    env.update(GIT_NO_REPLACE_OBJECTS="1", GIT_ADVICE="0", **(extra or {}))
     # Run no repository-configured programs: no hooks, and no fsmonitor hook, which could also report
-    # edited files as unchanged.
-    result = execute(["git", "-c", "core.hooksPath=/dev/null", "-c", "core.fsmonitor=false", *args], root, timeout=60,
-                     limit=2_000_000, env=env)
+    # edited files as unchanged. Status lists untracked files as by default, whatever the repository says.
+    result = execute(["git", "-c", "core.hooksPath=/dev/null", "-c", "core.fsmonitor=false",
+                      "-c", "status.showUntrackedFiles=normal", *args], root, timeout=60,
+                     stdin=stdin, limit=GIT_OUTPUT_LIMIT, env=env, stderr=not quiet)
     if result["returncode"] not in ok or result["timed_out"]:
         raise RuntimeError("git " + args[0] + ": " + result["output"][-4000:])
     if result["truncated"]:
-        raise RuntimeError("Git output exceeds limit")
+        raise OutputLimit("Git output exceeds limit")
     return result["output"].strip()

@@ -11,11 +11,12 @@ import re
 from pathlib import Path
 import statistics
 import shutil
+import stat
 import threading
 import time
 import uuid
 from .models import Budget, BudgetExceeded, ModelProtocolError, ModelUnavailable, Router, redact_value
-from .process import execute, git
+from .process import GIT_OUTPUT_LIMIT, OutputLimit, blob_head, execute, git
 from .workspace import Workspace, gitlinks, worker
 from .skills import prelude
 from .architecture import planning_reply
@@ -104,7 +105,10 @@ def index_flags(root):
 # Settings that change how content is staged or checked out, and the include and worktree-config
 # switches that can bring such settings in; other config (remotes, branches, user edits) is never touched.
 WATCHED = re.compile(r"filter\..*|include\..*|includeif\..*|extensions\.worktreeconfig|"
-                     r"core\.(attributesfile|autocrlf|eol|safecrlf|fsmonitor|worktree|sparsecheckout.*)|index\..*", re.I)
+                     r"core\.(attributesfile|autocrlf|eol|safecrlf|fsmonitor|worktree|sparsecheckout.*)|index\..*|"
+                     r"core\.(symlinks|filemode)|sparse\..*|attr\..*|diff\..*", re.I)  # diff.*: the reviewer's view
+INCLUDE = re.compile(r"include\.path|includeif\..*\.path", re.I)
+MAX_INCLUDED, MAX_CONFIG_BYTES = 64, 1 << 20
 
 
 def watched_config(path, source, file):
@@ -128,6 +132,250 @@ def watched_config(path, source, file):
     return direct, effective, included
 
 
+class Unrestorable(RuntimeError):
+    """A watched difference that a restore cannot undo; files names where."""
+    def __init__(self, files, message):
+        super().__init__(message)
+        self.files = files
+
+
+IRREGULAR, UNRECORDED = object(), False  # a path that is no regular file; state an older record lacks
+
+
+def config_bytes(name):
+    """A regular file's bytes, at most one over MAX_CONFIG_BYTES; None when it does not exist. Opened without
+    following a final symlink and without blocking, so a FIFO cannot hang the caller: OSError instead."""
+    try:
+        fd = os.open(name, os.O_RDONLY | os.O_NONBLOCK | os.O_NOFOLLOW)
+    except FileNotFoundError:
+        return None
+    with os.fdopen(fd, "rb") as stream:
+        if not stat.S_ISREG(os.fstat(fd).st_mode):
+            raise OSError("not a regular file: " + os.fspath(name))
+        return stream.read(MAX_CONFIG_BYTES + 1)
+
+
+def current_bytes(name):
+    """config_bytes, or IRREGULAR for anything that is no regular file (it then differs from any record)."""
+    try:
+        return config_bytes(name)
+    except OSError:
+        return IRREGULAR
+
+
+def replace_file(name, data):
+    """Put data at name through a new file renamed into place, never half written and never through a
+    symlink; a regular file there keeps its mode, anything else becomes owner-only."""
+    try:
+        before = os.lstat(name).st_mode
+        mode = stat.S_IMODE(before) if stat.S_ISREG(before) else 0o600
+    except FileNotFoundError:
+        mode = 0o600
+    temp = f"{name}.soso-{uuid.uuid4().hex[:8]}"
+    with os.fdopen(os.open(temp, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600), "wb") as stream:
+        stream.write(data)
+    try:
+        os.chmod(temp, mode)
+        os.replace(temp, name)
+    finally:
+        with contextlib.suppress(FileNotFoundError):
+            os.unlink(temp)
+
+
+def replace_refs(path):
+    """refs/replace/ entries: replace refs let Git show other content than a commit holds."""
+    listing = git(path, "for-each-ref", "--format=%(refname) %(objectname)", "refs/replace/")
+    return dict(line.split() for line in listing.splitlines())
+
+
+def outside(root, links):
+    """Symlinks among links whose target is absolute or resolves outside the worktree."""
+    top = os.path.realpath(root)
+    return [link for link in links if os.path.islink(os.path.join(top, link)) and (
+        os.path.isabs(os.readlink(os.path.join(top, link)))
+        or os.path.commonpath([top, os.path.realpath(os.path.join(top, link))]) != top)]
+
+
+ATTR_SOURCE = {}  # whether this Git accepts the global --attr-source option, probed once
+
+
+def supports_attr_source(root, tree):
+    """Whether this Git has --attr-source: probed by running it, not inferred from a version number."""
+    if "probed" not in ATTR_SOURCE:
+        probe = execute(["git", "--attr-source=" + tree, "rev-parse", "--git-dir"], root, timeout=30)
+        ATTR_SOURCE["probed"] = probe["returncode"] == 0 and not probe["timed_out"]
+    return ATTR_SOURCE["probed"]
+
+
+READERS = 8  # blob reads at a time, each its own bounded process
+
+
+def blob_kinds(root, blobs, stop):
+    """{blob: (kind, size)} for the blobs that can be read, sizes from one cat-file --batch-check, heads read by
+    READERS processes at a time. As Git judges it, kind is "empty", "binary" (a NUL byte in the first 8000
+    bytes) or "text"; "late" once time.monotonic() passes stop, when no more blobs are read."""
+    sizes = {}
+    listing = git(root, "cat-file", "--batch-check", stdin="".join(blob + "\n" for blob in blobs), quiet=True)
+    for line in listing.splitlines():
+        blob, kind, *size = line.split() + [""]
+        if kind == "blob" and size[0].isdigit():
+            sizes[blob] = int(size[0])
+
+    def kind_of(blob):
+        size = sizes[blob]
+        if time.monotonic() > stop:
+            return "late", size
+        head = blob_head(root, blob, min(size, 8000), whole=size <= 8000) if size else b""
+        return None if head is None else ("empty" if not size else "binary" if b"\0" in head else "text", size)
+    with concurrent.futures.ThreadPoolExecutor(max_workers=READERS) as pool:
+        found = dict(zip(sizes, pool.map(kind_of, sizes)))
+    return {blob: kind for blob, kind in found.items() if kind is not None}
+
+
+def listed_changes(raw):
+    """(old mode, new mode, old blob, new blob, name) from diff --raw -z, with renames and copies."""
+    tokens = iter(raw.split("\0"))
+    for token in tokens:
+        if token.startswith(":"):
+            old_mode, new_mode, old, new, status = token[1:].split()[:5]
+            name = next(tokens)
+            if status[:1] in ("R", "C"):
+                name = next(tokens)  # the new name
+            yield old_mode, new_mode, old, new, name
+
+
+def listed_binaries(numstat):
+    """For each file of diff --numstat -z, with renames and copies, whether Git shows it as binary."""
+    tokens = iter(numstat.split("\0"))
+    for token in tokens:
+        if token:
+            if token.count("\t") >= 2 and not token.split("\t", 2)[2]:  # a rename or copy: two names follow
+                next(tokens), next(tokens)
+            yield token.startswith("-\t-\t")
+
+
+def size_text(size):
+    return f"{size} B" if size < 1000 else f"{size / 1000:.1f} kB" if size < 1_000_000 else f"{size / 1_000_000:.1f} MB"
+
+
+def quoted(name):
+    """name as Git quotes it in diff headers with core.quotePath=true: a name with a control character, a
+    double quote, a backslash or a non-ASCII byte is put in double quotes with C escapes, so it cannot break
+    a line of what the reviewer reads."""
+    data = name.encode()
+    if all(32 <= byte < 127 and byte not in b'"\\' for byte in data):
+        return name
+    escapes = {7: "a", 8: "b", 9: "t", 10: "n", 11: "v", 12: "f", 13: "r", 34: '"', 92: "\\"}
+    return '"' + "".join("\\" + escapes[byte] if byte in escapes else chr(byte) if 32 <= byte < 127
+                         else f"\\{byte:03o}" for byte in data) + '"'
+
+
+def review_diff(root, base, commit, seconds=300):
+    """(diff, None) for a reviewer, or (None, reason) when the change cannot be shown in full.
+
+    No external diff program or textconv, and, where Git accepts --attr-source, attributes from the base
+    commit, so a -diff, binary or diff driver the candidate commits cannot hide its change, while the
+    user's own attributes still apply. Each file Git still shows only as binary gets a line with both sides'
+    kinds and sizes, read by blob id (a gitlink side counts as absent), and the text that is evaluated: a
+    text diff when both sides are text, the new text in full when only the new side is text, and nothing
+    more when the new side is binary or absent. A binary side is never shown as text. So attributes, an
+    older Git, or a NUL byte added or removed cannot hide new text, and a change to binary is flagged.
+    Withheld: text over 2 MB (UTF-8 bytes of what the reviewer would receive), a side that cannot be read,
+    or binary-shown files beyond the seconds allowed."""
+    # Attributes as the base commit holds them: the user's own (e.g. "diff" forcing text) apply, while
+    # attributes the candidate commits do not. Without --attr-source Git reads them from root's worktree,
+    # which both reviewers keep at the base. Ids are used as arguments: no stderr in them.
+    base = git(root, "rev-parse", "--verify", base + "^{commit}", quiet=True)
+    options = ["--attr-source=" + base] if supports_attr_source(root, base) else []
+    too_large = f"the diff exceeds {GIT_OUTPUT_LIMIT // 1_000_000} MB; split the change into smaller ones"
+    stop = time.monotonic() + seconds
+    try:
+        diff = git(root, *options, "diff", "--no-ext-diff", "--no-textconv", base, commit)
+        # The same files, paired by the same rename and copy detection, in the same order as the diff above.
+        changes = list(listed_changes(git(root, *options, "diff", "--raw", "-z", "--no-abbrev", base, commit, quiet=True)))
+        binaries = list(listed_binaries(git(root, *options, "diff", "--numstat", "-z", "--no-ext-diff", "--no-textconv",
+                                            base, commit, quiet=True)))
+        if len(changes) != len(binaries):
+            return None, "could not match the diff's files to show them"
+        # A gitlink side names a commit of another repository: as absent as a missing side.
+        shown = [[(mode, blob if blob.strip("0") and mode != "160000" else None) for mode, blob in
+                  ((old_mode, old), (new_mode, new))] + [name]
+                 for (old_mode, new_mode, old, new, name), binary in zip(changes, binaries) if binary]
+        kinds = blob_kinds(root, sorted({blob for *sides, _ in shown for _, blob in sides if blob}), stop) if shown else {}
+        nothing = git(root, "hash-object", "-w", "-t", "blob", "--stdin", stdin="", quiet=True) if shown else None
+        sent = len(diff.encode())  # what the reviewer receives, in bytes
+        if sent > GIT_OUTPUT_LIMIT:  # e.g. invalid UTF-8, each byte sent as a three-byte replacement character
+            return None, too_large
+        for *sides, name in shown:
+            found = [("absent", 0) if blob is None else kinds.get(blob) for _, blob in sides]
+            if time.monotonic() > stop or any(kind == "late" for kind, _ in filter(None, found)):
+                return None, "could not show every binary-shown file in time; split the change"
+            if None in found:
+                return None, f"could not read {quoted(name)} to show it"
+            (old_kind, old_size), (new_kind, new_size) = found
+            note = f"\n({quoted(name)}: {old_kind} {size_text(old_size)} \u2192 {new_kind} {size_text(new_size)}"
+            if old_kind == "text" and new_kind == "binary":
+                note += "; this change adds NUL bytes; later edits to this file will show only as binary"
+            note += ")"
+            # Only what is evaluated: the new side when it is text, and the old side only next to new text.
+            # Any other side is diffed as the empty blob; a binary side is never shown as text.
+            (_, old), (_, new) = sides
+            text = [old if old_kind == new_kind == "text" else nothing, new if new_kind == "text" else nothing]
+            if text != [nothing, nothing]:
+                changed = git(root, "diff", "--text", "--no-ext-diff", "--no-textconv", *text, "--")
+                if changed:  # e.g. not for a mode change or a pure rename
+                    note += ("\n(Git shows it as binary; the change as text:)\n" if old_kind != "binary"
+                             else "\n(Git shows it as binary; its new text, the binary side not shown:)\n") + changed
+            sent += len(note.encode())
+            if sent > GIT_OUTPUT_LIMIT:
+                return None, too_large
+            diff += note
+    except OutputLimit:
+        return None, too_large
+    return diff, None
+
+
+def included(path, config):
+    """Bytes (None if missing) of every file that config reaches through include.path or includeIf.*.path,
+    transitively and whatever the condition: a worker can edit them, but key-level restore cannot. Files that
+    are no regular file, too large or too many are left out, and never stop a run."""
+    found, pending = {}, [os.fspath(config)]
+    while pending:
+        source = pending.pop()
+        try:
+            listing = git(path, "config", "--file", source, "--list", "-z") if os.path.isfile(source) else ""
+        except RuntimeError:
+            continue  # e.g. a file a never-taken includeIf names; Git would fail on it wherever it applies
+        for entry in listing.split("\0"):
+            key, _, value = entry.partition("\n")
+            if not INCLUDE.fullmatch(key) or not value:
+                continue
+            named = os.path.abspath(os.path.join(os.path.dirname(source), os.path.expanduser(value)))
+            name = os.path.realpath(named)  # e.g. a dotfiles symlink: the file itself is recorded and restored
+            data = None if name in found else current_bytes(name)  # e.g. /dev/null: nothing to restore
+            if data is IRREGULAR or len(data or b"") > MAX_CONFIG_BYTES or len(found) >= MAX_INCLUDED:
+                continue  # not recorded: a change it brings in cannot be restored, and fails closed instead
+            if name not in found:
+                found[name] = data
+                pending.append(named)
+    return found
+
+
+def dump_watched(watched):
+    encode = lambda data: data if data is None or data is UNRECORDED else base64.b64encode(data).decode()
+    return {"local": watched[0], "attributes": encode(watched[1]),
+            "included": {name: encode(data) for name, data in watched[2].items()},
+            "exclude": encode(watched[3]), "replace": watched[4]}
+
+
+def load_watched(saved):
+    """A record as dump_watched wrote it; what an older record lacks is UNRECORDED (included: none) and left alone."""
+    decode = lambda text: text if text is None or text is UNRECORDED else base64.b64decode(text)
+    return (tuple([tuple(entry) for entry in entries] for entries in saved["local"]), decode(saved["attributes"]),
+            {name: decode(text) for name, text in saved.get("included", {}).items()},
+            decode(saved["exclude"]) if "exclude" in saved else UNRECORDED, saved.get("replace", UNRECORDED))
+
+
 def differs_from_commit(path, commit, flagged):
     """Tracked files whose content on disk differs from the commit under Git's own conversion rules.
 
@@ -143,6 +391,25 @@ def differs_from_commit(path, commit, flagged):
         index.unlink(missing_ok=True)
     skipped = {entry[2:] for entry in flagged if entry[:1] == "S"}
     return [name for name in names if name and name not in skipped]
+
+
+def checkout(path, commit, flagged):
+    """Make the worktree a fresh checkout of commit under the current config; return what Git left behind.
+
+    The index is rebuilt from the commit with only the fresh worktree's skip-worktree entries, every file
+    on disk is deleted (git clean against an empty index), and every file is written again, so no file,
+    index flag or stat cache of the worker survives; filters, ident and line endings apply as on a clone."""
+    git(path, "-c", "core.sparseCheckout=false", "-c", "index.sparse=false", "read-tree", commit)
+    skipped = "".join(entry[2:] + "\0" for entry in sorted(flagged) if entry[:1] == "S")
+    if skipped:  # outside the sparse checkout: absent, as in the fresh worktree and the baseline
+        git(path, "update-index", "-z", "--skip-worktree", "--stdin", stdin=skipped)
+    empty = Path(git(path, "rev-parse", "--absolute-git-dir")) / "soso-empty-index"
+    empty.unlink(missing_ok=True)
+    git(path, "clean", "-ffdqx", ok=(0, 1), env={"GIT_INDEX_FILE": str(empty)})
+    left = [name for name in os.listdir(path) if name != ".git"]  # e.g. special files or read-only folders
+    if not left:
+        git(path, "checkout-index", "-u", "-a", "-f")  # -u: the index records the new files, as a checkout does
+    return left
 
 
 def nested_git(root):
@@ -265,9 +532,9 @@ def evaluate(root, config, budget):
             "checks": results, "samples": samples}
 
 
-def atomic_json(path, value):
-    temp = path.with_suffix(".tmp")
-    with temp.open("w") as stream:
+def atomic_json(path, value, private=False):
+    temp = path.with_suffix(".tmp")  # private: owner-only, e.g. a record holding the bytes of config files
+    with open(temp, "w", opener=lambda name, flags: os.open(name, flags, 0o600 if private else 0o666)) as stream:
         json.dump(value, stream, indent=2, allow_nan=False)
         stream.write("\n")
         stream.flush()
@@ -288,22 +555,44 @@ class Run:
         if not common.is_absolute():
             common = (self.root / common).resolve()
         self.storage = common / "soso"
-        # Watched shared settings and info/attributes, recorded when the first candidate worktree is created.
-        self.attributes, self.watched = common / "info" / "attributes", None
+        # Watched shared settings, info/attributes and included config files, recorded when the first
+        # candidate worktree is created; restores counts restores that changed something.
+        self.attributes, self.exclude = (Path(os.path.realpath(common / "info" / name)) for name in ("attributes", "exclude"))
+        self.watched = None
         self.config_file = os.path.realpath(common / "config")
-        self.started_experiments = self.active_experiments = 0
+        self.started_experiments = self.active_experiments = self.restores = 0
         self.storage.mkdir(exist_ok=True)
         self.lock = threading.Lock()
+        # Git does not lock .git/worktrees: a worktree add or remove that reads a sibling's half-written admin
+        # files dies (e.g. "failed to read .git/worktrees/<id>/commondir"), so candidates take turns.
+        self.worktrees = threading.Lock()
         self.run_id = resume or time.strftime("%Y%m%d-%H%M%S-") + uuid.uuid4().hex[:8]
         if not self.run_id.replace("-", "").isalnum():
             raise ValueError("invalid run id")
+        self.unrestored = self.storage / "unrestored.json"
+        if not resume and self.unrestored.is_file():
+            # A setting a worker left in place must not become a new run's baseline.
+            keep = f"delete {self.unrestored} to keep the current ones, before starting a new run"
+            try:
+                failed = json.loads(self.unrestored.read_text())
+                record = self.storage / failed["run"] / "watched-config.json"
+                recorded = load_watched(json.loads(record.read_text()))
+            except (OSError, ValueError, KeyError, TypeError, AttributeError):
+                raise ValueError(f"a run could not restore repository settings and its record is gone; check them and "
+                                 + keep) from None
+            try:
+                repaired = self.repaired(recorded)
+            except (RuntimeError, OSError):
+                repaired = False  # what cannot be read cannot be shown to match
+            if not repaired:
+                raise ValueError(f"run {failed['run']} could not restore {failed['file']}; put back the settings recorded "
+                                 f"in {record}, or " + keep)
+            self.unrestored.unlink()
         self.folder = self.storage / self.run_id
         self.folder.mkdir(exist_ok=bool(resume))
         saved = self.folder / "watched-config.json"
         if resume and saved.is_file():  # a change left by a killed worker must not become the baseline
-            baseline = json.loads(saved.read_text())
-            self.watched = (tuple([tuple(entry) for entry in entries] for entries in baseline["local"]),
-                            None if baseline["attributes"] is None else base64.b64decode(baseline["attributes"]))
+            self.watched = load_watched(json.loads(saved.read_text()))
         self.integration = self.folder / "result"
         self.report_path = self.folder / "report.json"
         self.router = Router(config, self.budget, self.log)
@@ -499,7 +788,10 @@ class Run:
     def review(self, candidate):
         if "reviewer" not in self.config["routes"]:
             return True
-        diff = git(self.integration, "diff", "HEAD", candidate["commit"])
+        diff, withheld = review_diff(self.integration, "HEAD", candidate["commit"], min(300, self.budget.remaining()))
+        if withheld:  # never ask a model to approve a change it cannot see
+            candidate["review"] = {"approve": False, "reason": withheld}
+            return False
         # Do not silently review a truncated patch.
         prompt = (prelude('reviewer') + 'Review this measured candidate for correctness, evaluator gaming and scope. '
                   'Return JSON {"approve":true,"reason":"..."}.\nINTENT:\n' + self.intent
@@ -508,18 +800,103 @@ class Run:
         candidate["review"] = reply
         return reply.get("approve") is True
 
+    def shared(self, path, files=True):
+        """Watched shared state as it is now: settings, info/attributes, included config files (with files),
+        info/exclude and replace refs."""
+        def info(name):  # anything but a regular file (e.g. /dev/null) is left alone: UNRECORDED
+            data = current_bytes(name)
+            if data is not IRREGULAR and len(data or b"") > MAX_CONFIG_BYTES:
+                raise ValueError(f"{name} is too large to record")
+            return UNRECORDED if data is IRREGULAR else data
+        return (watched_config(path, "--local", self.config_file)[:2], info(self.attributes),
+                included(path, self.config_file) if files else {}, info(self.exclude), replace_refs(path))
+
+    def repaired(self, recorded):
+        """Whether the shared state matches recorded (included files aside: their watched values are part of the
+        settings), read in a detached worktree as candidates are, so includeIf onbranch and gitdir conditions
+        evaluate as they did when it was recorded."""
+        probe = self.storage / ("probe-" + uuid.uuid4().hex[:8])
+        git(self.root, "worktree", "add", "--detach", "--no-checkout", str(probe), "HEAD")
+        try:
+            now = self.shared(probe, files=False)
+        finally:
+            git(self.root, "worktree", "remove", "--force", str(probe))
+        return all(old is UNRECORDED or old == new for i, (old, new) in enumerate(zip(recorded, now)) if i != 2)
+
+    def unsettled(self, path, own, restored, restores):
+        """Whether a watched setting changed after restores was read, e.g. while files were checked out."""
+        with self.lock:
+            self.restore_watched(path, own, restored)
+            return self.restores != restores
+
     def restore_watched(self, path, own, restored):
-        """Put back watched settings (shared, and this worktree's config.worktree) and info/attributes as
-        recorded; call with self.lock held. Only entries written in those files themselves are rewritten,
-        never values that come from an included file. Each change is added to restored with its old and new
-        values; return the changed names. A difference that cannot be restored raises after the rest is done."""
+        """restore_changes; any failure, a difference it cannot restore or an error on the way, also writes
+        soso/unrestored.json, so that no new run adopts the state as its baseline. Call with self.lock held."""
+        try:
+            return self.restore_changes(path, own, restored)
+        except (RuntimeError, OSError) as exc:
+            files = exc.files if isinstance(exc, Unrestorable) else str(self.config_file)
+            atomic_json(self.unrestored, {"run": self.run_id, "file": files})
+            if isinstance(exc, RuntimeError):
+                raise
+            raise RuntimeError(f"could not restore {files}: {exc}") from exc
+
+    def restore_changes(self, path, own, restored):
+        """Put back watched settings (shared, and this worktree's config.worktree), included config files and
+        info/attributes as recorded; call with self.lock held. Included files get their recorded bytes back;
+        otherwise only entries written in the config files themselves are rewritten, never an override for an
+        included value. Each change is added to restored with its old and new values; return the changed
+        names. A difference that cannot be restored raises Unrestorable after the rest is done. Whatever a
+        restore replaces is first kept, owner-only, under replaced/ in the run folder and named as "kept"."""
         changed, problems = [], []
+        text = lambda data: None if data is None else "(not a regular file)" if data is IRREGULAR else data.decode(
+            errors="replace")[:4000]
+
+        def put(name, data):  # the recorded bytes, or no file, in place of whatever is there now; returns what was kept
+            kept = None
+            try:
+                if os.path.lexists(name):  # e.g. the user's unrelated edits: recoverable from the run folder
+                    kept = self.folder / "replaced" / f"{uuid.uuid4().hex[:8]}-{os.path.basename(name)}"
+                    kept.parent.mkdir(mode=0o700, exist_ok=True)
+                    if os.path.isdir(name) and not os.path.islink(name):
+                        shutil.move(name, kept)  # a folder in place of the file: moved aside whole
+                    elif isinstance(found := current_bytes(name), bytes):
+                        replace_file(kept, found)
+                    else:
+                        kept = None  # a FIFO, link or device: nothing to keep
+                if data is None:
+                    with contextlib.suppress(FileNotFoundError):
+                        os.unlink(name)
+                else:
+                    replace_file(name, data)
+            except OSError:
+                problems.append((name, f"could not restore {name}; see config_restored"))
+            return kept and str(kept)
+
+        def included_files(found, before, after):
+            for name, data in self.watched[2].items():
+                if found(name):
+                    changed.append("included:" + name)
+                    restored.append({"key": "included:" + name, "restored": before, "found": after})
+                    restored[-1]["kept"] = put(name, data)
+
+        # A FIFO or other non-file would block Git or the reads below: the recorded file goes back first.
+        included_files(lambda name: current_bytes(name) is IRREGULAR, "a regular file", "not a regular file")
         for source, file, recorded, scope in (("--local", self.config_file, self.watched[0], "local"),
                                               (own[0], own[1], own[2], "worktree")):
             where = ["--local"] if source == "--local" else ["--file", str(source)]
             direct, effective, _ = watched_config(path, source, file)
             if (direct, effective) == recorded:
                 continue
+            supplied = lambda entries, own_entries: [entry for entry in entries if entry not in own_entries]
+            if scope == "local" and supplied(effective, direct) != supplied(recorded[1], recorded[0]):
+                # Watched values an included file supplies changed: its recorded bytes go back. Other edits to
+                # it are kept, and only the watched values are logged, never the file's other content.
+                keys = {k for k, _ in recorded[1] + effective if [v for x, v in recorded[1] if x == k]
+                        != [v for x, v in effective if x == k]}
+                included_files(lambda name: current_bytes(name) != self.watched[2][name],
+                               [f"{k}={v}" for k, v in recorded[1] if k in keys], [f"{k}={v}" for k, v in effective if k in keys])
+                direct, effective, _ = watched_config(path, source, file)
             for key in dict.fromkeys(k for k, _ in recorded[0] + direct):
                 before, after = [v for k, v in recorded[0] if k == key], [v for k, v in direct if k == key]
                 if before != after:
@@ -530,26 +907,33 @@ class Run:
                         git(path, "config", *where, "--add", key, value)
             direct, effective, included = watched_config(path, source, file)
             if direct != recorded[0]:
-                problems.append(f"could not restore the {scope} Git configuration; see config_restored")
-            elif effective != recorded[1]:
+                problems.append((file, f"could not restore the {scope} Git configuration; see config_restored"))
+            elif effective != recorded[1]:  # e.g. an include that an unwatched setting turned on
                 keys = sorted(k for k in dict.fromkeys(k for k, _ in recorded[1] + effective)
                               if [v for x, v in recorded[1] if x == k] != [v for x, v in effective if x == k])
                 files = sorted({f for k in keys for f in included.get(k, [])}) or ["an included file"]
-                problems.append(f"{scope} settings {', '.join(keys)} changed in {', '.join(files)}; "
-                                "repair them there, the runner does not edit included files")
-        attributes = self.attributes.read_bytes() if self.attributes.is_file() else None
-        if attributes != self.watched[1]:
-            changed.append("info/attributes")
-            restored.append({"key": "info/attributes",
-                             "restored": None if self.watched[1] is None else self.watched[1].decode(errors="replace")[:4000],
-                             "found": None if attributes is None else attributes.decode(errors="replace")[:4000]})
-            if self.watched[1] is None:
-                self.attributes.unlink()
-            else:
-                self.attributes.parent.mkdir(exist_ok=True)
-                self.attributes.write_bytes(self.watched[1])  # in place: keeps its mode
+                problems.append((", ".join(files), f"{scope} settings {', '.join(keys)} changed in {', '.join(files)}; "
+                                 "repair them there, the runner restores only included files it recorded"))
+        for label, name, data in (("info/attributes", self.attributes, self.watched[1]),
+                                  ("info/exclude", self.exclude, self.watched[3])):
+            found = current_bytes(name)
+            if data is UNRECORDED or found == data:
+                continue
+            changed.append(label)
+            restored.append({"key": label, "restored": text(data), "found": text(found)})
+            name.parent.mkdir(exist_ok=True)
+            restored[-1]["kept"] = put(name, data)
+        if self.watched[4] is not UNRECORDED:  # replace refs: the runner ignores them, the user's own Git does not
+            refs = replace_refs(path)
+            for ref in dict.fromkeys([*self.watched[4], *refs]):
+                before, after = self.watched[4].get(ref), refs.get(ref)
+                if before != after:
+                    changed.append(ref)
+                    restored.append({"key": ref, "restored": before, "found": after})
+                    git(path, "update-ref", *(["-d", ref] if before is None else [ref, before]))
+        self.restores += bool(changed)
         if problems:
-            raise RuntimeError("; ".join(problems))
+            raise Unrestorable(", ".join(file for file, _ in problems), "; ".join(message for _, message in problems))
         return changed
 
     def experiment(self, task, round_number, index, continuation=None):
@@ -566,13 +950,14 @@ class Run:
         cleanup = True
         phase = 'worker'
         self.log("activity", phase="writing", candidate=index, task=task[:2500])
-        expected = None
+        expected = retained = None
         def retain():
-            nonlocal cleanup
-            if preserve and path.exists() and expected:
+            nonlocal cleanup, retained
+            # Once the commit is retained for evaluation, the checkout may leave the files half written.
+            if preserve and path.exists() and expected and retained != phase:
                 cleanup = False  # Keep the worktree if its durable checkpoint fails.
                 preserve(path, result, base, expected, name, phase)
-                cleanup = True
+                cleanup, retained = True, phase
         try:
             base = git(self.integration, "rev-parse", "HEAD")
             expected = base
@@ -580,17 +965,15 @@ class Run:
                 if not preserve:
                     raise ValueError('candidate continuation requires delivery mode')
                 expected = continuation['commit']
-            git(self.root, "worktree", "add", "--detach", str(path), expected)
+            with self.worktrees:
+                git(self.root, "worktree", "add", "--detach", str(path), expected)
             flagged = index_flags(path)  # e.g. skip-worktree entries a sparse checkout gives every worktree
             nested = nested_git(path)
             own_file = Path(git(path, "rev-parse", "--absolute-git-dir")) / "config.worktree"
             with self.lock:
                 if self.watched is None:
-                    self.watched = (watched_config(path, "--local", self.config_file)[:2],
-                                    self.attributes.read_bytes() if self.attributes.is_file() else None)
-                    atomic_json(self.folder / "watched-config.json", {
-                        "local": self.watched[0],
-                        "attributes": None if self.watched[1] is None else base64.b64encode(self.watched[1]).decode()})
+                    self.watched = self.shared(path)
+                    atomic_json(self.folder / "watched-config.json", dump_watched(self.watched), private=True)
                 own_real = os.path.realpath(own_file)  # read even if the extension is off
                 own = (own_file, own_real, watched_config(path, own_file, own_real)[:2])
                 recorded = guarded
@@ -625,17 +1008,19 @@ class Run:
             if preserve:
                 retain()  # Persist before evaluation or review can exhaust the epoch.
             self.log("activity", phase="testing", candidate=index)
-            # Score exactly the committed tree, as the baseline was: experiment worktrees start
-            # fresh, so every ignored file here is uncommitted worker output.
-            git(path, "clean", "-ffdqX")
-            # A sibling may have changed watched settings since; check and evaluate with the repository's own,
-            # and compare the files on disk with the commit without trusting the index's stat cache.
+            # A sibling may have changed watched settings since; compare and check out with the repository's
+            # own. Outside the lock (which logging also takes): unsettled() then sees any change meanwhile.
             with self.lock:
                 if guarded:
                     self.restore_watched(path, own, restored)
-                drift = differs_from_commit(path, result["commit"], flagged)
+                restores = self.restores
+            # The worker's files on disk against its commit, without trusting the index's stat cache.
+            drift = differs_from_commit(path, result["commit"], flagged)
+            changes = git(path, "diff-tree", "-r", "-z", base, result["commit"]).split("\0")
+            changes = [(meta.split()[1], name) for meta, name in zip(changes[0::2], changes[1::2])]
+            modes, links = [mode for mode, _ in changes], [name for mode, name in changes if mode == "120000"]
             # A nested repository commits only as a gitlink: its files stay on disk, unrecorded and uncleaned.
-            if any(line.split()[1] == "160000" for line in git(path, "diff-tree", "-r", base, result["commit"]).splitlines()):
+            if any(mode == "160000" for mode in modes):
                 result["evaluation"] = {"valid": False, "reason": "embedded repositories are not allowed"}
             elif reconfigured:
                 result["evaluation"] = {"valid": False, "reason": "worker changed repository configuration"}
@@ -649,6 +1034,22 @@ class Run:
                 result["evaluation"] = {"valid": False, "reason": "files inside a submodule directory"}
             elif drift:
                 result["evaluation"] = {"valid": False, "reason": "evaluated files differ from the commit"}
+            # A checkout would write the new link as a file holding its target, as the worker's file did.
+            elif "120000" in modes and git(path, "config", "--type=bool", "core.symlinks", ok=(0, 1)) == "false":
+                result["evaluation"] = {"valid": False, "reason": "symlinks cannot be checked out with core.symlinks=false"}
+            # Score exactly the commit: from here on the files are a fresh checkout of it, as the baseline's were.
+            elif checkout(path, result["commit"], flagged):
+                result["evaluation"] = {"valid": False, "reason": "files Git cannot remove"}
+            elif guarded and self.unsettled(path, own, restored, restores):
+                result["evaluation"] = {"valid": False, "reason": "repository configuration changed during checkout"}
+            # A link out of the worktree scores files that are not in the commit, and breaks on a clone.
+            elif outside(path, links):
+                result["evaluation"] = {"valid": False, "reason": "symlinks must stay inside the worktree"}
+            # The commit's attributes, e.g. eol or an encoding, decide how protected files are written.
+            elif fingerprint(path, self.config["protected"]) != self.pinned:
+                result["evaluation"] = {"valid": False, "reason": "checkout changed protected files"}
+            elif git(path, "status", "--porcelain"):  # e.g. paths that collide on a case-insensitive file system
+                result["evaluation"] = {"valid": False, "reason": "checked-out files differ from the commit"}
             else:
                 result["evaluation"] = evaluate(path, self.config, self.budget)
                 if (git(path, "rev-parse", "HEAD") != result["commit"]
@@ -686,7 +1087,7 @@ class Run:
                 result["config_restored"] = redact_value(restored)
                 self.log("repository_config_restored", candidate=index, keys=[change["key"] for change in restored])
             if cleanup and path.exists():
-                with contextlib.suppress(RuntimeError):
+                with self.worktrees, contextlib.suppress(RuntimeError):
                     git(self.root, "worktree", "remove", "--force", str(path))
         self.log("experiment", **result)
         return result

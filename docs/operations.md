@@ -63,32 +63,140 @@ Persistent delivery instead opens bounded new epochs while preserving its goal.
 Only one run owns a repository at a time (POSIX file lock in the common Git directory).
 Source must be clean. Worktrees and configuration are pinned to committed source;
 ignored caches are not copied into candidate worktrees. Submodule and large-data
-setup are the caller's responsibility. With command execution, settings that change
-how content is staged or checked out (`filter.*`, `core.attributesFile`,
-`core.autocrlf`, `core.eol`, `core.safecrlf`, `core.fsmonitor`, `core.worktree`,
-`core.sparseCheckout*`, `index.*`, and the `include.*`, `includeIf.*` and
+setup are the caller's responsibility.
+
+A candidate is scored on exactly the commit that would be accepted. After the
+commit, every file in the candidate worktree is deleted (`git clean` against an
+empty index, which also removes ignored files and empty directories) and the
+commit is checked out again from an index rebuilt from it. Filters, `ident`,
+`eol`, `working-tree-encoding`, file modes and symlinks therefore apply as on a
+fresh clone with your configuration, paths outside a sparse checkout stay absent
+as in the baseline, and nothing the worker left on disk is scored. This costs
+about one checkout per candidate: on a synthetic 35,000-file repository on a
+local SSD it took 12-13 s, next to 6-15 s for `git worktree add` and 2-10 s
+for the comparison below. A candidate is rejected when anything survives the
+clean (for example a FIFO or a read-only folder), when a watched setting changes
+while the files are checked out, when the commit's attributes change how a
+protected file is written, when the checked-out files do not match the commit
+(for example paths that collide on a case-insensitive file system), when it
+adds or changes a symlink while `core.symlinks` is false (the checkout would
+write it as a plain file), and when it adds or changes a symlink whose target is
+absolute or resolves outside the worktree. In persistent delivery the goal
+worktree is checked out again the same way before each epoch's baseline, because
+`merge --ff-only` rewrites only the files that changed; when an interrupt cuts that
+checkout short, resuming the goal finishes it.
+
+With command execution, settings that change how content is staged or checked
+out (`filter.*`, `core.attributesFile`, `core.autocrlf`, `core.eol`,
+`core.safecrlf`, `core.fsmonitor`, `core.worktree`, `core.sparseCheckout*`,
+`core.symlinks`, `core.fileMode`, `sparse.*`, `attr.*`, `index.*`, `diff.*`
+(which shapes the reviewer's diff), and the `include.*`, `includeIf.*` and
 `extensions.worktreeConfig` settings that can bring such settings in), read with
 includes expanded from the repository config and each worktree's
-`config.worktree`, and `info/attributes` are recorded when a run's first
-candidate worktree is created; the record is kept in the run folder for resume.
+`config.worktree`, `info/attributes`, `info/exclude`, the `refs/replace/` refs,
+and the bytes of every file the repository config names with `include.path` or
+`includeIf.*.path` (followed transitively, whatever the condition, at most 64
+files of 1 MiB, a symlinked one at its target) are recorded when a run's first
+candidate worktree is created. `info/` files are also recorded at their target
+when they are symlinks. A device such as `/dev/null`, an include target too large
+or too numerous to record, and one Git cannot parse (for example behind an
+`includeIf` that never holds) are not recorded and never stop a run; a watched
+change they bring in cannot be restored and fails closed, as below. The record is
+kept, owner-readable only, in the run folder for resume.
+
 After each worker they are restored, under the run lock that also covers staging
-and the commit, and again before evaluation; each restore is logged as
-`repository_config_restored` with the key names, and the old and new values are
-kept in the candidate's record. This includes watched changes you make yourself
-during a run with command execution enabled; without it a worker cannot change
-config, so nothing is restored. Other config, such as remotes and branch
-tracking, is never touched. Before evaluation the files on disk are also compared
-with the commit through a fresh index, so a stat cache left by a worker's own
-`git add` cannot hide a difference. A candidate is rejected when it changed its
-own worktree-scope settings, changed shared ones while it was the only candidate
-running, was committed while a watched setting changed, has files that differ
-from its commit, adds or changes a gitlink (nested repository or submodule), sets
+and the commit, and again before the checkout. Each restore is logged as
+`repository_config_restored` with the key, file or ref names, and the old and
+new values are kept in the candidate's record. An included file gets its
+recorded bytes back, through a new file renamed into place with the old file's
+mode, only when the watched values that included files supply changed; the
+evidence lists those values, never the file's other content. Every recorded
+include whose bytes differ is then put back, including unrelated edits in it,
+while an include edit that changes no watched value is kept. A FIFO, symlink,
+folder or other non-file put in place of a recorded include is replaced at once.
+Whatever a restore replaces is first kept, owner-only, under `replaced/` in the
+run folder (a folder is moved there whole, a file's first MiB is copied), and the candidate's record names it as
+`kept`, so your unrelated edits can be recovered. A value that comes from an
+included file is never overridden in `.git/config`. Replace refs the worker added or changed are
+removed or put back. This includes watched changes you make yourself during a
+run with command execution enabled; without it a worker cannot change config,
+so nothing is restored. Other config, such as remotes and branch tracking, is
+never touched. When a difference cannot be restored (for example an
+`includeIf "hasconfig:remote.*.url:..."` that a new remote turned on), or any
+error stops a restore, the candidate ends with an error naming the file, and
+`soso/unrestored.json` in the
+common Git directory makes every new run, including the next delivery epoch,
+refuse to start until the settings again match that run's record. They are
+compared in a temporary detached worktree, as candidates read them, so
+`includeIf "onbranch:..."` and `"gitdir:..."` conditions hold as they did when
+recorded; a run killed during that check can leave a `soso/probe-*` worktree,
+which `git worktree remove --force` removes. Delete that file to keep the current
+settings instead.
+
+Before the checkout, the worker's files are also compared with the commit through
+a fresh index, so a stat cache left by a worker's own `git add` cannot hide a
+difference. A candidate is rejected when it changed its own worktree-scope
+settings, changed shared ones while it was the only candidate running, was
+committed while a watched setting changed, has files that differ from its
+commit, adds or changes a gitlink (nested repository or submodule), sets
 skip-worktree or assume-unchanged index flags its fresh worktree did not have,
-leaves files inside a submodule directory, or
-creates an entry named `.git` below the worktree root. Worker tools
-cannot write inside a submodule directory. Runner-managed Git commands run without
-hooks or an fsmonitor hook (`core.hooksPath=/dev/null`, `core.fsmonitor=false`);
-do not rely on hooks as your evaluator, and expect no fsmonitor speed-up in them.
+leaves files inside a submodule directory, or creates an entry named `.git`
+below the worktree root. Worker tools cannot write inside a submodule directory.
+Runner-managed Git commands run without hooks or an fsmonitor hook
+(`core.hooksPath=/dev/null`, `core.fsmonitor=false`), list untracked files
+whatever `status.showUntrackedFiles` says (so a repository with untracked files
+is not clean enough to start a run, even if you set it to `no`), and run without replace refs
+(`GIT_NO_REPLACE_OBJECTS=1`) and without advice messages (`GIT_ADVICE=0`, Git
+2.46 or newer). The reviewer's diff is built with `--no-ext-diff --no-textconv`
+and with attributes from the base commit (`--attr-source=<base>`, where a probe
+shows Git accepts it; an older Git reads them from the integration worktree,
+which the reviewer keeps at the base), so a `-diff`, `binary` or diff driver a
+candidate commits in `.gitattributes` cannot hide its change, while your own
+committed attributes, such as `diff` forcing text, still apply. Each file Git
+still shows only as binary gets a line with both sides' kinds and sizes (for
+example `pointer.dat: text 44 B → binary 3.1 MB`), its name quoted as Git
+quotes names in diff headers (C escapes, non-ASCII bytes in octal), read by blob
+id, never through the file name, and sized with one `cat-file --batch-check`; a
+gitlink side counts as absent. A side is binary as Git judges it: a NUL byte in
+its first 8000 bytes, of which at most 8000 bytes are read, within 60 seconds,
+by up to 8 Git processes at a time (about 10 seconds for 1,500 binary-shown
+files), and a failed or stalled read is withheld. Then only what is evaluated
+is shown, and a binary side never is: a file text on both sides (a `-diff` in
+your base or your own `info/attributes`) is shown as a text diff; a file whose
+new side is text (binary or absent before) shows its whole new text as added
+lines; a file whose new side is binary or absent shows only its kinds and sizes,
+not its old text, and a change from text to binary is flagged, since its new
+content and later edits to it will show only as binary. So a NUL byte added or
+removed, at any file size and also in a file Git pairs as renamed or copied,
+cannot hide new text: every new text is shown, and content that became binary is
+flagged as binary instead of shown. A file moved without Git pairing the rename
+(`diff.renames=false`, or a move with heavy edits) is a deletion and an
+addition, and each side is shown by the same rule. A file binary on both sides
+shows only "Binary files differ" and its sizes, as before, including a file an
+earlier accepted change made binary with a NUL byte, and so does a new file with
+a NUL byte in its first 8000 bytes; binary files are never refused, whatever
+their size, and neither is a text file of any size replaced by a binary. Text
+the reviewer would receive beyond 2 MB (counted in UTF-8 bytes, the main diff
+and every text shown for binary-shown files together) is never shown cut short:
+the candidate is not sent to the reviewer and not approved, with the reason "the
+diff exceeds 2 MB; split the change into smaller ones". A side that cannot be
+read, or binary-shown files that cannot all be read within the review's time (at
+most 300 seconds, less when the run's budget is nearly spent), are withheld the
+same way, each with its
+own reason. In persistent delivery such a reason goes back to the worker as repair
+feedback. Do not rely on hooks as your evaluator, and
+expect no fsmonitor speed-up in them.
+
+Not covered: global, system and XDG Git configuration, the attributes file that
+`core.attributesFile` (or the XDG default) names, and `GIT_CONFIG_*` variables
+are neither watched nor restored, so a worker with command execution
+that edits your global config (for example a smudge filter) can still change
+what is checked out, here and in your other repositories. Likewise, a process a
+worker leaves running detached from its process group can still write into the
+candidate worktree between the checkout and the evaluation. Use a container or
+VM to bound both. Two parallel workers can still race: a shared setting one
+changes and changes back while another candidate is checked out is not seen;
+run with `parallel` 1 when that matters.
 
 A run retains its result branch/worktree and candidate commit refs. Successful
 candidate commits are kept under `refs/soso/RUN_ID/`, including measured rejected

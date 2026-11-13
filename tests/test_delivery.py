@@ -147,6 +147,31 @@ print(json.dumps({'score':min(100,10*stage+(50 if stale else 0)),'complete':stag
         self.assertEqual(first['epochs'][0]['best'], 10)
         self.assertEqual((Path(first['worktree']) / 'stage.txt').read_text(), '1')
 
+    def test_contract_repair_scores_the_baseline_without_earlier_leftovers(self):
+        # Each epoch checks the goal worktree out again, but contract attempts score it as it stands:
+        # the second attempt must not see the marker the first attempt's evaluator left.
+        self.config['max_seconds'] = 600
+        self.repo.joinpath('.gitignore').write_text('cache/\n')
+        self.use_evaluator('''import json
+from pathlib import Path
+marker=Path('cache/marker')
+stale=marker.exists()
+marker.parent.mkdir(exist_ok=True)
+marker.write_text('1')
+print(json.dumps({'score':50 if stale else 0,'complete':False}))
+''')
+        original, reviews = self.answer, []
+        def answer(router, role, prompt, cwd, **kwargs):
+            if role == 'reviewer' and 'proposed acceptance contract' in prompt and not reviews:
+                reviews.append(prompt)
+                router.budget.claim()
+                return {'approve': False, 'reason': 'repair the coverage'}
+            return original(router, role, prompt, cwd, **kwargs)
+        self.answer = answer
+        first = self.start()
+        lines = (Path(first['report']).parent / 'contract-reviews.jsonl').read_text().splitlines()
+        self.assertEqual([json.loads(line)['baseline']['score'] for line in lines], [0, 0])
+
     def test_candidate_ignored_shadow_files_do_not_raise_accepted_score(self):
         self.config['max_seconds'] = 600  # as above: the result must not depend on machine speed
         self.repo.joinpath('.gitignore').write_text('cache/\n')
@@ -483,6 +508,93 @@ print(json.dumps({'score':100 if stage>=2 else 0,'complete':stage>=2}))
                 self.assertRaisesRegex(ValueError, 'retained candidate base or policy binding changed'):
             self.start(resume_goal=first['goal_id'])
         worker.assert_not_called()
+
+    def test_interrupt_during_checkout_keeps_the_retained_draft(self):
+        # The checkout deletes every file before writing them again; an interrupt in between must not
+        # drop the draft that was retained before it.
+        from soso import engine
+        def work(router, task, path, config, log, index):
+            (Path(path) / 'stage.txt').write_text('2')
+            return {'finished': True}
+        checkout = engine.checkout
+        def interrupted(path, *args):
+            (Path(path) / 'stage.txt').unlink()
+            raise KeyboardInterrupt
+        with patch('soso.engine.worker', side_effect=work) as worker:
+            with patch('soso.engine.checkout', side_effect=interrupted):
+                first = self.start()
+            self.assertEqual(first['status'], 'interrupted')
+            self.assertEqual(first['draft']['phase'], 'evaluate')
+            with patch('soso.delivery.time.time', return_value=time.time() + 5), \
+                    patch('soso.engine.checkout', side_effect=checkout):
+                resumed = self.start(resume_goal=first['goal_id'])
+        self.assertEqual(resumed['status'], 'complete')
+        self.assertEqual(worker.call_count, 1)
+
+    def test_goal_worktree_is_checked_out_again_before_the_next_baseline(self):
+        # merge --ff-only rewrites only changed files, so id.txt keeps "$Id$" although the accepted
+        # .gitattributes now expands it; the next epoch's baseline must score the commit as checked out.
+        self.config['max_seconds'] = 600
+        git(self.repo, 'init', '-b', 'main')
+        git(self.repo, 'config', 'user.name', 'Tester')
+        git(self.repo, 'config', 'user.email', 'test@example.invalid')
+        self.repo.joinpath('id.txt').write_text('$Id$\n')
+        git(self.repo, 'add', 'id.txt')
+        git(self.repo, '-c', 'commit.gpgsign=false', 'commit', '-m', 'base')
+        self.use_evaluator('''import json
+from pathlib import Path
+p=Path('stage.txt')
+stage=int(p.read_text()) if p.exists() else 0
+expanded='$Id' + ':' in Path('id.txt').read_text()
+print(json.dumps({'score':10*stage+(50 if expanded else 0),'complete':False}))
+''')
+        def work(router, task, path, config, log, index):
+            (Path(path) / '.gitattributes').write_text('id.txt ident\n')
+            (Path(path) / 'stage.txt').write_text('1')
+            return {'finished': True}
+        with patch('soso.engine.worker', side_effect=work):
+            first = self.start()
+        self.assertEqual(first['epochs'][0]['best'], 60)
+        with patch('soso.delivery.time.time', return_value=time.time() + 5), \
+                patch('soso.engine.worker', return_value={'finished': True}):
+            second = self.start(resume_goal=first['goal_id'])
+        report = json.loads(Path(second['epochs'][-1]['report']).read_text())
+        self.assertEqual(report['baseline']['score'], 60)
+
+    def test_interrupt_during_goal_checkout_is_finished_on_resume(self):
+        # The epoch's checkout deletes every file before writing them again; resume completes it.
+        from soso import delivery
+        first = self.start()
+        self.assertEqual((Path(first['worktree']) / 'stage.txt').read_text(), '1')
+        def interrupted(root, *args):
+            (Path(root) / 'stage.txt').unlink()
+            raise KeyboardInterrupt
+        with patch('soso.delivery.time.time', return_value=time.time() + 5), \
+                patch('soso.delivery.checkout', side_effect=interrupted):
+            second = self.start(resume_goal=first['goal_id'])
+        self.assertEqual(second['status'], 'interrupted')
+        with patch('soso.delivery.time.time', return_value=time.time() + 10):
+            third = self.start(resume_goal=first['goal_id'])
+        self.assertEqual(third['status'], 'complete')
+        self.assertEqual((Path(third['worktree']) / 'stage.txt').read_text(), '2')
+
+    def test_withheld_review_reason_reaches_the_worker(self):
+        # A diff too large to show is not reviewed; the draft is kept and the next worker learns why.
+        self.config['max_seconds'] = 600
+        tasks = []
+        def work(router, task, path, config, log, index):
+            tasks.append(task)
+            if len(tasks) == 1:
+                (Path(path) / 'big.py').write_text('x = 1  # padding\n' * 150000)
+                (Path(path) / 'stage.txt').write_text('1')
+            return {'finished': True}
+        with patch('soso.engine.worker', side_effect=work):
+            first = self.start()
+            with patch('soso.delivery.time.time', return_value=time.time() + 5):
+                self.start(resume_goal=first['goal_id'])
+        self.assertEqual(len(tasks), 2)
+        self.assertIn('REVIEW REPAIR REQUIRED', tasks[1])
+        self.assertIn('exceeds 2 MB', tasks[1])
 
     def test_interrupt_around_merge_preserves_or_reconciles_reviewed_draft(self):
         for after_merge in (False, True):
