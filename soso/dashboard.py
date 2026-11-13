@@ -380,7 +380,7 @@ class Monitor:
                             images.append({'path': str(path.relative_to(self.root)), 'name': str(path.relative_to(base))})
         except (OSError, ValueError):
             pass
-        return {'project': self.project.name, 'intent_title': active.get('title') or field(goal, 'intent', str, '').split('\n')[0], 'mode': active.get('mode'), 'status': status,
+        return {'project': self.project.name, 'intent_title': redact(str(active.get('title') or field(goal, 'intent', str, '').split('\n')[0])), 'mode': active.get('mode'), 'status': status,
                 'runner_active': live, 'phase': active.get('phase'), 'updated_at': active.get('updated_at'),
                 'last_event_at': latest.get('time'), 'next_retry_at': goal.get('next_retry_at') or active.get('next_retry_at'),
                 'reason': (journal.get('reason') or goal.get('reason') or report.get('reason')) if status != 'running' else None,

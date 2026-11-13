@@ -4,6 +4,8 @@ import json
 import re
 from urllib.parse import quote
 
+from .models import redact
+
 
 def title(intent):
     return next((line.strip().lstrip('#').strip()[:100] for line in intent.splitlines()
@@ -25,7 +27,8 @@ def _write(path, text):
 
 def update_history(managed, folder, entry):
     updated = datetime.fromtimestamp(entry['updated_at'], timezone.utc).isoformat(timespec='seconds')
-    lines = ['# ' + entry.get('title', 'Saved intent'), '',
+    # Titles are redacted for display only: entry.json and the snapshot's INTENT.md keep the text as written.
+    lines = ['# ' + redact(str(entry.get('title', 'Saved intent'))), '',
              'Status: ' + entry['status'], 'Updated (UTC): ' + updated, '',
              '[Original assignment](INTENT.md)', '',
              'This is an isolated source snapshot. Changes to the intent or source create a new snapshot.', '']
@@ -54,6 +57,6 @@ def update_history(managed, folder, entry):
              'This directory also holds checkpoints, logs, model settings and result worktrees.',
              'Deleting it removes resume history and any results stored here; copy wanted results first.', '']
     for timestamp, path, item, when in sorted(records, key=lambda record: record[0], reverse=True):
-        label = str(item.get('title', path.name)).replace('\n', ' ').replace('[', '\\[').replace(']', '\\]')
+        label = redact(str(item.get('title', path.name))).replace('\n', ' ').replace('[', '\\[').replace(']', '\\]')
         lines.append(f'- [{label}]({quote(str(path.relative_to(managed)))}/README.md) — {item.get("status", "unknown")} — {when}')
     _write(managed / 'README.md', '\n'.join(lines) + '\n')

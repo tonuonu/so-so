@@ -343,6 +343,20 @@ class LauncherTests(unittest.TestCase):
             with self.assertRaisesRegex(RuntimeError, 'another so-so process owns this project'):
                 launch(self.root, resume='')
 
+    def test_intent_title_is_redacted_where_it_is_shown_not_where_it_is_stored(self):
+        secret = 'title-secret-value-1234'
+        with patch.dict(os.environ, {'SOSO_TEST_API_KEY': secret}):
+            result = self.run_goal('Deploy with ' + secret + '\nMore detail.')
+            folder = Path(result['snapshot']).parent
+            from soso.dashboard import Monitor
+            shown = [(folder / 'README.md').read_text(), (self.root / '.so-so/README.md').read_text(),
+                     Monitor(self.root).snapshot()['intent_title']]
+        self.assertIn('# Deploy with [REDACTED]', shown[0])
+        self.assertIn('[Deploy with [REDACTED]]', shown[1].replace('\\', ''))
+        self.assertEqual(shown[2], 'Deploy with [REDACTED]')
+        self.assertNotIn(secret, ''.join(shown).replace(folder.name, ''))  # the folder name is a stored path
+        self.assertEqual(json.loads((folder / 'entry.json').read_text())['title'], 'Deploy with ' + secret)
+
     def test_malformed_saved_entry_does_not_block_history(self):
         from soso.history import update_history
         managed = self.root / '.so-so'

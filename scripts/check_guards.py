@@ -533,6 +533,14 @@ GUARDS = [
     # The completion excerpt leaves out the goal's own config file, wherever it is.
     ('soso/delivery.py', "'.gitignore', 'soso.json', self.config_path])", "'.gitignore', 'soso.json'])",
      ['test_delivery.DeliveryTests.test_completion_review_source_leaves_out_the_goal_config_file']),
+    # The intent title is redacted where it is shown, not where it is stored.
+    ('soso/history.py', "'# ' + redact(str(entry.get('title', 'Saved intent')))", "'# ' + str(entry.get('title', 'Saved intent'))",
+     ['test_launch.LauncherTests.test_intent_title_is_redacted_where_it_is_shown_not_where_it_is_stored']),
+    ('soso/history.py', "label = redact(str(item.get('title', path.name)))", "label = str(item.get('title', path.name))",
+     ['test_launch.LauncherTests.test_intent_title_is_redacted_where_it_is_shown_not_where_it_is_stored']),
+    ('soso/dashboard.py', "'intent_title': redact(str(active.get('title') or field(goal, 'intent', str, '').split('\\n')[0])),",
+     "'intent_title': str(active.get('title') or field(goal, 'intent', str, '').split('\\n')[0]),",
+     ['test_launch.LauncherTests.test_intent_title_is_redacted_where_it_is_shown_not_where_it_is_stored']),
     # Launcher, dashboard and entry-point review.
     ('so-so', '    # Help skips the .so-so ownership check, so it never runs the runtime stored there.\n'
      '    if [ -n "$so_so_help" ]; then\n        so_so_usage\n    fi\n    so_so_root="$so_so_state/runtime"',
