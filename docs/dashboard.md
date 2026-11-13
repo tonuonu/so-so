@@ -5,7 +5,9 @@ follow activity without extra model calls, packages or external services. The
 server runs only while that launcher is alive. Set `SOSO_DASHBOARD=0` to disable
 it; a dashboard port failure does not stop the work.
 
-The layout is independent of the assignment:
+It answers five operational questions: where the run is, which model and host
+are working, how long requests take, what progress has evidence, and whether the
+user must act. The layout is independent of the assignment:
 
 - Current phase, actual active model names, routing aliases, roles, elapsed call
   time and last recorded activity.
@@ -88,8 +90,9 @@ are not added to usage telemetry. Existing task descriptions and evaluator
 results remain in the normal run journal. Rendering treats those strings as
 text. Older runs cannot retrospectively gain metrics they did not record.
 
-Temporary inference failures show their reason and automatic retry time. A stopped
-launcher shows a saved retry time rather than promising an automatic retry.
+Temporary inference failures keep their cause through planner and worker retries
+and show it with the automatic retry time. A stopped launcher shows a saved retry
+time and next steps rather than promising an automatic retry.
 
 Model entries may set `display_name` and `host_label` for readable identification.
 These display-only fields are read live from the source `soso.json`; they do not
@@ -104,17 +107,26 @@ The roadmap distinguishes starting baseline checks from candidate validation.
 It shows observed stages in the current epoch, not a guessed completion percentage.
 Planning, implementation and review can repeat. Goal milestones remain separate
 and come from the planner and accepted review evidence. A stopped run shows its
-saved position; a waiting run shows the retry reason and time.
+saved position; a waiting run shows the retry reason and time. The roadmap is
+runner activity, not an independent assessment of feature quality.
 
 Model cards group display name, exact model identifier, host, route alias, active
 request context, timeout, accumulated request time, live elapsed time, tokens,
-median response latency and end-to-end throughput. Accumulated request time sums
-parallel requests; it is not run wall-clock duration. Unfinished historical calls
+median response latency and end-to-end throughput. They reflow on narrow screens
+instead of requiring a wide table. Accumulated request time includes in-flight
+requests and sums parallel requests; it is not run wall-clock duration. Unfinished historical calls
 cannot become live when a new epoch starts. Unmatched stopped calls have unknown
 duration rather than an increasing timer. Token totals require provider telemetry;
 GPU utilization, RAM use, live token streaming and billing are not measured here.
+
+Secondary details, history and visual assets use expandable sections. The page
+has one brand heading, clear focus outlines, a skip link, stable connection
+announcements and text labels alongside colored states.
 
 Temporary HTTP failures and model timeouts use the existing cooldown/retry loop.
 Global epoch budgets still apply. CPU-hosted models can have a longer model
 `timeout`, with a larger `max_seconds` allowance for the epoch. These are frozen
 when a run starts; changing source configuration applies on the next launch.
+Increasing a timeout does not make the model faster. The
+[architect/coordinator split](architecture.md) keeps strategic guidance on disk
+and assigns routine planning to a faster model.
