@@ -69,7 +69,10 @@ or count as an optimization plateau. Raw malformed output is not logged.
 
 Provider cooldowns persist across calls and restarts. When no eligible model is
 available, the goal waits until the earliest known reset. Unknown reset times use
-increasing delays.
+increasing delays (30 s, doubling to 900 s). A known reset time is kept, but from
+the second consecutive failure no sooner than the delay one step behind (30 s,
+60 s, ... 900 s), so a provider whose reset time is always now cannot make a tight
+retry loop. A successful call starts the count again.
 
 Command and Codex adapters must report quota and rate limits with a non-zero exit
 status. Quota text is recognized only in the output of a process that fails, returns

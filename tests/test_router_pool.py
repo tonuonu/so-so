@@ -5,7 +5,7 @@ import time
 import threading
 import unittest
 from unittest.mock import patch
-from soso.models import Router, Budget, ModelUnavailable, ModelOutputTruncated
+from soso.models import Router, Budget, ModelUnavailable, ModelOutputTruncated, retry_time
 
 
 def config():
@@ -194,6 +194,15 @@ class RoutingPolicyTests(unittest.TestCase):
                 restarted.ask('worker', 'p', Path.cwd())
             self.assertEqual(mocked.call_args.args[0]['command'], ['x'])
             self.assertEqual(restarted.cooldowns['qwen'], until)
+
+    def test_provider_reset_that_is_always_now_still_backs_off(self):
+        # A provider that keeps saying "retry now" must not make a tight loop: from the second consecutive failure
+        # its time is kept but no sooner than the backoff one step behind.
+        router = Router(config(), Budget(10, 30), lambda *a, **k: None)
+        with patch('soso.models.time.time', return_value=1000.0):
+            self.assertEqual([router._cooldown('x', 1000.0) - 1000 for _ in range(8)], [1, 30, 60, 120, 240, 480, 900, 900])
+            self.assertEqual(retry_time(5000.0, 3), 5000.0)  # a later provider time is kept
+            self.assertEqual([retry_time(None, n) - 1000 for n in (1, 2, 6, 7)], [30, 60, 900, 900])  # unchanged
 
     def test_all_routes_wait_until_earliest_reset_without_dispatch(self):
         router = Router(config(), Budget(10, 30), lambda *a, **k: None)

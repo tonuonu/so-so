@@ -263,6 +263,9 @@ The normal goal entry point uses an outer controller around bounded experiment
 epochs. Local epoch budgets remain finite; the goal can open a new epoch from the
 accepted commit. Provider rate/quota failures carry safe retry metadata. HTTP
 `Retry-After` is honored, including long waits; unknown reset times use backoff.
+From the second consecutive provider failure a known reset time is kept but
+waited for at least as long as the backoff one step behind (see
+[routing](routing.md)), so a reset time that is always now cannot spin.
 Waiting is persisted before sleeping and is distinct from completion. `--once`
 returns after a bounded epoch or wait decision so an external service can manage
 lifetime. A process must be running, or restarted by your service manager, to wake

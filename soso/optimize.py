@@ -6,7 +6,7 @@ import time
 
 from .delivery import configure_models, load_model_pool
 from .engine import BudgetExceeded, Run, atomic_json, load_config, local_programs
-from .models import ModelUnavailable, redact_record
+from .models import ModelUnavailable, redact_record, retry_time
 from .process import git
 
 
@@ -172,8 +172,7 @@ def optimize_project(project: Path, intent: str, folder: Path, models_path=None,
                 state['failures'] += 1
                 if state.get('run_id') and state['epochs']:
                     state['epochs'][-1]['provider_waits'] = state['epochs'][-1].get('provider_waits', 0) + 1
-                state.update(status='waiting', reason=str(exc), next_retry_at=max(time.time() + 1, exc.retry_at) if exc.retry_at is not None else
-                             time.time() + min(900, 30 * 2 ** min(state['failures'] - 1, 5)))
+                state.update(status='waiting', reason=str(exc), next_retry_at=retry_time(exc.retry_at, state['failures']))
                 print('Waiting: ' + str(exc) + '. Retrying automatically at ' + time.strftime('%H:%M:%S', time.localtime(state['next_retry_at'])) + '. Ctrl+C pauses the run.', flush=True)
                 checkpoint()
     except KeyboardInterrupt:

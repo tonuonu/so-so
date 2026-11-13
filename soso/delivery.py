@@ -20,7 +20,7 @@ from .architecture import planning_reply
 from .engine import (DEFAULTS, Run, atomic_json, checkout, evaluate, fingerprint, index_flags, load_config,
                      local_programs, resources, review_diff)
 from .models import ModelProtocolError, Budget, BudgetExceeded, HTTP_TRANSPORT, ModelUnavailable, Router, redact, redact_record, redact_value, \
-    register_key_variables
+    register_key_variables, retry_time
 from .process import IDENTITY, common_dir, execute, git
 from .workspace import Workspace
 
@@ -814,8 +814,7 @@ def start_goal(repo: Path, intent: str | None = None, *, backend='auto', model=N
                     break
             except ModelUnavailable as exc:
                 state['failures'] += 1
-                state.update(status='waiting', reason=str(exc), next_retry_at=max(time.time() + 1, exc.retry_at) if exc.retry_at is not None else
-                             time.time() + min(900, 30 * 2 ** min(state['failures'] - 1, 5)))
+                state.update(status='waiting', reason=str(exc), next_retry_at=retry_time(exc.retry_at, state['failures']))
                 print('Waiting: ' + str(exc) + '. Retrying automatically at ' + time.strftime('%H:%M:%S', time.localtime(state['next_retry_at'])) + '. Ctrl+C pauses the run.', flush=True)
                 _save(folder, state)
                 if once:

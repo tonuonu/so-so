@@ -485,6 +485,23 @@ GUARDS = [
      ['test_run_reliability.RedactionTests.test_api_key_env_value_is_redacted_whatever_its_name']),
     ('soso/models.py', "self.budget.remaining()  # the run's deadline cut the call short: not a provider cooldown", 'pass',
      ['test_router_pool.RoutingPolicyTests.test_deadline_during_classifier_call_is_not_a_provider_cooldown']),
+    # A provider reset time that is always now still backs off from the second consecutive failure.
+    ('soso/models.py', 'floor = 1 if failures < 2 else min(900, 30 * 2 ** min(failures - 2, 5))', 'floor = 1',
+     ['test_router_pool.RoutingPolicyTests.test_provider_reset_that_is_always_now_still_backs_off',
+      'test_delivery.DeliveryTests.test_provider_reset_that_is_always_now_still_backs_off',
+      'test_launch.LauncherTests.test_setup_reset_that_is_always_now_still_backs_off',
+      'test_optimize_launch.PreparedOptimizationTests.test_provider_reset_that_is_always_now_still_backs_off']),
+    ('soso/models.py', 'until = retry_time(retry_at, failures)', 'until = max(time.time() + 1, retry_at) if retry_at else retry_time(None, failures)',
+     ['test_router_pool.RoutingPolicyTests.test_provider_reset_that_is_always_now_still_backs_off']),
+    ('soso/delivery.py', "next_retry_at=retry_time(exc.retry_at, state['failures'])",
+     "next_retry_at=max(time.time() + 1, exc.retry_at) if exc.retry_at else retry_time(None, state['failures'])",
+     ['test_delivery.DeliveryTests.test_provider_reset_that_is_always_now_still_backs_off']),
+    ('soso/optimize.py', "next_retry_at=retry_time(exc.retry_at, state['failures'])",
+     "next_retry_at=max(time.time() + 1, exc.retry_at) if exc.retry_at else retry_time(None, state['failures'])",
+     ['test_optimize_launch.PreparedOptimizationTests.test_provider_reset_that_is_always_now_still_backs_off']),
+    ('soso/launch.py', 'next_retry_at=retry_time(exc.retry_at, failures)',
+     'next_retry_at=max(time.time() + 1, exc.retry_at) if exc.retry_at else retry_time(None, failures)',
+     ['test_launch.LauncherTests.test_setup_reset_that_is_always_now_still_backs_off']),
     # Launcher, dashboard and entry-point review.
     ('so-so', '    # Help skips the .so-so ownership check, so it never runs the runtime stored there.\n'
      '    if [ -n "$so_so_help" ]; then\n        so_so_usage\n    fi\n    so_so_root="$so_so_state/runtime"',

@@ -174,6 +174,23 @@ class PreparedOptimizationTests(unittest.TestCase):
         self.assertGreater(after['calls'], before['calls'])
         self.assertEqual(len(completed['epochs']), 1)
 
+    def test_provider_reset_that_is_always_now_still_backs_off(self):
+        from soso import optimize
+        real = optimize.configure_models
+        failures = []
+        def flaky(config):
+            if len(failures) < 2:
+                failures.append(time.time())
+                raise ModelUnavailable(time.time())
+            return real(config)
+        waits = []
+        with patch('soso.optimize.configure_models', side_effect=flaky), \
+             patch('soso.optimize._wait', side_effect=lambda until: waits.append(until - time.time())):
+            result = self.run_goal()
+        self.assertEqual(result['status'], 'optimized')
+        self.assertLess(waits[0], 2)
+        self.assertGreater(waits[1], 29)
+
     def test_quota_longer_than_original_deadline_opens_explicit_new_budget_epoch(self):
         now = time.time()
         retry = now + 3600

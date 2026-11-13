@@ -1034,6 +1034,18 @@ print(json.dumps({'score':10*stage+(50 if expanded else 0),'complete':False}))
         self.assertGreaterEqual(state['next_retry_at'], before + 30)
         self.assertLess(state['next_retry_at'], before + 35)
 
+    def test_provider_reset_that_is_always_now_still_backs_off(self):
+        def unavailable(*args):
+            raise ModelUnavailable(time.time())
+        with patch('soso.delivery.configure_models', side_effect=unavailable):
+            first = start_goal(self.repo, 'game', once=True)
+            later = time.time() + 5
+            with patch('soso.delivery.time.time', return_value=later):
+                second = start_goal(self.repo, once=True, resume_goal=first['goal_id'])
+        self.assertEqual(second['status'], 'waiting')
+        self.assertEqual(second['failures'], 2)
+        self.assertEqual(second['next_retry_at'], later + 30)
+
     def test_interrupt_wait_preserves_future_reset(self):
         retry = time.time() + 86400
         with patch('soso.delivery.configure_models', side_effect=ModelUnavailable(retry)):

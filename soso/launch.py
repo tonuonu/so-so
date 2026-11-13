@@ -15,7 +15,7 @@ import uuid
 from .delivery import _identity, start_goal
 from .engine import atomic_json
 from .history import folder_name, title, update_history
-from .models import ModelUnavailable, redact
+from .models import ModelUnavailable, redact, retry_time
 from .optimize import optimize_project, optimization_requested, prepared_optimization
 from .process import execute, git
 
@@ -296,9 +296,8 @@ def launch(cwd: Path, goal: str | None = None, intent_file: str | None = None, r
                         break
                     except ModelUnavailable as exc:
                         failures += 1
-                        entry.update(status='waiting', phase='model_setup', setup_failures=failures, next_retry_at=
-                                     max(time.time() + 1, exc.retry_at) if exc.retry_at is not None else
-                                     time.time() + min(900, 30 * 2 ** min(failures - 1, 5)))
+                        entry.update(status='waiting', phase='model_setup', setup_failures=failures,
+                                     next_retry_at=retry_time(exc.retry_at, failures))
                         _save(managed, folder, entry)
             if entry['mode'] == 'optimize':
                 def save_optimization(state):
