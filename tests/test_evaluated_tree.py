@@ -427,6 +427,22 @@ class EvaluatedTreeTests(RepoCase):
         self.assertEqual(included.read_bytes(), b'[core]\n')
         self.assertEqual(changed, ['included:' + str(included)])
 
+    def test_restore_check_waits_for_no_live_run(self):
+        # A start while another run owns the repository is refused before its probe worktree can race that
+        # run's candidates, and leaves the marker for that run to settle.
+        import fcntl
+        self.failed_restore()
+        git(self.root, 'config', 'core.autocrlf', 'false')  # repaired: only the lock may stop the probe
+        with (self.common_dir() / 'soso/lock').open('w') as lock:
+            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)  # a live run
+            with patch.object(Run, 'repaired') as probe:
+                with self.assertRaisesRegex(RuntimeError, 'another soso run owns this repository'):
+                    Run(self.root, self.config(), 'Improve', allow_exec=True)
+            probe.assert_not_called()
+        self.assertTrue((self.common_dir() / 'soso/unrestored.json').exists())
+        Run(self.root, self.config(), 'Improve', allow_exec=True)  # once the lock is free, the check proceeds
+        self.assertFalse((self.common_dir() / 'soso/unrestored.json').exists())
+
     def test_missing_record_of_a_failed_restore_gives_the_clear_message(self):
         report = self.failed_restore()
         os.unlink(self.common_dir() / 'soso' / report['run_id'] / 'watched-config.json')

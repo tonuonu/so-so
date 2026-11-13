@@ -571,23 +571,8 @@ class Run:
             raise ValueError("invalid run id")
         self.unrestored = self.storage / "unrestored.json"
         if not resume and self.unrestored.is_file():
-            # A setting a worker left in place must not become a new run's baseline.
-            keep = f"delete {self.unrestored} to keep the current ones, before starting a new run"
-            try:
-                failed = json.loads(self.unrestored.read_text())
-                record = self.storage / failed["run"] / "watched-config.json"
-                recorded = load_watched(json.loads(record.read_text()))
-            except (OSError, ValueError, KeyError, TypeError, AttributeError):
-                raise ValueError(f"a run could not restore repository settings and its record is gone; check them and "
-                                 + keep) from None
-            try:
-                repaired = self.repaired(recorded)
-            except (RuntimeError, OSError):
-                repaired = False  # what cannot be read cannot be shown to match
-            if not repaired:
-                raise ValueError(f"run {failed['run']} could not restore {failed['file']}; put back the settings recorded "
-                                 f"in {record}, or " + keep)
-            self.unrestored.unlink()
+            with self.owned():  # a run started meanwhile must not race the probe, nor a start this check
+                self.require_restored()
         self.folder = self.storage / self.run_id
         self.folder.mkdir(exist_ok=bool(resume))
         saved = self.folder / "watched-config.json"
@@ -610,12 +595,18 @@ class Run:
         self.report["head"] = git(self.integration, "rev-parse", "HEAD")
         atomic_json(self.report_path, redact_value(self.report))
 
-    def run(self):
+    @contextlib.contextmanager
+    def owned(self):
+        """The repository's run lock, held by one soso run at a time."""
         with (self.storage / "lock").open("w") as lock:
             try:
                 fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
             except BlockingIOError:
                 raise RuntimeError("another soso run owns this repository") from None
+            yield
+
+    def run(self):
+        with self.owned():
             return self._run()
 
     def _run(self):
@@ -810,6 +801,28 @@ class Run:
             return UNRECORDED if data is IRREGULAR else data
         return (watched_config(path, "--local", self.config_file)[:2], info(self.attributes),
                 included(path, self.config_file) if files else {}, info(self.exclude), replace_refs(path))
+
+    def require_restored(self):
+        """Refuse to start while a failed restore's settings remain (soso/unrestored.json). Call holding owned()."""
+        if not self.unrestored.is_file():
+            return  # another start found them repaired meanwhile
+        # A setting a worker left in place must not become a new run's baseline.
+        keep = f"delete {self.unrestored} to keep the current ones, before starting a new run"
+        try:
+            failed = json.loads(self.unrestored.read_text())
+            record = self.storage / failed["run"] / "watched-config.json"
+            recorded = load_watched(json.loads(record.read_text()))
+        except (OSError, ValueError, KeyError, TypeError, AttributeError):
+            raise ValueError(f"a run could not restore repository settings and its record is gone; check them and "
+                             + keep) from None
+        try:
+            repaired = self.repaired(recorded)
+        except (RuntimeError, OSError):
+            repaired = False  # what cannot be read cannot be shown to match
+        if not repaired:
+            raise ValueError(f"run {failed['run']} could not restore {failed['file']}; put back the settings recorded "
+                             f"in {record}, or " + keep)
+        self.unrestored.unlink()
 
     def repaired(self, recorded):
         """Whether the shared state matches recorded (included files aside: their watched values are part of the
