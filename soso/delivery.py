@@ -343,8 +343,10 @@ class DeliveryEpoch(Run):
     """Reuse isolated candidates and commit guards, with nonregressing acceptance."""
     MAX_REPAIRS = 3
 
-    def __init__(self, root, config, intent, contract, feedback, allow_exec, draft=None, goal_exec=None):
+    def __init__(self, root, config, intent, contract, feedback, allow_exec, draft=None, goal_exec=None,
+                 config_path='soso.json'):
         super().__init__(root, config, intent, allow_exec)
+        self.config_path = config_path  # the goal's runner configuration, kept out of the completion excerpt
         # The draft binding uses the goal's own permission: one resume with --no-exec narrows only that epoch.
         self.goal_exec = allow_exec if goal_exec is None else goal_exec
         self.integration = root
@@ -496,7 +498,7 @@ class DeliveryEpoch(Run):
             raise ValueError('completion evidence does not match HEAD')
         # GOAL and CONTRACT already carry the instructions: the bounded excerpt is for implementation, tests and
         # evaluators, not for instruction files or runner configuration.
-        ws = Workspace(self.integration, ['AGENTS.md', '*/AGENTS.md', 'INTENT.md', '.gitignore', 'soso.json'])
+        ws = Workspace(self.integration, ['AGENTS.md', '*/AGENTS.md', 'INTENT.md', '.gitignore', 'soso.json', self.config_path])
         files = []
         size = 0
         for name in ws.files():
@@ -807,7 +809,8 @@ def start_goal(repo: Path, intent: str | None = None, *, backend='auto', model=N
                                  config_sha256=hashlib.sha256((folder / 'config.json').read_bytes()).hexdigest())
                     _save(folder, state)
                 epoch = DeliveryEpoch(root, config, state['intent'], state['contract'], state['epochs'][-2:],
-                                      goal_exec and allow_exec, state.get('draft'), goal_exec=goal_exec)
+                                      goal_exec and allow_exec, state.get('draft'), goal_exec=goal_exec,
+                                      config_path=state['config_path'])
                 state['active_epoch'] = str(epoch.report_path)
                 _save(folder, state)
                 report = epoch.run_epoch()

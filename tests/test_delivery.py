@@ -970,6 +970,26 @@ print(json.dumps({'score':10*stage+(50 if expanded else 0),'complete':False}))
             names = [f['path'] for f in json.loads(prompt.split('\nSOURCE:\n')[1])]
             self.assertEqual(names, ['stage.txt', 'tests/test_stage.py'])  # not AGENTS.md, INTENT.md or .gitignore
 
+    def test_completion_review_source_leaves_out_the_goal_config_file(self):
+        git(self.repo, 'init', '-b', 'main')
+        git(self.repo, 'config', 'user.name', 'Tester')
+        git(self.repo, 'config', 'user.email', 'test@example.invalid')
+        (self.repo / 'custom.py').write_text(EVALUATOR)
+        (self.repo / 'conf').mkdir()
+        (self.repo / 'conf/goal.json').write_text(json.dumps({**self.config, 'evaluate': [sys.executable, '-B', 'custom.py']}))
+        git(self.repo, 'add', '--all')
+        git(self.repo, '-c', 'commit.gpgsign=false', 'commit', '-m', 'configured policy')
+        def work(router, task, path, config, log, index):
+            (Path(path) / 'stage.txt').write_text('2')
+            return {'finished': True}
+        with patch('soso.engine.worker', side_effect=work):
+            self.assertEqual(self.start(config_path='conf/goal.json')['status'], 'complete')
+        final = [p for r, p in self.prompts if p.startswith('Perform independent final acceptance review.')]
+        self.assertTrue(final)
+        for prompt in final:
+            names = [f['path'] for f in json.loads(prompt.split('\nSOURCE:\n')[1])]
+            self.assertEqual(names, ['custom.py', 'stage.txt'])  # not conf/goal.json
+
     def test_withheld_review_reason_reaches_the_worker(self):
         # A diff too large to show is not reviewed; the draft is kept and the next worker learns why.
         self.config['max_seconds'] = 600

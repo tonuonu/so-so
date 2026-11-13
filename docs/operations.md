@@ -295,6 +295,12 @@ that epoch's best, the epoch report records `baseline_drift` (`previous_best` an
 evaluator that depends on time or on state outside the commit; it changes no
 acceptance decision.
 
+The final completion review gets a bounded excerpt of implementation and test
+sources. Instruction files (`AGENTS.md`, `INTENT.md`, `.gitignore`), the frozen
+acceptance policy and the runner configuration (`soso.json` and the goal's own
+config file, when it has another path) are left out: the review already gets the
+goal and its contract.
+
 The goal controller does not infer that credentials grant unlimited scope. Put the
 allowed accounts, regions, resource limits and release destination in INTENT.md.
 Keep secret values in environment/keychain/provider profiles, not in intent prose.

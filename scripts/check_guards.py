@@ -462,7 +462,7 @@ GUARDS = [
     # A killed epoch's record is compared before the next epoch, so its worker's setting is no baseline.
     ('soso/delivery.py', "atomic_json(storage / 'unrestored.json', {'run': record.parent.name,", "(lambda *a: None)(None, {'run': record.parent.name,",
      ['test_delivery.DeliveryTests.test_killed_epoch_leaves_no_watched_setting_for_the_next_baseline']),
-    ('soso/delivery.py', "ws = Workspace(self.integration, ['AGENTS.md', '*/AGENTS.md', 'INTENT.md', '.gitignore', 'soso.json'])",
+    ('soso/delivery.py', "ws = Workspace(self.integration, ['AGENTS.md', '*/AGENTS.md', 'INTENT.md', '.gitignore', 'soso.json', self.config_path])",
      'ws = Workspace(self.integration, [])',
      ['test_delivery.DeliveryTests.test_completion_review_source_shows_implementation_and_tests_not_instructions']),
     ('soso/delivery.py', "except (ModelUnavailable, BudgetExceeded):\n                        raise",
@@ -530,6 +530,9 @@ GUARDS = [
     # A resume measures no baseline while soso/unrestored.json names its own run.
     ('soso/engine.py', 'if isinstance(pending, dict) and pending.get("run") == self.run_id:', 'if False:',
      ['test_sandbox_integrity.SandboxIntegrityTests.test_resume_measures_no_baseline_while_its_settings_are_unrestored']),
+    # The completion excerpt leaves out the goal's own config file, wherever it is.
+    ('soso/delivery.py', "'.gitignore', 'soso.json', self.config_path])", "'.gitignore', 'soso.json'])",
+     ['test_delivery.DeliveryTests.test_completion_review_source_leaves_out_the_goal_config_file']),
     # Launcher, dashboard and entry-point review.
     ('so-so', '    # Help skips the .so-so ownership check, so it never runs the runtime stored there.\n'
      '    if [ -n "$so_so_help" ]; then\n        so_so_usage\n    fi\n    so_so_root="$so_so_state/runtime"',
