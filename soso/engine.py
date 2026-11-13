@@ -132,6 +132,15 @@ def watched_config(path, source, file):
     return direct, effective, included
 
 
+def by_key(entries):
+    """Watched (key, value) entries as {key: [values in order]}. A restore writes a key again at the end of its
+    section, so settings are compared per key, not in file order."""
+    grouped = {}
+    for key, value in entries:
+        grouped.setdefault(key, []).append(value)
+    return grouped
+
+
 class Unrestorable(RuntimeError):
     """A watched difference that a restore cannot undo; files names where."""
     def __init__(self, files, message):
@@ -650,11 +659,17 @@ class Run:
             if not self.report.get("baseline", {}).get("valid"):
                 # Fresh, interrupted or previously invalid baselines are measured before any round.
                 before = fingerprint(self.integration, self.config["protected"])
+                settings, flagged = self.shared(self.integration), index_flags(self.integration)
                 self.log("activity", phase="baseline", task="Baseline checks")
                 self.report["baseline"] = evaluate(self.integration, self.config, self.budget)
-                if (git(self.integration, "rev-parse", "HEAD") != self.report["base"]
+                # As for candidates: an edit hidden from status by a filter or index flags (e.g. accepted code
+                # the checks load, in a later optimization epoch) is found through a fresh index.
+                if not self.baseline_kept(settings):
+                    self.report["baseline"] = {"valid": False, "reason": "baseline evaluation changed repository configuration"}
+                elif (git(self.integration, "rev-parse", "HEAD") != self.report["base"]
                         or git(self.integration, "status", "--porcelain")
-                        or fingerprint(self.integration, self.config["protected"]) != before):
+                        or fingerprint(self.integration, self.config["protected"]) != before
+                        or differs_from_commit(self.integration, self.report["base"], flagged)):
                     self.report["baseline"] = {"valid": False, "reason": "baseline evaluation modified source"}
                 if not self.report["baseline"]["valid"]:
                     self.report["status"] = "invalid_baseline"
@@ -802,6 +817,16 @@ class Run:
         return (watched_config(path, "--local", self.config_file)[:2], info(self.attributes),
                 included(path, self.config_file) if files else {}, info(self.exclude), replace_refs(path))
 
+    def baseline_kept(self, settings):
+        """Whether the baseline evaluation left the watched shared state as settings (self.shared before it). If not,
+        settings become this run's record and soso/unrestored.json blocks new runs until they are back: nothing
+        was recorded yet to restore them from."""
+        if self.shared(self.integration) == settings:
+            return True
+        atomic_json(self.folder / "watched-config.json", dump_watched(settings), private=True)
+        atomic_json(self.unrestored, {"run": self.run_id, "file": self.config_file})
+        return False
+
     def require_restored(self):
         """Refuse to start while a failed restore's settings remain (soso/unrestored.json). Call holding owned()."""
         if not self.unrestored.is_file():
@@ -834,7 +859,9 @@ class Run:
             now = self.shared(probe, files=False)
         finally:
             git(self.root, "worktree", "remove", "--force", str(probe))
-        return all(old is UNRECORDED or old == new for i, (old, new) in enumerate(zip(recorded, now)) if i != 2)
+        settings = lambda state: [[by_key(entries) for entries in state[0]], *state[1:]]  # per key, as restores compare
+        return all(old is UNRECORDED or old == new for i, (old, new) in enumerate(zip(settings(recorded), settings(now)))
+                   if i != 2)
 
     def unsettled(self, path, own, restored, restores):
         """Whether a watched setting changed after restores was read, e.g. while files were checked out."""
@@ -899,7 +926,7 @@ class Run:
                                               (own[0], own[1], own[2], "worktree")):
             where = ["--local"] if source == "--local" else ["--file", str(source)]
             direct, effective, _ = watched_config(path, source, file)
-            if (direct, effective) == recorded:
+            if by_key(direct) == by_key(recorded[0]) and by_key(effective) == by_key(recorded[1]):
                 continue
             supplied = lambda entries, own_entries: [entry for entry in entries if entry not in own_entries]
             if scope == "local" and supplied(effective, direct) != supplied(recorded[1], recorded[0]):
@@ -919,9 +946,9 @@ class Run:
                     for value in before:
                         git(path, "config", *where, "--add", key, value)
             direct, effective, included = watched_config(path, source, file)
-            if direct != recorded[0]:
+            if by_key(direct) != by_key(recorded[0]):
                 problems.append((file, f"could not restore the {scope} Git configuration; see config_restored"))
-            elif effective != recorded[1]:  # e.g. an include that an unwatched setting turned on
+            elif by_key(effective) != by_key(recorded[1]):  # e.g. an include that an unwatched setting turned on
                 keys = sorted(k for k in dict.fromkeys(k for k, _ in recorded[1] + effective)
                               if [v for x, v in recorded[1] if x == k] != [v for x, v in effective if x == k])
                 files = sorted({f for k in keys for f in included.get(k, [])}) or ["an included file"]
@@ -1067,6 +1094,12 @@ class Run:
                         or fingerprint(path, self.config["protected"]) != self.pinned
                         or git(path, "status", "--porcelain")):
                     raise ValueError("evaluation modified source or protected files")
+                # Code the checks or evaluator ran can hide an edit from status, with a filter or index flags: the
+                # watched settings go back, then the files are compared with the commit through a fresh index.
+                if self.unsettled(path, own, restored, restores):
+                    result["evaluation"] = {"valid": False, "reason": "repository configuration changed during evaluation"}
+                elif differs_from_commit(path, result["commit"], flagged):
+                    result["evaluation"] = {"valid": False, "reason": "evaluation changed files Git does not show"}
             # Retain accepted/rejected commits beyond Git's dangling-object grace period.
             git(self.root, "update-ref", f"refs/soso/{self.run_id}/{name}", result["commit"])
         except (ModelUnavailable, BudgetExceeded, KeyboardInterrupt, SystemExit) as exc:

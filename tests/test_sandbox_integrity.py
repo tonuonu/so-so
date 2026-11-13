@@ -365,29 +365,43 @@ class SandboxIntegrityTests(RepoCase):
         self.assertEqual(self.config_value('core.autocrlf'), '')
         self.assertEqual(self.restored_keys(experiment), ['local:core.autocrlf'])
 
+    @staticmethod
+    def planted(*settings, attributes=None):
+        """A json.py that evaluate.py imports from its own directory during check: it sets settings and
+        info/attributes, then stands in for json.dumps."""
+        lines = ["import os, subprocess",
+                 "git = lambda *a: subprocess.run(['git', *a], capture_output=True, text=True).stdout.strip()"]
+        lines += [f"git('config', {key!r}, {value!r})" for key, value in settings]
+        if attributes:
+            lines += ["info = os.path.join(git('rev-parse', '--git-common-dir'), 'info')",
+                      "os.makedirs(info, exist_ok=True)", f"open(os.path.join(info, 'attributes'), 'w').write({attributes!r})"]
+        return "\n".join(lines + ["dumps = lambda value: '{\"score\": %d}' % value['score']"]) + "\n"
+
+    def planted_run(self, module, steps):
+        """A candidate without command execution that writes module as json.py, runs check, deletes json.py and
+        takes steps; once they run out its provider pauses. Returns the report."""
+        from soso.models import ModelUnavailable
+        steps = iter([{'tool': 'write', 'path': 'json.py', 'content': module}, {'tool': 'check'},
+                      {'tool': 'delete', 'path': 'json.py'}, *steps])
+        def answer(router, role, prompt, cwd, attempt=0, task=None):
+            router.budget.claim()
+            if role == 'reviewer': return {'approve': True}
+            for step in steps:
+                return step
+            raise ModelUnavailable(reason='provider paused')
+        runner = Run(self.root, self.config(parallel=1, rounds=1), 'Improve', allow_exec=False)
+        with patch.object(Router, 'ask', answer), contextlib.redirect_stdout(io.StringIO()):
+            return runner.run()
+
     def test_filter_planted_through_check_without_exec_is_invalid_and_restored(self):
         # No run tool, but check runs evaluate.py, which imports a worker-written json.py from its own
         # directory. That module plants a smudge filter; the worker deletes it and commits a benign change.
         # Scored after a checkout under the filter, the candidate would get 100 for a commit that scores 1.
         common = self.common_dir()
-        planted = ("import os, subprocess\n"
-                   "git = lambda *a: subprocess.run(['git', *a], capture_output=True, text=True).stdout.strip()\n"
-                   "git('config', 'filter.v.smudge', 'sed s/^1$/100/')\n"
-                   "git('config', 'filter.v.clean', 'sed s/^100$/1/')\n"
-                   "info = os.path.join(git('rev-parse', '--git-common-dir'), 'info')\n"
-                   "os.makedirs(info, exist_ok=True)\n"
-                   "open(os.path.join(info, 'attributes'), 'w').write('value.txt filter=v\\n')\n"
-                   "dumps = lambda value: '{\"score\": %d}' % value['score']\n")
-        steps = iter([{'tool': 'write', 'path': 'json.py', 'content': planted}, {'tool': 'check'},
-                      {'tool': 'delete', 'path': 'json.py'}, {'tool': 'write', 'path': 'value.txt', 'content': '1'},
-                      {'tool': 'done', 'summary': 'done'}])
-        def answer(router, role, prompt, cwd, attempt=0, task=None):
-            router.budget.claim()
-            if role == 'reviewer': return {'approve': True}
-            return next(steps)
-        runner = Run(self.root, self.config(parallel=1, rounds=1), 'Improve', allow_exec=False)
-        with patch.object(Router, 'ask', answer), contextlib.redirect_stdout(io.StringIO()):
-            report = runner.run()
+        module = self.planted(('filter.v.smudge', 'sed s/^1$/100/'), ('filter.v.clean', 'sed s/^100$/1/'),
+                              attributes='value.txt filter=v\n')
+        report = self.planted_run(module, [{'tool': 'write', 'path': 'value.txt', 'content': '1'},
+                                           {'tool': 'done', 'summary': 'done'}])
         experiment = report['rounds'][0]['experiments'][0]
         self.assertEqual(git(self.root, 'show', experiment['commit'] + ':value.txt'), '1')
         self.assertEqual(experiment['evaluation'], {'valid': False, 'reason': 'worker changed repository configuration'})
@@ -398,6 +412,121 @@ class SandboxIntegrityTests(RepoCase):
         self.assertEqual(self.restored_keys(experiment), keys)
         self.assertEqual([e['keys'] for e in self.events('repository_config_restored')], [keys])
         self.assertFalse((common / 'soso/unrestored.json').exists())  # restored, so new runs may start
+
+    def test_filter_planted_through_check_is_gone_before_the_commit(self):
+        # The restore after the worker comes before staging: a planted clean filter must not shape the commit.
+        module = self.planted(('filter.v.clean', 'tr 1 7'), attributes='value.txt filter=v\n')
+        report = self.planted_run(module, [{'tool': 'write', 'path': 'value.txt', 'content': '1'},
+                                           {'tool': 'done', 'summary': 'done'}])
+        experiment = report['rounds'][0]['experiments'][0]
+        self.assertEqual(git(self.root, 'show', experiment['commit'] + ':value.txt'), '1')
+        self.assertEqual(experiment['evaluation'], {'valid': False, 'reason': 'worker changed repository configuration'})
+
+    def test_setting_planted_through_check_is_restored_when_the_worker_fails(self):
+        report = self.planted_run(self.planted(('core.autocrlf', 'true')), [])
+        self.assertEqual(report['status'], 'waiting')
+        self.assertEqual(self.config_value('core.autocrlf'), '')
+        self.assertEqual(self.restored_keys(report['rounds'][0]['experiments'][0]), ['local:core.autocrlf'])
+
+    def test_restored_setting_in_the_middle_of_a_section_keeps_runs_going(self):
+        # A restore writes core.autocrlf again after core.eol. Compared in file order, the restored settings
+        # looked unrestorable: the candidate failed, unrestored.json was written and every later run refused.
+        for allow_exec in (False, True):
+            with self.subTest(allow_exec=allow_exec):
+                git(self.root, 'config', '--unset-all', 'core.autocrlf', ok=(0, 5))
+                git(self.root, 'config', '--unset-all', 'core.eol', ok=(0, 5))
+                git(self.root, 'config', 'core.autocrlf', 'false')
+                git(self.root, 'config', 'core.eol', 'lf')
+                steps = iter([{'tool': 'write', 'path': 'value.txt', 'content': '5'}, {'tool': 'done', 'summary': 'done'}])
+                def answer(router, role, prompt, cwd, attempt=0, task=None):
+                    router.budget.claim()
+                    if role == 'reviewer': return {'approve': True}
+                    step = next(steps)
+                    if step['tool'] == 'write':
+                        git(self.root, 'config', 'core.autocrlf', 'input')  # the owner's own edit
+                    return step
+                experiment = self.improving_run(answer, allow_exec=allow_exec)
+                self.assertNotIn('error', experiment)
+                self.assertEqual(experiment['evaluation'], {'valid': False, 'reason': 'worker changed repository configuration'})
+                self.assertEqual(self.restored_keys(experiment), ['local:core.autocrlf'])
+                self.assertEqual((self.config_value('core.autocrlf'), self.config_value('core.eol')), ('false', 'lf'))
+                self.assertFalse((self.common_dir() / 'soso/unrestored.json').exists())
+
+    def test_repaired_settings_are_compared_per_key(self):
+        # A setting put back by hand, or by a restore, may sit later in its section than when it was recorded.
+        git(self.root, 'config', 'core.autocrlf', 'false')
+        git(self.root, 'config', 'core.eol', 'lf')
+        runner = Run(self.root, self.config(), 'Improve')
+        recorded = runner.shared(self.root)
+        git(self.root, 'config', '--unset', 'core.autocrlf')
+        git(self.root, 'config', 'core.autocrlf', 'false')
+        self.assertTrue(runner.repaired(recorded))
+        git(self.root, 'config', 'core.autocrlf', 'true')
+        self.assertFalse(runner.repaired(recorded))
+
+    # Code the checks load during the final evaluation turns value.txt from 1 into 9 and hides that from
+    # git status; the evaluator itself runs isolated (-I). Scored 9, while the commit holds 1.
+    HIDE_WITH_FILTER = ('git config filter.h.clean "tr 9 1" && '
+                        'printf "value.txt filter=h\\n" > "$(git rev-parse --git-common-dir)/info/attributes"')
+    HIDE_WITH_FLAG = 'git update-index --assume-unchanged value.txt'
+
+    def hiding_lib(self, hide):
+        return ("import subprocess\nfrom pathlib import Path\n"
+                "if Path('value.txt').read_text() == '1':\n"
+                f"    subprocess.run(['sh', '-c', {hide!r}], check=True)\n"
+                "    Path('value.txt').write_text('9')\n")
+
+    def checked_config(self):
+        (self.root / 'check.py').write_text('try:\n    import lib\nexcept ImportError:\n    pass\n')
+        git(self.root, 'add', 'check.py')
+        git(self.root, '-c', 'commit.gpgsign=false', 'commit', '-qm', 'check')
+        return {'checks': [[sys.executable, 'check.py']], 'evaluate': [sys.executable, '-I', 'evaluate.py']}
+
+    def hiding_candidate(self, hide):
+        steps = [{'tool': 'write', 'path': 'lib.py', 'content': self.hiding_lib(hide)},
+                 {'tool': 'write', 'path': 'value.txt', 'content': '1'}, {'tool': 'done', 'summary': 'done'}]
+        def answer(router, role, prompt, cwd, attempt=0, task=None):
+            router.budget.claim()
+            if role == 'reviewer': return {'approve': True}
+            return steps.pop(0)
+        runner = Run(self.root, self.config(parallel=1, rounds=1, **self.checked_config()), 'Improve')
+        with patch.object(Router, 'ask', answer), contextlib.redirect_stdout(io.StringIO()):
+            report = runner.run()
+        self.assertEqual(report['best'], 0)
+        return report['rounds'][0]['experiments'][0]
+
+    def test_filter_set_during_the_evaluation_is_invalid_and_restored(self):
+        experiment = self.hiding_candidate(self.HIDE_WITH_FILTER)
+        self.assertEqual(experiment['evaluation'], {'valid': False, 'reason': 'repository configuration changed during evaluation'})
+        self.assertEqual(self.restored_keys(experiment), ['local:filter.h.clean', 'info/attributes'])
+        self.assertEqual(self.config_value('filter.h.clean'), '')
+
+    def test_index_flag_set_during_the_evaluation_is_invalid(self):
+        experiment = self.hiding_candidate(self.HIDE_WITH_FLAG)
+        self.assertEqual(experiment['evaluation'], {'valid': False, 'reason': 'evaluation changed files Git does not show'})
+
+    def hiding_baseline(self, hide):
+        # The base already holds the hiding code, as a later optimization epoch's base holds accepted code.
+        (self.root / 'lib.py').write_text(self.hiding_lib(hide))
+        (self.root / 'value.txt').write_text('1')
+        config = self.checked_config()
+        git(self.root, 'add', 'lib.py', 'value.txt')
+        git(self.root, '-c', 'commit.gpgsign=false', 'commit', '-qm', 'accepted earlier')
+        runner = Run(self.root, self.config(parallel=1, rounds=1, **config), 'Improve')
+        with contextlib.redirect_stdout(io.StringIO()):
+            report = runner.run()
+        self.assertEqual(report['status'], 'invalid_baseline')
+        return report['baseline']
+
+    def test_filter_set_during_the_baseline_evaluation_blocks_new_runs(self):
+        baseline = self.hiding_baseline(self.HIDE_WITH_FILTER)
+        self.assertEqual(baseline, {'valid': False, 'reason': 'baseline evaluation changed repository configuration'})
+        with self.assertRaisesRegex(ValueError, 'could not restore'):
+            Run(self.root, self.config(), 'Improve')
+
+    def test_index_flag_set_during_the_baseline_evaluation_is_invalid(self):
+        baseline = self.hiding_baseline(self.HIDE_WITH_FLAG)
+        self.assertEqual(baseline, {'valid': False, 'reason': 'baseline evaluation modified source'})
 
     def test_restore_is_logged_when_the_candidate_ends_with_an_error(self):
         steps = iter([{'tool': 'run', 'argv': ['sh', '-c', 'git config core.autocrlf true && echo "# x" >> evaluate.py']},
@@ -522,7 +651,7 @@ class SandboxIntegrityTests(RepoCase):
                 "seen = subprocess.run(['git', 'config', '--get', 'core.safecrlf'], capture_output=True, text=True).stdout\n"
                 "print(json.dumps({'score': -1 if seen.strip() else int(Path('value.txt').read_text())}))\n")
         with patch.object(Run, 'restore_watched', sibling_changes_config):
-            experiment = self.improving_run(evaluate=[sys.executable, '-c', code])
+            experiment = self.improving_run(allow_exec=False, evaluate=[sys.executable, '-c', code])
         self.assertEqual(experiment['evaluation'].get('score'), 5, experiment['evaluation'])
         self.assertEqual(self.restored_keys(experiment), ['local:core.safecrlf'])
 
@@ -544,7 +673,7 @@ class SandboxIntegrityTests(RepoCase):
             if role == 'reviewer': return {'approve': True}
             return next(steps)
         with patch.object(Run, 'restore_watched', sibling_changes_config):
-            experiment = self.improving_run(answer)
+            experiment = self.improving_run(answer, allow_exec=False)
         self.assertEqual(calls[0], [])  # this candidate changed nothing itself
         self.assertEqual(git(self.root, 'show', experiment['commit'] + ':value.txt'), '999')
         self.assertEqual(experiment['evaluation'], {'valid': False, 'reason': 'worker changed repository configuration'})

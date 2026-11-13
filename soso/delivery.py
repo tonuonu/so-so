@@ -501,7 +501,10 @@ class DeliveryEpoch(Run):
             if checkout(self.integration, self.report['checkout'], index_flags(self.integration)):
                 raise ValueError('goal worktree holds files Git cannot remove; inspect it before resuming')
             self.report.pop('checkout')
+            settings = self.shared(self.integration)
             baseline = _bound(self.integration, self.config, self.budget)
+            if not self.baseline_kept(settings):  # e.g. accepted code that the checks load
+                raise ValueError('baseline evaluation changed repository configuration')
             self.report.update(baseline=baseline, best=baseline.get('score'))
             if not baseline['valid']:
                 raise ValueError('invalid delivery baseline')
