@@ -471,7 +471,7 @@ class DeliveryEpoch(Run):
         head = git(self.integration, 'rev-parse', 'HEAD')
         if evaluation.get('head') != head:
             raise ValueError('completion evidence does not match HEAD')
-        ws = Workspace(self.integration, [])
+        ws = Workspace(self.integration, self.config['protected'])  # the excerpt shows the implementation, not frozen policy
         files = []
         size = 0
         for name in ws.files():

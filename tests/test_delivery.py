@@ -577,6 +577,18 @@ print(json.dumps({'score':10*stage+(50 if expanded else 0),'complete':False}))
             third = self.start(resume_goal=first['goal_id'])
         self.assertEqual(third['status'], 'complete')
         self.assertEqual((Path(third['worktree']) / 'stage.txt').read_text(), '2')
+    def test_completion_review_source_shows_the_implementation_not_protected_files(self):
+        self.repo.joinpath('AGENTS.md').write_text('Project rules. ' * 300)
+        def work(router, task, path, config, log, index):
+            (Path(path) / 'stage.txt').write_text('2')
+            return {'finished': True}
+        with patch('soso.engine.worker', side_effect=work):
+            self.assertEqual(self.start()['status'], 'complete')
+        final = [p for r, p in self.prompts if p.startswith('Perform independent final acceptance review.')]
+        self.assertTrue(final)
+        for prompt in final:
+            names = [f['path'] for f in json.loads(prompt.split('\nSOURCE:\n')[1])]
+            self.assertEqual(names, ['stage.txt'])  # not AGENTS.md, INTENT.md or .gitignore
 
     def test_withheld_review_reason_reaches_the_worker(self):
         # A diff too large to show is not reviewed; the draft is kept and the next worker learns why.
@@ -683,6 +695,7 @@ print(json.dumps({'score':10*stage+(50 if expanded else 0),'complete':False}))
         with patch('soso.delivery.time.time', return_value=time.time() + 5):
             second = self.start(resume_goal=first['goal_id'])
         self.assertEqual(second['status'], 'incomplete')
+
     def test_state_keeps_paths_that_contain_a_secret_value(self):
         self.repo = (Path(self.tmp.name) / 'postgres-tool').resolve()
         self.repo.mkdir()
