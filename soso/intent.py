@@ -7,7 +7,7 @@ import shutil
 import shlex
 import time
 
-from .delivery import configure_models, load_model_pool, ollama_models
+from .delivery import configure_models, load_model_pool, env_local_only, ollama_models
 from .models import Budget, BudgetExceeded, Router, ModelUnavailable, redact_value
 
 
@@ -31,7 +31,8 @@ def resolve_pool(text, cwd):
             return pool
     folder = cwd / '.so-so' / 'pools'
     folder.mkdir(parents=True, exist_ok=True)
-    key = hashlib.sha256(text.encode()).hexdigest()
+    # A pool compiled with every adapter is never reused under SOSO_LOCAL_ONLY, nor the other way round.
+    key = hashlib.sha256((('local-only\0' if env_local_only() else '') + text).encode()).hexdigest()
     cache = folder / (key + '.json')
     if cache.exists():
         try:
@@ -65,6 +66,8 @@ def resolve_pool(text, cwd):
             alias = 'remote-' + hashlib.sha256((url + name).encode()).hexdigest()[:10]
             models[alias] = {'kind': 'ollama', 'url': url, 'model': name,
                              'context_tokens': 32768, 'context_bytes': 60000, 'timeout': 600}
+    if env_local_only():  # the intent text goes only to local inference, also while compiling the policy
+        models = {name: model for name, model in models.items() if model.get('kind') == 'ollama'}
     if not models:
         raise ModelUnavailable(reason='no inference endpoint available yet')
     # Bootstrap policy interpretation uses a mentioned adapter when possible;

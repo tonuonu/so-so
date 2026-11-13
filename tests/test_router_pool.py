@@ -79,6 +79,22 @@ class RoutingPolicyTests(unittest.TestCase):
             router.ask('worker', 'packet', Path.cwd(), task='unclear')
         self.assertEqual(mocked.call_args_list[-1].args[0]['command'], ['x'])
 
+    def test_deadline_during_classifier_call_is_not_a_provider_cooldown(self):
+        from soso.models import BudgetExceeded
+        cfg = config()
+        cfg['routing']['selector'] = {'model': 'triage', 'routes': {'coding': ['qwen']}}
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg['_router_state'] = str(Path(tmp) / 'router-state.json')
+            router = Router(cfg, Budget(10, 30), lambda *a, **k: None)
+            def expire(*args):
+                router.budget.deadline = time.monotonic() - 1  # the run's deadline ends the call
+                raise ModelUnavailable(reason='inference request timed out after 1s')
+            with patch.object(router, '_call', side_effect=expire), self.assertRaises(BudgetExceeded):
+                router.ask('worker', 'packet', Path.cwd(), task='unclear')
+            self.assertEqual((router.cooldowns, router.failures), ({}, {}))
+            self.assertFalse(Path(cfg['_router_state']).exists())
+            self.assertEqual(Router(cfg, Budget(10, 30), lambda *a, **k: None).cooldowns, {})
+
     def test_ollama_classifier_constrains_labels_without_mutating_worker(self):
         cfg = config()
         cfg['models']['triage'] = {'kind': 'ollama', 'model': 'small', 'url': 'http://localhost:11434'}

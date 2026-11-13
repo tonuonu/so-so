@@ -53,6 +53,38 @@ class RedactionTests(RepoCase):
         self.assertEqual(record['task'], 'uses [REDACTED]')
         self.assertIn('key [REDACTED]', record)
 
+    def test_api_key_env_value_is_redacted_whatever_its_name(self):
+        from soso import models
+        key = 'sk-or-v1-0123456789abcdef'
+        config = self.config(models={'remote': {'kind': 'openai', 'url': 'http://localhost:1/v1', 'model': 'm',
+                                                 'api_key_env': 'OPENROUTER_KEY'}}, routes={'worker': ['remote']})
+        with patch.dict(os.environ, {'OPENROUTER_KEY': key}), patch.object(models, 'KEY_VARIABLES', set()):
+            runner = Run(self.root, config, 'Improve')
+            runner.log('tool', output='echo $OPENROUTER_KEY\n' + key)
+        record = json.loads((runner.folder / 'events.jsonl').read_text())
+        self.assertNotIn(key, json.dumps(record))
+        self.assertEqual(record['output'], 'echo $OPENROUTER_KEY\n[REDACTED]')
+
+    def test_control_fields_keep_a_secret_value_free_text_does_not(self):
+        from soso.models import redact_record
+        with patch.dict(os.environ, {'PGPASSWORD': 'postgres'}):
+            value = redact_record({'source': '/srv/postgres-tool', 'policy': {'postgres.sql': 'abc'},
+                                   'draft': {'ref': 'refs/soso/x/postgres', 'task': 'use postgres'},
+                                   'rounds': [{'accepted': None, 'experiments': [
+                                       {'commit': 'postgres', 'review': {'source': 'postgres', 'reason': 'postgres'}}]}],
+                                   'reason': 'login postgres failed', 'checks': {'postgres up': True},
+                                   'baseline': {'report': 'postgres'}})
+            runner = Run(self.root, self.config(), 'Improve')
+            runner.log('tool', source='postgres', head='postgres')
+        self.assertEqual(value, {'source': '/srv/postgres-tool', 'policy': {'postgres.sql': 'abc'},
+                                 'draft': {'ref': 'refs/soso/x/postgres', 'task': 'use [REDACTED]'},
+                                 'rounds': [{'accepted': None, 'experiments': [
+                                     {'commit': 'postgres', 'review': {'source': '[REDACTED]', 'reason': '[REDACTED]'}}]}],
+                                 'reason': 'login [REDACTED] failed', 'checks': {'[REDACTED] up': True},
+                                 'baseline': {'report': '[REDACTED]'}})
+        record = json.loads((runner.folder / 'events.jsonl').read_text())  # event logs redact every field
+        self.assertEqual((record['source'], record['head']), ('[REDACTED]', '[REDACTED]'))
+
     def test_numeric_secret_does_not_corrupt_checkpoint_numbers(self):
         with patch.dict(os.environ, {'SOSO_TEST_TOKEN': '1234567'}):
             runner = Run(self.root, self.config(), 'Improve')

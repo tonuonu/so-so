@@ -48,6 +48,8 @@ implementing your own classification algorithm.
 The selector is called directly, without recursive routing. Its calls consume the
 shared call and time budget and respect context and concurrency limits. Invalid
 output or an unavailable classifier falls through to the configured default.
+When the run's own deadline ends a classifier call, the run stops on its budget;
+the classifier gets no cooldown for it.
 Logs record the selected label and destinations, not classifier reasoning.
 
 Ollama classifiers receive a JSON schema restricting output to configured labels

@@ -71,6 +71,35 @@ class MarkdownPoolTests(unittest.TestCase):
             self.assertEqual([(e['event'], e['url']) for e in events],
                              [('endpoint_unavailable', 'http://127.0.0.1:11439'), ('endpoint_unavailable', 'http://gpu:11434')])
 
+    def test_local_only_never_sends_the_intent_to_a_cli_adapter(self):
+        import json, os
+        pool = {'models': {'local': {'kind': 'ollama', 'url': 'http://localhost:11434', 'model': 'small'}},
+                'routes': {'worker': ['local']}}
+        sent = []
+        def call(router, model, prompt, cwd, timeout):
+            sent.append((model['kind'], prompt))
+            return json.dumps(APPROVAL if 'Independently review this compiled model policy' in prompt else pool)
+        with tempfile.TemporaryDirectory() as tmp, patch.dict(os.environ, {'SOSO_LOCAL_ONLY': '1'}), \
+                patch('soso.intent.configure_models', return_value=pool), \
+                patch('soso.intent.shutil.which', return_value='/usr/local/bin/kimi'), \
+                patch.object(Router, '_call', call):
+            self.assertEqual(resolve_pool('Private plan: build the ledger', Path(tmp)), pool)
+        self.assertTrue(sent)
+        self.assertEqual({kind for kind, _ in sent}, {'ollama'})
+
+    def test_pool_compiled_with_every_adapter_is_not_reused_under_local_only(self):
+        import os
+        pool = {'models': {'local': {'kind': 'ollama', 'url': 'http://localhost:11434', 'model': 'small'}},
+                'routes': {'worker': ['local']}}
+        with tempfile.TemporaryDirectory() as tmp, patch('soso.intent.configure_models', return_value=pool), \
+                patch('soso.intent.shutil.which', return_value=None), \
+                patch.object(Router, 'ask', side_effect=[pool, APPROVAL, pool, APPROVAL]) as ask:
+            for local in ('', '1', '', '1'):
+                with patch.dict(os.environ, {'SOSO_LOCAL_ONLY': local}):
+                    self.assertEqual(resolve_pool('Use the small model', Path(tmp)), pool)
+            self.assertEqual(ask.call_count, 4)  # compiled once per mode, then each reused
+            self.assertEqual(len(list((Path(tmp) / '.so-so/pools').glob('*.json'))), 2)
+
     def test_setup_events_redact_environment_secrets(self):
         import json, os
         from soso.models import ModelUnavailable

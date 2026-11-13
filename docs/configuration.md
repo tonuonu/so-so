@@ -53,7 +53,7 @@ internal representation of models, routes, acceptance checks and epoch limits.
 ## Providers
 
 - `ollama`: `url` is the server root; uses `/api/chat`, JSON format, explicit context/output limits.
-- `openai`: OpenAI-compatible Chat Completions protocol; `url` includes `/v1`, such as `http://localhost:8000/v1`. Set `api_key_env` to the **name** of an environment variable. `json_mode: false` supports servers without JSON-mode support. This is a protocol adapter, not a requirement to use any specific hosted provider.
+- `openai`: OpenAI-compatible Chat Completions protocol; `url` includes `/v1`, such as `http://localhost:8000/v1`. Set `api_key_env` to the **name** of an environment variable; its value is redacted from logs and state whatever the name. `json_mode: false` supports servers without JSON-mode support. This is a protocol adapter, not a requirement to use any specific hosted provider.
 - `codex`: launches `codex exec --ephemeral --sandbox read-only`, passes a prompt over stdin, reads the final response from a separate temporary output file. Optional `model` selects a model; omitted uses the CLI default. Extra `args` are trusted. The CLI's auth, availability and own internal limits apply.
 - `command`: executes `command` and expects one JSON object on stdout. Prompt goes to stdin unless an argument contains `{prompt}`. `{cwd}` expands to the candidate directory. Diagnostics must go to stderr or be suppressed by your wrapper; the runner's process capture combines streams, so noisy CLI output needs an adapter that isolates its final response.
 
@@ -87,7 +87,19 @@ goal worktree. Existing policy can be used when you want externally defined chec
 or `--backend claude` selects that adapter. Auto discovery prefers local inference
 for worker steps and can use installed stronger CLI adapters for planning, review
 and fallback. `SOSO_OLLAMA_URL` chooses the Ollama server, and `SOSO_LOCAL_ONLY`
-restricts automatic selection to local inference.
+restricts automatic selection to local (Ollama) inference: discovery, the model
+that interprets INTENT.md's model preferences (so the intent is not sent to
+Codex, Claude or Kimi; its compiled pool is cached separately), and the models
+of each delivery epoch. It is read when models are selected: an optimization
+resumed from its frozen configuration keeps the models frozen with it.
+
+Saved state, reports and logs redact secret environment values, including every
+variable a configured model names in `api_key_env`. In state and reports the
+runner's own fields that are read back to resume, such as paths, ids, refs,
+hashes, the policy fingerprint and a goal's intent (redacted once, when the goal
+is stored), are kept exactly, even when a secret value happens to occur in them;
+everything else, including model replies and tool output nested in those
+records, is redacted. Event logs redact every field.
 
 Delivery supports `--once`, `--resume-goal ID`, and `--no-exec`. Provider waiting
 and configured epoch limits are separate from optimization `run --resume`, whose
