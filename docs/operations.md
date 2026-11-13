@@ -152,7 +152,10 @@ compared in a temporary detached worktree, as candidates read them, so
 `includeIf "onbranch:..."` and `"gitdir:..."` conditions hold as they did when
 recorded; a run killed during that check can leave a `soso/probe-*` worktree,
 which `git worktree remove --force` removes. Delete that file to keep the current
-settings instead.
+settings instead. Resuming the run that file names (`soso run --resume`) is
+refused the same way when the resume would measure a new baseline, for example
+after its baseline changed the settings; a resume that keeps its recorded
+baseline is not affected.
 
 Before the checkout, the worker's files are also compared with the commit through
 a fresh index, so a stat cache left by a worker's own `git add` cannot hide a

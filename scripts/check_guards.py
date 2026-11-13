@@ -527,6 +527,9 @@ GUARDS = [
     # A baseline's changed settings are named as such, not as a failed restore.
     ('soso/engine.py', 'if failed.get("baseline") is True', 'if False',
      ['test_sandbox_integrity.SandboxIntegrityTests.test_filter_set_during_the_baseline_evaluation_blocks_new_runs']),
+    # A resume measures no baseline while soso/unrestored.json names its own run.
+    ('soso/engine.py', 'if isinstance(pending, dict) and pending.get("run") == self.run_id:', 'if False:',
+     ['test_sandbox_integrity.SandboxIntegrityTests.test_resume_measures_no_baseline_while_its_settings_are_unrestored']),
     # Launcher, dashboard and entry-point review.
     ('so-so', '    # Help skips the .so-so ownership check, so it never runs the runtime stored there.\n'
      '    if [ -n "$so_so_help" ]; then\n        so_so_usage\n    fi\n    so_so_root="$so_so_state/runtime"',

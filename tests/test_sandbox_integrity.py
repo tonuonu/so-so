@@ -10,7 +10,7 @@ import unittest
 from unittest.mock import patch
 from test_core import RepoCase
 from soso.cli import main
-from soso.engine import Run, fingerprint, local_programs, watched_config
+from soso.engine import Run, evaluate, fingerprint, local_programs, watched_config
 from soso.models import Router
 from soso.process import git
 from soso.workspace import Workspace
@@ -512,9 +512,9 @@ class SandboxIntegrityTests(RepoCase):
         config = self.checked_config()
         git(self.root, 'add', 'lib.py', 'value.txt')
         git(self.root, '-c', 'commit.gpgsign=false', 'commit', '-qm', 'accepted earlier')
-        runner = Run(self.root, self.config(parallel=1, rounds=1, **config), 'Improve')
+        self.runner = Run(self.root, self.config(parallel=1, rounds=1, **config), 'Improve')
         with contextlib.redirect_stdout(io.StringIO()):
-            report = runner.run()
+            report = self.runner.run()
         self.assertEqual(report['status'], 'invalid_baseline')
         return report['baseline']
 
@@ -526,6 +526,16 @@ class SandboxIntegrityTests(RepoCase):
         # No restore was attempted: the message says what happened, with the usual repair instructions.
         self.assertRegex(str(refused.exception), r"^run [\w-]+'s baseline evaluation changed repository settings; "
                                                  r"put back the settings recorded in .*watched-config\.json, or delete ")
+
+    def test_resume_measures_no_baseline_while_its_settings_are_unrestored(self):
+        # soso run --resume would otherwise score a new baseline with the planted filter still in place.
+        self.hiding_baseline(self.HIDE_WITH_FILTER)
+        resumed = Run(self.root, self.runner.config, 'Improve', resume=self.runner.run_id)
+        with patch('soso.engine.evaluate', wraps=evaluate) as measured, \
+                self.assertRaisesRegex(ValueError, "baseline evaluation changed repository settings; put back"):
+            resumed.run()
+        measured.assert_not_called()
+        self.assertTrue((self.common_dir() / 'soso/unrestored.json').exists())
 
     def test_index_flag_set_during_the_baseline_evaluation_is_invalid(self):
         baseline = self.hiding_baseline(self.HIDE_WITH_FLAG)

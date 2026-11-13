@@ -629,6 +629,14 @@ class Run:
                 raise ValueError("result worktree is dirty; inspect before resuming")
             if git(self.integration, "rev-parse", "HEAD") != self.report["head"]:
                 raise ValueError("result HEAD changed since checkpoint; inspect before resuming")
+            if not self.report.get("baseline", {}).get("valid") and self.unrestored.is_file():
+                try:
+                    pending = json.loads(self.unrestored.read_text())
+                except (OSError, ValueError):
+                    pending = None
+                if isinstance(pending, dict) and pending.get("run") == self.run_id:
+                    # A baseline measured now would adopt the settings this run left unrestored (we hold owned()).
+                    self.require_restored()
             self.budget.calls = self.report["calls"]
             events = self.folder / "events.jsonl"
             if events.exists():
