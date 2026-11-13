@@ -519,6 +519,11 @@ GUARDS = [
      ['test_delivery.DeliveryTests.test_frozen_contract_resets_the_stall_count']),
     ('soso/delivery.py', "protected=recovered['protected'], stalled=0,", "protected=recovered['protected'],",
      ['test_delivery.DeliveryTests.test_recovered_contract_resets_the_stall_count']),
+    # A lower baseline for the commit the last epoch ended on is recorded as drift; an epoch without a best is skipped.
+    ('soso/delivery.py', "\n                    and baseline['score'] < previous['best']):", ' and False):',
+     ['test_delivery.DeliveryTests.test_lower_baseline_for_the_same_commit_is_recorded_as_drift']),
+    ('soso/delivery.py', "type(previous.get('best')) in (int, float)", 'True',
+     ['test_delivery.DeliveryTests.test_epoch_without_a_best_score_gives_no_drift_evidence']),
     # Launcher, dashboard and entry-point review.
     ('so-so', '    # Help skips the .so-so ownership check, so it never runs the runtime stored there.\n'
      '    if [ -n "$so_so_help" ]; then\n        so_so_usage\n    fi\n    so_so_root="$so_so_state/runtime"',

@@ -284,6 +284,12 @@ waiting or interrupted epochs neither count nor reset. The count is kept in the
 goal's `state.json`, so separate `--once` invocations share it. A resume keeps the
 draft and the setup feedback and gets six more.
 
+When an epoch's baseline scores the commit the previous epoch ended on lower than
+that epoch's best, the epoch report records `baseline_drift` (`previous_best` and
+`baseline`) and the epoch logs a `baseline_drift` event. It is evidence of an
+evaluator that depends on time or on state outside the commit; it changes no
+acceptance decision.
+
 The goal controller does not infer that credentials grant unlimited scope. Put the
 allowed accounts, regions, resource limits and release destination in INTENT.md.
 Keep secret values in environment/keychain/provider profiles, not in intent prose.

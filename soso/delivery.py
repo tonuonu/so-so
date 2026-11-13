@@ -538,6 +538,12 @@ class DeliveryEpoch(Run):
             self.report.update(baseline=baseline, best=baseline.get('score'))
             if not baseline['valid']:
                 raise ValueError('invalid delivery baseline')
+            previous = self.feedback[-1] if self.feedback else None
+            if (previous and previous.get('head') == baseline['head'] and type(previous.get('best')) in (int, float)
+                    and baseline['score'] < previous['best']):
+                # The same commit scored higher in the last epoch: evidence of a drifting evaluator, not a rejection.
+                self.report['baseline_drift'] = {'previous_best': previous['best'], 'baseline': baseline['score']}
+                self.log('baseline_drift', **self.report['baseline_drift'])
             if self.completion(baseline):
                 self.report.pop('draft', None)
                 self.report['status'] = 'complete'

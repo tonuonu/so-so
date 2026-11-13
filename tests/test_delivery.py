@@ -258,6 +258,30 @@ class DeliveryTests(unittest.TestCase):
         self.assertIn('policy', result)
         self.assertEqual((result['status'], result.get('stalled')), ('incomplete', 1))
 
+    def test_lower_baseline_for_the_same_commit_is_recorded_as_drift(self):
+        # The evaluator reads state outside the goal worktree, so the accepted commit scores lower in the next epoch.
+        drift = Path(self.tmp.name) / 'drift'
+        self.use_evaluator(EVALUATOR.replace("print(json.dumps({'score':100 if stage>=2 else 0,",
+                                             f"print(json.dumps({{'score':(100 if stage>=2 else 50*stage)-10*Path({str(drift)!r}).exists(),"))
+        first = self.start()
+        self.assertEqual(first['epochs'][-1]['best'], 50)
+        drift.write_text('')
+        second = self.resume(first)
+        report = json.loads(Path(second['epochs'][-1]['report']).read_text())
+        self.assertEqual(report.get('baseline_drift'), {'previous_best': 50, 'baseline': 40})
+        events = [json.loads(line) for line in (Path(second['epochs'][-1]['report']).parent / 'events.jsonl').read_text().splitlines()]
+        self.assertEqual([(e['previous_best'], e['baseline']) for e in events if e['event'] == 'baseline_drift'], [(50, 40)])
+        self.assertEqual(second['status'], 'complete')  # evidence only: acceptance is unchanged
+
+    def test_epoch_without_a_best_score_gives_no_drift_evidence(self):
+        first = self.start()
+        state = json.loads(Path(first['report']).read_text())
+        state['epochs'][-1]['best'] = None  # e.g. an epoch killed before its baseline
+        self.set_state(first, epochs=state['epochs'])
+        second = self.resume(first)
+        self.assertEqual(second['status'], 'complete')
+        self.assertNotIn('baseline_drift', json.loads(Path(second['epochs'][-1]['report']).read_text()))
+
     def test_baseline_ignores_files_left_by_earlier_evaluator_runs(self):
         # The goal worktree is long-lived; the contract-time evaluator run leaves an ignored marker there.
         # A slow machine must not run out of the 15 s epoch budget before the candidate is accepted.
