@@ -213,7 +213,7 @@ class DashboardTests(unittest.TestCase):
             with Dashboard(root) as d:
                 handler=d.server.RequestHandlerClass
                 for route in ('api',''):
-                    for error in (BrokenPipeError,ConnectionResetError,ConnectionAbortedError):
+                    for error in (BrokenPipeError,ConnectionResetError,ConnectionAbortedError,TimeoutError):
                         with self.subTest(route=route,error=error.__name__), contextlib.redirect_stderr(io.StringIO()) as errors, \
                                 patch.object(handler,'end_headers',side_effect=error), patch.object(handler,'send_error') as send_error:
                             with self.assertRaises(Exception):urllib.request.urlopen(d.url+route)
@@ -269,6 +269,170 @@ class DashboardTests(unittest.TestCase):
                     with automatic(Path(tmp)) as dashboard:
                         self.assertIsNone(dashboard)
                 self.assertIn('Dashboard unavailable', output.getvalue())
+
+    def settings(self, root, dashboard):
+        (root/'soso.json').write_text(json.dumps({'dashboard': dashboard}))
+        return patch.dict('os.environ', {'SOSO_DASHBOARD_HOST': '', 'SOSO_DASHBOARD_PUBLIC_HOST': ''})
+
+    def test_wildcard_binding_needs_a_public_host_in_every_spelling(self):
+        for host, public in (('', None), ('', '192.0.2.10'), ('0', None), ('0x0', None), ('0.0.0.0', None),
+                             ('0.0.0.0', '0'), ('::', None), ('::0', None), ('::', '::')):
+            with self.subTest(host=host, public=public), tempfile.TemporaryDirectory() as tmp:
+                with self.settings(Path(tmp), {'host': host, **({'public_host': public} if public else {})}):
+                    with self.assertRaises(Exception) as caught:
+                        Dashboard(Path(tmp)).server.server_close()
+                    self.assertIsInstance(caught.exception, ValueError)
+        with tempfile.TemporaryDirectory() as tmp, self.settings(Path(tmp), {'host': '0', 'public_host': '192.0.2.10'}):
+            with Dashboard(Path(tmp)) as dashboard:
+                self.assertEqual(dashboard.server.server_address[0], '0.0.0.0')
+                self.assertTrue(dashboard.url.startswith('http://192.0.2.10:'))
+
+    def test_ipv6_host_binds_and_is_bracketed_in_the_url(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root=Path(tmp);self.fixture(root)
+            try:
+                dashboard=Dashboard(root,host='::1')
+            except OSError as exc:
+                self.fail(f'IPv6 loopback did not bind: {exc}')
+            with dashboard:
+                self.assertEqual(dashboard.server.server_address[0],'::1')
+                self.assertTrue(dashboard.url.startswith('http://[::1]:'))
+                with urllib.request.urlopen(dashboard.url+'api',timeout=10) as r:self.assertEqual(json.load(r)['best'],90)
+
+    def test_attach_mode_reports_bad_settings_in_one_line(self):
+        import subprocess,sys
+        for text, argv, reason in (('{"dashboard":"lan"}', [], 'must be an object'), ('{', [], 'is not valid JSON'),
+                                   ('["dashboard"]', [], 'must be an object'), ('{"dashboard":{"host":5}}', [], 'must be nonempty'),
+                                   ('{"dashboard":{"host":"192.0.2.1"}}', [], 'cannot listen on 192.0.2.1'),
+                                   ('{}', ['--port', '99999'], 'port')):
+            with self.subTest(text=text, argv=argv), tempfile.TemporaryDirectory() as tmp:
+                (Path(tmp)/'soso.json').write_text(text)
+                env={k:v for k,v in __import__('os').environ.items() if not k.startswith('SOSO_DASHBOARD')}
+                result=subprocess.run([sys.executable,'-m','soso.dashboard','--project',tmp,*argv],cwd=Path(__file__).parents[1],
+                                      env=env,capture_output=True,text=True,timeout=30)
+                self.assertEqual(result.returncode,1,result.stderr)
+                self.assertNotIn('Traceback',result.stderr)
+                self.assertRegex(result.stderr,r'^dashboard: [^\n]+\n$')
+                self.assertIn(reason,result.stderr)
+
+    def test_api_tolerates_malformed_records(self):
+        start={'event':'call_started','call_id':'a','model':'m','role':'planner','time':1}
+        finished={'event':'call_finished','call_id':'a','model':'m','seconds':2,'status':'returned'}
+        good={'models':{'m':{'url':'http://192.0.2.1:8091/v1'}}}
+        cases={'label not an object':dict(labels={'models':{'m':'label'}}),
+               'labels a list':dict(labels={'models':['m']}),
+               'labels not an object':dict(labels=['models']),
+               'port out of range':dict(pool={'models':{'m':{'url':'http://h:99999/v1'}}}),
+               'unclosed IPv6 URL':dict(pool={'models':{'m':{'url':'http://[::1/v1'}}}),
+               'URL not a string':dict(pool={'models':{'m':{'url':5}}}),
+               'model definition not an object':dict(pool={'models':{'m':'x'}}),
+               'pool models a list':dict(pool={'models':['m']}),
+               'list call_id':dict(events=[dict(start,call_id=['x'])]),
+               'string seconds':dict(events=[start,dict(finished,seconds='x')]),
+               'null seconds':dict(events=[start,dict(finished,seconds=None)]),
+               'string prompt_bytes':dict(events=[dict(start,prompt_bytes='x')]),
+               'string time':dict(events=[dict(start,time='x')]),
+               'list model':dict(events=[dict(start,model=['m'])]),
+               'list role':dict(events=[dict(start,role=['planner'])]),
+               'list tool':dict(events=[{'event':'tool','tool':['read']}]),
+               'plan tasks not a list':dict(events=[{'event':'plan','tasks':5}]),
+               'architecture plan not an object':dict(events=[{'event':'architecture','plan':5}]),
+               'architecture milestones not a list':dict(events=[{'event':'architecture','plan':{'milestones':5}}]),
+               'null baseline':dict(report={'baseline':None}),
+               'list baseline':dict(report={'baseline':[1]}),
+               'rounds not a list':dict(report={'rounds':5}),
+               'round not an object':dict(report={'rounds':[5]}),
+               'experiments not a list':dict(report={'rounds':[{'accepted':'a','experiments':5}]}),
+               'experiment not an object':dict(report={'rounds':[{'accepted':'a','experiments':[5]}]}),
+               'evaluation not an object':dict(report={'rounds':[{'accepted':'a','experiments':[{'commit':'a','evaluation':[1]}]}]}),
+               'contract not an object':dict(goal={'contract':5}),
+               'milestones not a list':dict(goal={'contract':{'milestones':5}}),
+               'int active_epoch':dict(goal={'active_epoch':5}),
+               'epochs not a list':dict(goal={'active_epoch':None,'epochs':5}),
+               'epoch report not a string':dict(goal={'epochs':[{'report':5}]}),
+               'intent not a string':dict(goal={'intent':5}),
+               'worktree not a string':dict(active={'worktree':5}),
+               'project not a string':dict(active={'project':5})}
+        for name, case in cases.items():
+            with self.subTest(case=name), tempfile.TemporaryDirectory() as tmp:
+                root=Path(tmp);managed,project,report=self.fixture(root)
+                active=json.loads((managed/'active.json').read_text())
+                (report.parent/'events.jsonl').write_text('\n'.join(json.dumps(e) for e in case.get('events',[start])))
+                if 'report' in case:report.write_text(json.dumps(case['report']))
+                if 'goal' in case:
+                    folder=project/'.git/soso/goals/g1';folder.mkdir(parents=True)
+                    (folder/'state.json').write_text(json.dumps({'source':str(project),'goal_id':'g1',**case['goal']}))
+                    active['goal_id']='g1'
+                (managed/'pool.json').write_text(json.dumps(case.get('pool',good)));active['models_path']=str(managed/'pool.json')
+                if 'labels' in case:(root/'soso.json').write_text(json.dumps(case['labels']))
+                (managed/'active.json').write_text(json.dumps({**active,**case.get('active',{})}))
+                try:
+                    state=Monitor(root).snapshot()
+                except Exception as exc:
+                    self.fail(f'{type(exc).__name__}: {exc}')
+                json.dumps(state)
+                for key in ('calls','models','plan','milestones','rounds','images','timeline'):
+                    self.assertIsInstance(state[key],list,key)
+        # A well-formed record next to a bad one keeps its values.
+        with tempfile.TemporaryDirectory() as tmp:
+            root=Path(tmp);managed,_,report=self.fixture(root)
+            (managed/'pool.json').write_text(json.dumps({'models':{'m':{'url':'http://192.0.2.1:8091/v1'},'n':{'url':'http://h:99999/v1'}}}))
+            active=json.loads((managed/'active.json').read_text());active['models_path']=str(managed/'pool.json')
+            (managed/'active.json').write_text(json.dumps(active))
+            (root/'soso.json').write_text(json.dumps({'models':{'m':{'display_name':'Planner'},'n':'label'}}))
+            (report.parent/'events.jsonl').write_text('\n'.join(json.dumps(e) for e in [start,dict(start,call_id='b',model='n'),dict(start,call_id=['x'])]))
+            with Dashboard(root) as d, urllib.request.urlopen(d.url+'api',timeout=10) as r:
+                calls={c['model']:c for c in json.load(r)['calls']}
+            self.assertEqual(set(calls),{'m','n'})
+            self.assertEqual((calls['m']['host'],calls['m']['display_name']),('192.0.2.1:8091','Planner'))
+
+    def test_image_inventory_lists_regular_files_only(self):
+        import os
+        with tempfile.TemporaryDirectory() as tmp:
+            root=Path(tmp);_,_,report=self.fixture(root)
+            result=report.parent/'result';result.mkdir()
+            (result/'screen.png').write_bytes(b'image');os.mkfifo(result/'pipe.png')
+            self.assertEqual([x['name'] for x in Monitor(root).snapshot()['images']],['screen.png'])
+
+    def test_listed_image_replaced_by_a_fifo_is_not_waited_on(self):
+        import os
+        with tempfile.TemporaryDirectory() as tmp:
+            root=Path(tmp);_,_,report=self.fixture(root)
+            result=report.parent/'result';result.mkdir();(result/'screen.png').write_bytes(b'listed image')
+            with Dashboard(root) as d:
+                with urllib.request.urlopen(d.url+'api',timeout=10) as r:path=json.load(r)['images'][0]['path']
+                (result/'screen.png').unlink();os.mkfifo(result/'screen.png')
+                # A handler stuck opening the FIFO is released by a writer when the test ends.
+                self.addCleanup(lambda:os.close(os.open(result/'screen.png',os.O_WRONLY|os.O_NONBLOCK)) if (result/'screen.png').exists() else None)
+                try:
+                    urllib.request.urlopen(d.url+'asset/'+path,timeout=5)
+                except urllib.error.HTTPError as exc:
+                    self.assertEqual(exc.code,404);exc.close()
+                except OSError as exc:
+                    self.fail(f'the FIFO request did not answer: {exc}')
+                else:
+                    self.fail('a FIFO was served')
+
+    def test_image_reads_are_bounded_regular_files(self):
+        from soso.dashboard import read_image
+        with tempfile.TemporaryDirectory() as tmp:
+            image=Path(tmp)/'screen.png';image.write_bytes(b'0123456789')
+            self.assertEqual(read_image(image,limit=10),b'0123456789')
+            with self.assertRaisesRegex(ValueError,'too large'):read_image(image,limit=9)
+            (Path(tmp)/'link.png').symlink_to(image)
+            with self.assertRaises(OSError):read_image(Path(tmp)/'link.png')
+
+    def test_idle_connections_are_closed(self):
+        import socket,time
+        with tempfile.TemporaryDirectory() as tmp, patch.object(Dashboard,'REQUEST_SECONDS',0.5):
+            root=Path(tmp);self.fixture(root)
+            with Dashboard(root) as d, socket.create_connection(d.server.server_address[:2],timeout=10) as idle:
+                started=time.monotonic()
+                try:
+                    self.assertEqual(idle.recv(1),b'')
+                except TimeoutError:
+                    self.fail('an idle connection was kept open')
+                self.assertLess(time.monotonic()-started,5)
 
 class UsageTelemetryTests(unittest.TestCase):
     def test_parallel_usage_is_correlated_and_does_not_log_prompts(self):
