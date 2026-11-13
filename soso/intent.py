@@ -31,7 +31,8 @@ def resolve_pool(text, cwd):
             return pool
     folder = cwd / '.so-so' / 'pools'
     folder.mkdir(parents=True, exist_ok=True)
-    key = hashlib.sha256(text.encode()).hexdigest()
+    # A pool compiled with every adapter is never reused under SOSO_LOCAL_ONLY, nor the other way round.
+    key = hashlib.sha256((('local-only\0' if env_local_only() else '') + text).encode()).hexdigest()
     cache = folder / (key + '.json')
     if cache.exists():
         try:

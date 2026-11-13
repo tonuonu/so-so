@@ -100,8 +100,15 @@ def cli_unavailable(output):
     return ModelUnavailable(retry)
 
 
-# Variables a configured model names in api_key_env (Router fills it): secret whatever they are called.
+# Variables a configured model names in api_key_env: secret whatever they are called.
 KEY_VARIABLES = set()
+
+
+def register_key_variables(models):
+    """Treat the variables that configured models name in api_key_env as secret from now on."""
+    if isinstance(models, dict):
+        KEY_VARIABLES.update(m['api_key_env'] for m in models.values()
+                             if isinstance(m, dict) and isinstance(m.get('api_key_env'), str))
 
 
 def redact(text):
@@ -128,11 +135,12 @@ def redact_value(value):
 
 
 # Fields of the runner's own records that are read back to resume or to check integrity: paths, ids, refs, hashes,
-# protected patterns and the policy fingerprint (keyed by file name). A secret value that happens to occur in one
-# (e.g. a path holding a default password) must not rewrite it. RECORDS hold further runner records.
+# protected patterns, the policy fingerprint (keyed by file name) and a goal's intent (redacted once, when the goal
+# starts; a draft's binding hashes it). A secret value that happens to occur in one (e.g. a path holding a default
+# password) must not rewrite it. RECORDS hold further runner records.
 CONTROL_FIELDS = frozenset({'source', 'root', 'worktree', 'report', 'active_epoch', 'models_path', 'config_path',
                             'goal_id', 'run_id', 'branch', 'head', 'base', 'commit', 'ref', 'checkout', 'accepted',
-                            'policy', 'protected', 'config_sha256', 'intent_sha256', 'evaluator_sha256'})
+                            'policy', 'protected', 'config_sha256', 'intent_sha256', 'evaluator_sha256', 'intent'})
 RECORDS = frozenset({'draft', 'dropped_draft', 'epochs', 'rounds', 'experiments'})
 
 
@@ -233,8 +241,7 @@ class Router:
         self.selection_cache = {}
         self.cooldowns = {}
         self.failures = {}
-        KEY_VARIABLES.update(m['api_key_env'] for m in self.models.values()
-                             if isinstance(m, dict) and isinstance(m.get('api_key_env'), str))
+        register_key_variables(self.models)
         if self.state_path and self.state_path.exists():
             saved = json.loads(self.state_path.read_text())
             self.cooldowns = {n: t for n, t in saved.get('cooldowns', {}).items()

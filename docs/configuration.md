@@ -87,16 +87,19 @@ goal worktree. Existing policy can be used when you want externally defined chec
 or `--backend claude` selects that adapter. Auto discovery prefers local inference
 for worker steps and can use installed stronger CLI adapters for planning, review
 and fallback. `SOSO_OLLAMA_URL` chooses the Ollama server, and `SOSO_LOCAL_ONLY`
-restricts automatic selection to local inference, including the model that
-interprets INTENT.md's model preferences: the intent is never sent to Codex,
-Claude or Kimi then.
+restricts automatic selection to local (Ollama) inference: discovery, the model
+that interprets INTENT.md's model preferences (so the intent is not sent to
+Codex, Claude or Kimi; its compiled pool is cached separately), and the models
+of each delivery epoch. It is read when models are selected: an optimization
+resumed from its frozen configuration keeps the models frozen with it.
 
-Saved state, reports and logs redact secret environment values. In state and
-reports the runner's own fields that are read back to resume, such as paths,
-ids, refs, hashes and the policy fingerprint, are kept exactly, even when a
-secret value happens to occur in them; everything else, including model replies
-and tool output nested in those records, is redacted. Event logs redact every
-field.
+Saved state, reports and logs redact secret environment values, including every
+variable a configured model names in `api_key_env`. In state and reports the
+runner's own fields that are read back to resume, such as paths, ids, refs,
+hashes, the policy fingerprint and a goal's intent (redacted once, when the goal
+is stored), are kept exactly, even when a secret value happens to occur in them;
+everything else, including model replies and tool output nested in those
+records, is redacted. Event logs redact every field.
 
 Delivery supports `--once`, `--resume-goal ID`, and `--no-exec`. Provider waiting
 and configured epoch limits are separate from optimization `run --resume`, whose

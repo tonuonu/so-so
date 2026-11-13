@@ -19,7 +19,8 @@ from urllib.parse import urlsplit
 from .architecture import planning_reply
 from .engine import (DEFAULTS, Run, atomic_json, checkout, evaluate, fingerprint, index_flags, load_config,
                      local_programs, resources, review_diff)
-from .models import ModelProtocolError, Budget, BudgetExceeded, HTTP_TRANSPORT, ModelUnavailable, Router, redact, redact_record, redact_value
+from .models import ModelProtocolError, Budget, BudgetExceeded, HTTP_TRANSPORT, ModelUnavailable, Router, redact, redact_record, redact_value, \
+    register_key_variables
 from .process import IDENTITY, common_dir, execute, git
 from .workspace import Workspace
 
@@ -490,7 +491,9 @@ class DeliveryEpoch(Run):
         head = git(self.integration, 'rev-parse', 'HEAD')
         if evaluation.get('head') != head:
             raise ValueError('completion evidence does not match HEAD')
-        ws = Workspace(self.integration, self.config['protected'])  # the excerpt shows the implementation, not frozen policy
+        # GOAL and CONTRACT already carry the instructions: the bounded excerpt is for implementation, tests and
+        # evaluators, not for instruction files or runner configuration.
+        ws = Workspace(self.integration, ['AGENTS.md', '*/AGENTS.md', 'INTENT.md', '.gitignore', 'soso.json'])
         files = []
         size = 0
         for name in ws.files():
@@ -668,6 +671,15 @@ def start_goal(repo: Path, intent: str | None = None, *, backend='auto', model=N
             folder.mkdir()
             if model_pool is not None:
                 atomic_json(folder / 'model-pool.json', model_pool)
+            # Every api_key_env value is secret before the intent is redacted and stored: the stored intent stays
+            # as it is from here on, since a retained draft's binding hashes it.
+            project = repo / config_path
+            try:
+                configured = json.loads(project.read_text()) if project.is_file() and not ignore_project_config else {}
+            except (OSError, ValueError):
+                configured = {}  # an unusable config fails where it is loaded
+            for source in (model_pool or {}, configured if isinstance(configured, dict) else {}):
+                register_key_variables(source.get('models'))
             state = {'goal_id': goal_id, 'source': str(repo), 'intent': redact(intent), 'status': 'starting',
                      'branch': 'soso/goal-' + goal_id, 'worktree': str(folder / 'worktree'), 'epochs': [],
                      'next_retry_at': None, 'failures': 0, 'backend': backend, 'model': model,
@@ -709,13 +721,15 @@ def start_goal(repo: Path, intent: str | None = None, *, backend='auto', model=N
             # Interrupted contract generation may leave only its own policy file.
             pending = '\n'.join(line for line in pending.splitlines() if not line[3:].startswith(POLICY + '/'))
         active_report = state.get('active_epoch')
-        record = Path(active_report).parent / 'watched-config.json' if active_report else None
-        if goal_exec and record and record.is_file() and not (storage / 'unrestored.json').exists():
-            # That epoch never finished: a watched setting its worker changed may still be in place. The next
-            # epoch's Run compares the settings with its record first and refuses to start until they match.
-            atomic_json(storage / 'unrestored.json', {'run': record.parent.name, 'file': str(storage.parent / 'config')})
         if active_report and Path(active_report).is_file():
             active = json.loads(Path(active_report).read_text())
+            record = Path(active_report).parent / 'watched-config.json'
+            if (goal_exec and active.get('status') == 'running' and record.is_file()
+                    and not (storage / 'unrestored.json').exists()):
+                # That epoch was killed before it finished, and so before its restores: a watched setting its worker
+                # changed may still be in place. The next epoch's Run compares the settings with its record first
+                # and refuses to start until they match. An epoch that ended, even with an error, restored them.
+                atomic_json(storage / 'unrestored.json', {'run': record.parent.name, 'file': str(storage.parent / 'config')})
             current = git(root, 'rev-parse', 'HEAD')
             accepted = [r['accepted'] for r in active.get('rounds', []) if r.get('accepted')]
             if current == active.get('head') or current in accepted:
