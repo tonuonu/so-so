@@ -19,7 +19,7 @@ from urllib.parse import urlsplit
 from .architecture import planning_reply
 from .engine import (DEFAULTS, Run, atomic_json, checkout, evaluate, fingerprint, index_flags, load_config,
                      local_programs, resources, review_diff)
-from .models import ModelProtocolError, Budget, BudgetExceeded, HTTP_TRANSPORT, ModelUnavailable, Router, redact, redact_value
+from .models import ModelProtocolError, Budget, BudgetExceeded, HTTP_TRANSPORT, ModelUnavailable, Router, redact, redact_record, redact_value
 from .process import IDENTITY, common_dir, execute, git
 from .workspace import Workspace
 
@@ -192,7 +192,7 @@ def _config(repo, config_path, ignore_project_config=False):
 
 
 def _save(folder, state):
-    atomic_json(folder / 'state.json', redact_value(state))
+    atomic_json(folder / 'state.json', redact_record(state))
 
 
 def _source_snapshot(root):
@@ -319,7 +319,7 @@ def _contract(root, config, intent, router, folder, previous_feedback=''):
                     'limitation': 'Generated operational oracle; not proof of human correctness.'}
         if acceptance_review is not None:
             contract['acceptance_review'] = acceptance_review
-        atomic_json(policy / 'contract.json', redact_value(contract))
+        atomic_json(policy / 'contract.json', redact_record(contract))
         atomic_json(folder / 'config.json', config)  # prepared transaction, before moving HEAD
         (root / 'INTENT.md').write_text(intent + '\n')
         if not (root / '.gitignore').exists():

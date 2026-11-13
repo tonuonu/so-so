@@ -15,7 +15,7 @@ import stat
 import threading
 import time
 import uuid
-from .models import Budget, BudgetExceeded, ModelProtocolError, ModelUnavailable, Router, redact_value
+from .models import Budget, BudgetExceeded, ModelProtocolError, ModelUnavailable, Router, redact_record, redact_value
 from .process import GIT_OUTPUT_LIMIT, OutputLimit, blob_head, execute, git
 from .workspace import Workspace, gitlinks, worker
 from .skills import prelude
@@ -593,7 +593,7 @@ class Run:
         self.report["elapsed"] = self.elapsed_before + time.monotonic() - self.started
         self.report["calls"] = self.budget.calls
         self.report["head"] = git(self.integration, "rev-parse", "HEAD")
-        atomic_json(self.report_path, redact_value(self.report))
+        atomic_json(self.report_path, redact_record(self.report))
 
     @contextlib.contextmanager
     def owned(self):

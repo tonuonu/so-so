@@ -683,6 +683,17 @@ print(json.dumps({'score':10*stage+(50 if expanded else 0),'complete':False}))
         with patch('soso.delivery.time.time', return_value=time.time() + 5):
             second = self.start(resume_goal=first['goal_id'])
         self.assertEqual(second['status'], 'incomplete')
+    def test_state_keeps_paths_that_contain_a_secret_value(self):
+        self.repo = (Path(self.tmp.name) / 'postgres-tool').resolve()
+        self.repo.mkdir()
+        with patch.dict(os.environ, {'PGPASSWORD': 'postgres'}):
+            first = self.start()
+            state = json.loads(Path(first['report']).read_text())
+            self.assertEqual(state['source'], str(self.repo))
+            self.assertIn('postgres-tool', state['worktree'])
+            with patch('soso.delivery.time.time', return_value=time.time() + 5):
+                second = self.start(resume_goal=first['goal_id'])
+        self.assertEqual(second['status'], 'complete')
 
     def test_policy_tampering_and_head_change_are_blocked(self):
         state = self.start()

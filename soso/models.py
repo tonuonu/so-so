@@ -100,10 +100,15 @@ def cli_unavailable(output):
     return ModelUnavailable(retry)
 
 
+# Variables a configured model names in api_key_env (Router fills it): secret whatever they are called.
+KEY_VARIABLES = set()
+
+
 def redact(text):
     # Environment names are inspected, but their values never enter inventories.
     for name, value in os.environ.items():
-        if len(value) >= 6 and re.search(r"(?i)(secret|token|password|credential|api.?key|access.?key)", name):
+        if len(value) >= 6 and (name in KEY_VARIABLES
+                                or re.search(r"(?i)(secret|token|password|credential|api.?key|access.?key)", name)):
             # Text that embeds JSON carries the escaped form; replace it first, since it can contain the raw value.
             for form in (json.dumps(value)[1:-1], json.dumps(value, ensure_ascii=False)[1:-1], value):
                 text = text.replace(form, "[REDACTED]")
@@ -120,6 +125,33 @@ def redact_value(value):
     if isinstance(value, (list, tuple)):
         return [redact_value(v) for v in value]
     return value
+
+
+# Fields of the runner's own records that are read back to resume or to check integrity: paths, ids, refs, hashes,
+# protected patterns and the policy fingerprint (keyed by file name). A secret value that happens to occur in one
+# (e.g. a path holding a default password) must not rewrite it. RECORDS hold further runner records.
+CONTROL_FIELDS = frozenset({'source', 'root', 'worktree', 'report', 'active_epoch', 'models_path', 'config_path',
+                            'goal_id', 'run_id', 'branch', 'head', 'base', 'commit', 'ref', 'checkout', 'accepted',
+                            'policy', 'protected', 'config_sha256', 'intent_sha256', 'evaluator_sha256'})
+RECORDS = frozenset({'draft', 'dropped_draft', 'epochs', 'rounds', 'experiments'})
+
+
+def redact_record(record):
+    """redact_value for a checkpoint that is read back: the control fields of the runner's own records keep their
+    values; everything else, including model replies, evaluator and tool output nested in them, is redacted."""
+    if isinstance(record, list):
+        return [redact_record(item) for item in record]
+    if not isinstance(record, dict):
+        return redact_value(record)
+    redacted = {}
+    for key, value in record.items():
+        if key in CONTROL_FIELDS:
+            redacted[key] = value
+        elif key in RECORDS:
+            redacted[key] = redact_record(value)
+        else:
+            redacted.update(redact_value({key: value}))
+    return redacted
 
 
 class BudgetExceeded(RuntimeError):
@@ -201,6 +233,8 @@ class Router:
         self.selection_cache = {}
         self.cooldowns = {}
         self.failures = {}
+        KEY_VARIABLES.update(m['api_key_env'] for m in self.models.values()
+                             if isinstance(m, dict) and isinstance(m.get('api_key_env'), str))
         if self.state_path and self.state_path.exists():
             saved = json.loads(self.state_path.read_text())
             self.cooldowns = {n: t for n, t in saved.get('cooldowns', {}).items()
@@ -327,6 +361,7 @@ class Router:
                         self.log('route_selected', role=role, policy='classifier', label=answer['route'], models=names)
                         return list(names)
                 except ModelUnavailable as exc:
+                    self.budget.remaining()  # the run's deadline cut the call short: not a provider cooldown
                     self._cooldown(name, exc.retry_at)
                 except BudgetExceeded:
                     raise

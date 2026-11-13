@@ -403,6 +403,14 @@ GUARDS = [
      ['test_run_reliability.ParallelWorktreeTests.test_sibling_candidates_never_add_or_remove_worktrees_at_once']),
     ('soso/engine.py', 'with self.worktrees, contextlib.suppress(RuntimeError):', 'with contextlib.suppress(RuntimeError):',
      ['test_run_reliability.ParallelWorktreeTests.test_sibling_candidates_never_add_or_remove_worktrees_at_once']),
+    ('soso/models.py', '        if key in CONTROL_FIELDS:\n            redacted[key] = value\n        elif',
+     '        if False:\n            pass\n        elif',
+     ['test_run_reliability.RedactionTests.test_control_fields_keep_a_secret_value_free_text_does_not',
+      'test_delivery.DeliveryTests.test_state_keeps_paths_that_contain_a_secret_value']),
+    ('soso/models.py', 'KEY_VARIABLES.update(', 'set().update(',
+     ['test_run_reliability.RedactionTests.test_api_key_env_value_is_redacted_whatever_its_name']),
+    ('soso/models.py', "self.budget.remaining()  # the run's deadline cut the call short: not a provider cooldown", 'pass',
+     ['test_router_pool.RoutingPolicyTests.test_deadline_during_classifier_call_is_not_a_provider_cooldown']),
 ]
 
 

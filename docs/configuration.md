@@ -53,7 +53,7 @@ internal representation of models, routes, acceptance checks and epoch limits.
 ## Providers
 
 - `ollama`: `url` is the server root; uses `/api/chat`, JSON format, explicit context/output limits.
-- `openai`: OpenAI-compatible Chat Completions protocol; `url` includes `/v1`, such as `http://localhost:8000/v1`. Set `api_key_env` to the **name** of an environment variable. `json_mode: false` supports servers without JSON-mode support. This is a protocol adapter, not a requirement to use any specific hosted provider.
+- `openai`: OpenAI-compatible Chat Completions protocol; `url` includes `/v1`, such as `http://localhost:8000/v1`. Set `api_key_env` to the **name** of an environment variable; its value is redacted from logs and state whatever the name. `json_mode: false` supports servers without JSON-mode support. This is a protocol adapter, not a requirement to use any specific hosted provider.
 - `codex`: launches `codex exec --ephemeral --sandbox read-only`, passes a prompt over stdin, reads the final response from a separate temporary output file. Optional `model` selects a model; omitted uses the CLI default. Extra `args` are trusted. The CLI's auth, availability and own internal limits apply.
 - `command`: executes `command` and expects one JSON object on stdout. Prompt goes to stdin unless an argument contains `{prompt}`. `{cwd}` expands to the candidate directory. Diagnostics must go to stderr or be suppressed by your wrapper; the runner's process capture combines streams, so noisy CLI output needs an adapter that isolates its final response.
 
