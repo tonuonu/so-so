@@ -125,6 +125,21 @@ class DeliveryTests(unittest.TestCase):
             return reply
         self.answer = answer
 
+    def test_config_set_during_an_epoch_baseline_stops_the_goal_and_blocks_new_runs(self):
+        # Accepted code the next epoch's baseline runs sets a filter; nothing is recorded yet to restore it from,
+        # and the first candidate would record it as the repository's own.
+        self.use_evaluator(EVALUATOR.replace("print(", "import os, subprocess\n"
+                                             "if stage == 1 and '-c0-' not in os.getcwd():\n"
+                                             "    subprocess.run(['git', 'config', 'filter.h.clean', 'cat'])\n"
+                                             "print(", 1))
+        first = self.start()
+        self.assertEqual((Path(first['worktree']) / 'stage.txt').read_text(), '1')
+        with patch('soso.delivery.time.time', return_value=time.time() + 5), \
+                self.assertRaisesRegex(ValueError, 'baseline evaluation changed repository configuration'):
+            self.start(resume_goal=first['goal_id'])
+        common = Path(git(self.repo, 'rev-parse', '--path-format=absolute', '--git-common-dir'))
+        self.assertTrue((common / 'soso/unrestored.json').exists())
+
     def test_baseline_ignores_files_left_by_earlier_evaluator_runs(self):
         # The goal worktree is long-lived; the contract-time evaluator run leaves an ignored marker there.
         # A slow machine must not run out of the 15 s epoch budget before the candidate is accepted.

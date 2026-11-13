@@ -76,18 +76,25 @@ about one checkout per candidate: on a synthetic 35,000-file repository on a
 local SSD it took 12-13 s, next to 6-15 s for `git worktree add` and 2-10 s
 for the comparison below. A candidate is rejected when anything survives the
 clean (for example a FIFO or a read-only folder), when a watched setting changes
-while the files are checked out, when the commit's attributes change how a
+while the files are checked out or evaluated, when the commit's attributes change how a
 protected file is written, when the checked-out files do not match the commit
 (for example paths that collide on a case-insensitive file system), when it
 adds or changes a symlink while `core.symlinks` is false (the checkout would
 write it as a plain file), and when it adds or changes a symlink whose target is
-absolute or resolves outside the worktree. In persistent delivery the goal
+absolute or resolves outside the worktree. After the evaluation the watched
+settings are put back and the files are compared with the commit through a fresh
+index, so code the checks or evaluator load cannot hide an edit from `git status`
+with a filter or an index flag; the candidate is rejected when they differ. A
+baseline is checked the same way and is invalid when its evaluation changes the
+files or a watched setting; a changed setting also writes `soso/unrestored.json`
+(below), because nothing is recorded yet to restore it from, and in persistent
+delivery it blocks the goal. In persistent delivery the goal
 worktree is checked out again the same way before each epoch's baseline, because
 `merge --ff-only` rewrites only the files that changed; when an interrupt cuts that
 checkout short, resuming the goal finishes it.
 
-With command execution, settings that change how content is staged or checked
-out (`filter.*`, `core.attributesFile`, `core.autocrlf`, `core.eol`,
+Settings that change how content is staged or checked out (`filter.*`,
+`core.attributesFile`, `core.autocrlf`, `core.eol`,
 `core.safecrlf`, `core.fsmonitor`, `core.worktree`, `core.sparseCheckout*`,
 `core.symlinks`, `core.fileMode`, `sparse.*`, `attr.*`, `index.*`, `diff.*`
 (which shapes the reviewer's diff), and the `include.*`, `includeIf.*` and
@@ -118,10 +125,15 @@ Whatever a restore replaces is first kept, owner-only, under `replaced/` in the
 run folder (a folder is moved there whole, a file's first MiB is copied), and the candidate's record names it as
 `kept`, so your unrelated edits can be recovered. A value that comes from an
 included file is never overridden in `.git/config`. Replace refs the worker added or changed are
-removed or put back. This includes watched changes you make yourself during a
-run with command execution enabled; without it a worker cannot change config,
-so nothing is restored. Other config, such as remotes and branch tracking, is
-never touched. When a difference cannot be restored (for example an
+removed or put back. This holds with or without command execution: a worker
+without it still runs the checks and the evaluator through `check`, and code
+they load from the candidate (for example a `json.py` beside `evaluate.py`)
+can change config. It includes watched changes you make yourself during a run:
+one made while a single candidate's worker runs is blamed on that candidate, and
+one made while a candidate is checked out or evaluated rejects it. Settings are
+compared per key, so a restored key written again later in its section still
+matches. Other
+config, such as remotes and branch tracking, is never touched. When a difference cannot be restored (for example an
 `includeIf "hasconfig:remote.*.url:..."` that a new remote turned on), or any
 error stops a restore, the candidate ends with an error naming the file, and
 `soso/unrestored.json` in the
@@ -189,14 +201,17 @@ expect no fsmonitor speed-up in them.
 
 Not covered: global, system and XDG Git configuration, the attributes file that
 `core.attributesFile` (or the XDG default) names, and `GIT_CONFIG_*` variables
-are neither watched nor restored, so a worker with command execution
-that edits your global config (for example a smudge filter) can still change
-what is checked out, here and in your other repositories. Likewise, a process a
+are neither watched nor restored, so a worker that edits your global config
+(for example a smudge filter), with command execution or through code the
+checks or evaluator load, can still change what is checked out, here and in your other repositories. Likewise, a process a
 worker leaves running detached from its process group can still write into the
 candidate worktree between the checkout and the evaluation. Use a container or
 VM to bound both. Two parallel workers can still race: a shared setting one
 changes and changes back while another candidate is checked out is not seen;
-run with `parallel` 1 when that matters.
+run with `parallel` 1 when that matters. A goal's contract setup runs its
+evaluator before any setting is recorded, so a setting that evaluator changes
+becomes the first epoch's baseline; review a planner-written evaluator, or
+supply your own, when that matters.
 
 A run retains its result branch/worktree and candidate commit refs. Successful
 candidate commits are kept under `refs/soso/RUN_ID/`, including measured rejected
