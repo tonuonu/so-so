@@ -393,6 +393,12 @@ GUARDS = [
      ['test_evaluated_tree.EvaluatedTreeTests.test_large_text_swapped_for_a_binary_is_approvable',
       'test_evaluated_tree.EvaluatedTreeTests.test_deleted_text_shown_as_binary_shows_only_its_sizes',
       'test_evaluated_tree.EvaluatedTreeTests.test_text_gaining_a_nul_byte_shows_its_sizes_and_the_flag_whatever_its_size']),
+    # Sibling candidates add and remove their worktrees one at a time: Git does not lock .git/worktrees.
+    ('soso/engine.py', 'with self.worktrees:\n                git(self.root, "worktree", "add"',
+     'if True:\n                git(self.root, "worktree", "add"',
+     ['test_run_reliability.ParallelWorktreeTests.test_sibling_candidates_never_add_or_remove_worktrees_at_once']),
+    ('soso/engine.py', 'with self.worktrees, contextlib.suppress(RuntimeError):', 'with contextlib.suppress(RuntimeError):',
+     ['test_run_reliability.ParallelWorktreeTests.test_sibling_candidates_never_add_or_remove_worktrees_at_once']),
 ]
 
 

@@ -563,6 +563,9 @@ class Run:
         self.started_experiments = self.active_experiments = self.restores = 0
         self.storage.mkdir(exist_ok=True)
         self.lock = threading.Lock()
+        # Git does not lock .git/worktrees: a worktree add or remove that reads a sibling's half-written admin
+        # files dies (e.g. "failed to read .git/worktrees/<id>/commondir"), so candidates take turns.
+        self.worktrees = threading.Lock()
         self.run_id = resume or time.strftime("%Y%m%d-%H%M%S-") + uuid.uuid4().hex[:8]
         if not self.run_id.replace("-", "").isalnum():
             raise ValueError("invalid run id")
@@ -962,7 +965,8 @@ class Run:
                 if not preserve:
                     raise ValueError('candidate continuation requires delivery mode')
                 expected = continuation['commit']
-            git(self.root, "worktree", "add", "--detach", str(path), expected)
+            with self.worktrees:
+                git(self.root, "worktree", "add", "--detach", str(path), expected)
             flagged = index_flags(path)  # e.g. skip-worktree entries a sparse checkout gives every worktree
             nested = nested_git(path)
             own_file = Path(git(path, "rev-parse", "--absolute-git-dir")) / "config.worktree"
@@ -1083,7 +1087,7 @@ class Run:
                 result["config_restored"] = redact_value(restored)
                 self.log("repository_config_restored", candidate=index, keys=[change["key"] for change in restored])
             if cleanup and path.exists():
-                with contextlib.suppress(RuntimeError):
+                with self.worktrees, contextlib.suppress(RuntimeError):
                     git(self.root, "worktree", "remove", "--force", str(path))
         self.log("experiment", **result)
         return result
