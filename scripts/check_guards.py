@@ -552,6 +552,11 @@ GUARDS = [
     ('soso/dashboard.py', "'intent_title': redact(str(active.get('title') or field(goal, 'intent', str, '').split('\\n')[0])),",
      "'intent_title': str(active.get('title') or field(goal, 'intent', str, '').split('\\n')[0]),",
      ['test_launch.LauncherTests.test_intent_title_is_redacted_where_it_is_shown_not_where_it_is_stored']),
+    # A snapshot is found by its fingerprint suffix; a new one is named after the redacted title.
+    ('soso/launch.py', 'named[0] if named else ', '',
+     ['test_launch.LauncherTests.test_snapshot_named_from_a_raw_title_still_resumes']),
+    ('soso/launch.py', 'folder_name(redact(intent), digest)', 'folder_name(intent, digest)',
+     ['test_launch.LauncherTests.test_intent_title_is_redacted_where_it_is_shown_not_where_it_is_stored']),
     # Launcher, dashboard and entry-point review.
     ('so-so', '    # Help skips the .so-so ownership check, so it never runs the runtime stored there.\n'
      '    if [ -n "$so_so_help" ]; then\n        so_so_usage\n    fi\n    so_so_root="$so_so_state/runtime"',

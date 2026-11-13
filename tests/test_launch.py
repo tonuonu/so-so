@@ -354,8 +354,19 @@ class LauncherTests(unittest.TestCase):
         self.assertIn('# Deploy with [REDACTED]', shown[0])
         self.assertIn('[Deploy with [REDACTED]]', shown[1].replace('\\', ''))
         self.assertEqual(shown[2], 'Deploy with [REDACTED]')
-        self.assertNotIn(secret, ''.join(shown).replace(folder.name, ''))  # the folder name is a stored path
+        self.assertNotIn(secret, ''.join(shown))
+        self.assertTrue(folder.name.startswith('deploy-with-redacted--'))  # a new folder is named after the redacted title
         self.assertEqual(json.loads((folder / 'entry.json').read_text())['title'], 'Deploy with ' + secret)
+
+    def test_snapshot_named_from_a_raw_title_still_resumes(self):
+        # A folder named before titles were redacted is found by its fingerprint, not by recomputing its name.
+        secret = 'title-secret-value-1234'
+        first = self.run_goal('Deploy with ' + secret)
+        self.assertIn(secret, Path(first['snapshot']).parent.name)
+        with patch.dict(os.environ, {'SOSO_TEST_API_KEY': secret}):
+            again = self.run_goal('Deploy with ' + secret)
+        self.assertEqual(again['snapshot'], first['snapshot'])
+        self.assertEqual(self.calls[-1][2]['resume_goal'], 'goal-1')
 
     def test_malformed_saved_entry_does_not_block_history(self):
         from soso.history import update_history

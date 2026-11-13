@@ -104,7 +104,9 @@ def _snapshot(cwd, managed, intent):
     manifest, excluded = _inputs(cwd)
     digest = hashlib.sha256(json.dumps({'intent': intent, 'files': manifest}, sort_keys=True).encode()).hexdigest()
     legacy = managed / 'projects' / digest
-    folder = legacy if legacy.exists() else managed / 'projects' / folder_name(intent, digest)
+    # An existing snapshot is found by its fingerprint suffix, whatever title its name was made from.
+    named = sorted(p for p in (managed / 'projects').glob('*--' + digest[:12]) if not p.is_symlink())
+    folder = legacy if legacy.exists() else named[0] if named else managed / 'projects' / folder_name(redact(intent), digest)
     project = folder / 'project'
     if folder.exists():
         if not (folder / 'manifest.json').is_file() or not (project / '.git').is_dir():
