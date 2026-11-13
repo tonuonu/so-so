@@ -447,6 +447,9 @@ GUARDS = [
     ('soso/dashboard.py', '            timeout = owner.REQUEST_SECONDS\n', '', ['test_dashboard.DashboardTests.test_idle_connections_are_closed']),
     ('soso/dashboard.py', 'ConnectionAbortedError, TimeoutError):', 'ConnectionAbortedError):',
      ['test_dashboard.DashboardTests.test_client_abort_is_not_logged_or_answered']),
+    ('soso/cli.py', "1 if result['status'] == 'blocked' else ", '', ['test_cli.CliTests.test_goal_exit_codes_match_the_launcher']),
+    ('soso/cli.py', 'except (TypeError, AttributeError) as exc:', 'except () as exc:',
+     ['test_cli.CliTests.test_malformed_config_is_a_one_line_error']),
 ]
 
 
