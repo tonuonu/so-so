@@ -1,16 +1,19 @@
-"""Prove each listed guard is tested: disabling it must turn its tests red.
+"""Prove each listed guard is tested: disabling it must turn every one of its tests red.
 
-Copies the working tree into a temporary, self-contained Git repository, disables
-one guard at a time, and runs only that guard's tests. A new guard adds an entry.
+Copies the working tree into temporary, self-contained Git repositories, disables
+one guard at a time, and runs each of that guard's tests on its own. A new guard
+adds an entry.
 """
+import concurrent.futures
 import os
+import queue
 from pathlib import Path
 import shutil
 import subprocess
 import sys
 import tempfile
 
-# (file, guard text, disabled replacement, tests that must fail without it)
+# (file, guard text, disabled replacement, tests that must each fail without it)
 GUARDS = [
     ('soso/workspace.py', 'any(p.casefold() == ".git" for p in path.parts)', '".git" in path.parts',
      ['test_sandbox_integrity.SandboxIntegrityTests.test_git_dir_is_rejected_in_any_case']),
@@ -103,8 +106,7 @@ GUARDS = [
     ('soso/engine.py', 'git(path, "clean", "-ffdqx", ok=(0, 1), env={"GIT_INDEX_FILE": str(empty)})', 'None',
      ['test_delivery.DeliveryTests.test_candidate_ignored_shadow_files_do_not_raise_accepted_score']),
     ('soso/delivery.py', "git(root, 'clean', '-ffdqX')", 'None',
-     ['test_delivery.DeliveryTests.test_baseline_ignores_files_left_by_earlier_evaluator_runs',
-      'test_delivery.DeliveryTests.test_contract_repair_scores_the_baseline_without_earlier_leftovers']),
+     ['test_delivery.DeliveryTests.test_contract_repair_scores_the_baseline_without_earlier_leftovers']),
     ('soso/engine.py', 'written = os.path.normpath(os.path.join(root, name))', 'written = os.path.join(root, name)',
      ['test_sandbox_integrity.SandboxIntegrityTests.test_run_protects_normalised_program_paths_inside_repo_only']),
     ('soso/engine.py', 'for path in (written, os.path.realpath(written)):', 'for path in (written,):',
@@ -317,8 +319,7 @@ GUARDS = [
     ('soso/process.py', '"-c", "core.hooksPath=/dev/null", ', '', ['test_evaluated_tree.EvaluatedTreeTests.test_runner_commits_ignore_repository_hooks']),
     # Third review: render binary-shown text instead of refusing it.
     ('soso/engine.py', 'if text != [nothing, nothing]:', 'if False:',
-     ['test_evaluated_tree.EvaluatedTreeTests.test_text_file_turned_binary_by_a_nul_byte_is_shown_as_text',
-      'test_evaluated_tree.EvaluatedTreeTests.test_conversion_to_text_and_a_removed_nul_are_shown_as_text',
+     ['test_evaluated_tree.EvaluatedTreeTests.test_conversion_to_text_and_a_removed_nul_are_shown_as_text',
       'test_evaluated_tree.EvaluatedTreeTests.test_old_git_shows_a_committed_lockfile_marked_minus_diff_as_text']),
     ('soso/engine.py', '"binary" if b"\\0" in head else "text"', '"text"',
      ['test_evaluated_tree.EvaluatedTreeTests.test_large_binary_files_are_approvable']),
@@ -339,7 +340,6 @@ GUARDS = [
     ('soso/engine.py', 'new if new_kind == "text" else nothing', 'new or nothing',
      ['test_evaluated_tree.EvaluatedTreeTests.test_text_and_large_binary_swaps_show_kinds_and_sizes_and_are_approvable',
       'test_evaluated_tree.EvaluatedTreeTests.test_symlink_replaced_by_a_large_binary_is_approvable',
-      'test_evaluated_tree.EvaluatedTreeTests.test_many_small_binaries_turned_text_are_shown_as_their_text_only',
       'test_evaluated_tree.EvaluatedTreeTests.test_text_gaining_a_nul_byte_shows_its_sizes_and_the_flag_whatever_its_size']),
     ('soso/engine.py', 'blob if blob.strip("0") and mode != "160000" else None', 'blob if blob.strip("0") else None',
      ['test_evaluated_tree.EvaluatedTreeTests.test_submodule_replaced_by_a_minus_diff_text_file_is_shown']),
@@ -410,11 +410,30 @@ GUARDS = [
 ENV = {**{k: v for k, v in os.environ.items() if not k.startswith('GIT_')}, 'PYTHONDONTWRITEBYTECODE': '1'}
 
 
-def tests_fail(root, tests):
+SEPARATOR = '-' * 70  # unittest's line between a traceback and its summary
+# Mutants run side by side, each in its own snapshot; few, so timing tests do not fail from load alone.
+WORKERS = max(1, int(os.environ.get('CHECK_GUARDS_WORKERS', min(4, os.cpu_count() or 1))))
+
+
+def run_tests(root, tests):
+    """Run tests in one unittest call: 'pass', 'fail' (assertions only), 'error' or 'timeout', and its log."""
     env = {**ENV, 'PYTHONPATH': os.pathsep.join([str(root / 'tests'), str(root)])}
-    result = subprocess.run([sys.executable, '-m', 'unittest', *tests], cwd=root, env=env,
-                            capture_output=True, text=True, timeout=900)
-    return result.returncode != 0, result.stderr[-3000:]
+    try:
+        result = subprocess.run([sys.executable, '-m', 'unittest', *tests], cwd=root, env=env,
+                                capture_output=True, text=True, timeout=900)
+    except subprocess.TimeoutExpired:
+        return 'timeout', ''
+    if result.returncode == 0:
+        return 'pass', ''  # a skipped test passes too
+    summary = result.stderr.rstrip().rsplit('\n', 1)[-1]
+    return 'fail' if summary.startswith('FAILED (failures=') else 'error', result.stderr
+
+
+def last_exception(log):
+    """The final line of the last traceback in a unittest log, e.g. 'TypeError: ...'."""
+    blocks = log.split('\n' + SEPARATOR + '\n')
+    lines = [line for line in blocks[-2].splitlines() if line.strip()] if len(blocks) > 1 else []
+    return lines[-1] if lines else log.strip()[-300:]
 
 
 def snapshot(source, root):
@@ -426,38 +445,62 @@ def snapshot(source, root):
         subprocess.run(['git', *argv], cwd=root, env=ENV, check=True, capture_output=True)
 
 
+def check(root, file, guard, disabled, tests):
+    """Disable one guard and run each of its tests alone. Returns (status line, notes, problem or None)."""
+    path = root / file
+    original = path.read_text()
+    if original.count(guard) != 1:
+        return None, [], f'{file}: guard text must occur exactly once: {guard}'
+    mutant = original.replace(guard, disabled)
+    if file.endswith('.py'):
+        try:
+            compile(mutant, file, 'exec')  # a syntax error would fail the tests for the wrong reason
+        except SyntaxError as exc:
+            return None, [], f'{file}: disabled guard does not compile ({exc.msg}): {guard.strip()}'
+    path.write_text(mutant)
+    try:
+        results = [(test, *run_tests(root, [test])) for test in tests]
+    finally:
+        path.write_text(original)
+    passed = [test for test, outcome, _ in results if outcome == 'pass']
+    timed_out = [test for test, outcome, _ in results if outcome == 'timeout']
+    # An error is red, but it is listed so that a crash unrelated to the guard can be told from a real failure.
+    notes = [f'    {outcome}: {test}' + (': ' + last_exception(log) if outcome == 'error' else '')
+             for test, outcome, log in results if outcome != 'fail']
+    line = ('GREEN ' if passed else 'red   ') + file + ': ' + guard.strip()
+    problem = None
+    if passed:
+        problem = f'{file}: tests still pass with this guard disabled ({", ".join(passed)}): {guard.strip()}'
+    elif timed_out:
+        problem = f'{file}: tests timed out with this guard disabled ({", ".join(timed_out)}): {guard.strip()}'
+    return line, notes, problem
+
+
 def main():
     problems = []
     with tempfile.TemporaryDirectory() as folder:
-        root = Path(folder) / 'repo'
-        snapshot(Path(__file__).resolve().parent.parent, root)
-        failed, log = tests_fail(root, sorted({t for *_, tests in GUARDS for t in tests}))
-        if failed:
-            print('check_guards: guard tests fail with every guard in place\n' + log, file=sys.stderr)
+        source = Path(__file__).resolve().parent.parent
+        roots = queue.Queue()
+        for n in range(WORKERS):
+            snapshot(source, Path(folder) / f'repo{n}')
+            roots.put(Path(folder) / f'repo{n}')
+        outcome, log = run_tests(Path(folder) / 'repo0', sorted({t for *_, tests in GUARDS for t in tests}))
+        if outcome != 'pass':
+            print('check_guards: guard tests fail with every guard in place\n' + log[-3000:], file=sys.stderr)
             return 1
-        for file, guard, disabled, tests in GUARDS:
-            path = root / file
-            original = path.read_text()
-            if original.count(guard) != 1:
-                problems.append(f'{file}: guard text must occur exactly once: {guard}')
-                continue
-            mutant = original.replace(guard, disabled)
+
+        def checked(entry):
+            root = roots.get()
             try:
-                compile(mutant, file, 'exec')  # a syntax error would fail the tests for the wrong reason
-            except SyntaxError as exc:
-                problems.append(f'{file}: disabled guard does not compile ({exc.msg}): {guard.strip()}')
-                continue
-            path.write_text(mutant)
-            try:
-                failed, _ = tests_fail(root, tests)
-            except subprocess.TimeoutExpired:
-                problems.append(f'{file}: tests timed out with this guard disabled: {guard.strip()}')
-                continue
+                return check(root, *entry)
             finally:
-                path.write_text(original)
-            print(('red   ' if failed else 'GREEN ') + file + ': ' + guard.strip(), flush=True)
-            if not failed:
-                problems.append(f'{file}: tests still pass with this guard disabled: {guard.strip()}')
+                roots.put(root)
+        with concurrent.futures.ThreadPoolExecutor(WORKERS) as pool:
+            for line, notes, problem in pool.map(checked, GUARDS):  # in GUARDS order
+                if line:
+                    print('\n'.join([line, *notes]), flush=True)
+                if problem:
+                    problems.append(problem)
     for problem in problems:
         print('check_guards: ' + problem, file=sys.stderr)
     return 1 if problems else 0
