@@ -1,16 +1,19 @@
-"""Prove each listed guard is tested: disabling it must turn its tests red.
+"""Prove each listed guard is tested: disabling it must turn every one of its tests red.
 
-Copies the working tree into a temporary, self-contained Git repository, disables
-one guard at a time, and runs only that guard's tests. A new guard adds an entry.
+Copies the working tree into temporary, self-contained Git repositories, disables
+one guard at a time, and runs each of that guard's tests on its own. A new guard
+adds an entry.
 """
+import concurrent.futures
 import os
+import queue
 from pathlib import Path
 import shutil
 import subprocess
 import sys
 import tempfile
 
-# (file, guard text, disabled replacement, tests that must fail without it)
+# (file, guard text, disabled replacement, tests that must each fail without it)
 GUARDS = [
     ('soso/workspace.py', 'any(p.casefold() == ".git" for p in path.parts)', '".git" in path.parts',
      ['test_sandbox_integrity.SandboxIntegrityTests.test_git_dir_is_rejected_in_any_case']),
@@ -144,8 +147,7 @@ GUARDS = [
     ('soso/engine.py', 'git(path, "clean", "-ffdqx", ok=(0, 1), env={"GIT_INDEX_FILE": str(empty)})', 'None',
      ['test_delivery.DeliveryTests.test_candidate_ignored_shadow_files_do_not_raise_accepted_score']),
     ('soso/delivery.py', "git(root, 'clean', '-ffdqX')", 'None',
-     ['test_delivery.DeliveryTests.test_baseline_ignores_files_left_by_earlier_evaluator_runs',
-      'test_delivery.DeliveryTests.test_contract_repair_scores_the_baseline_without_earlier_leftovers']),
+     ['test_delivery.DeliveryTests.test_contract_repair_scores_the_baseline_without_earlier_leftovers']),
     ('soso/engine.py', 'written = os.path.normpath(os.path.join(root, name))', 'written = os.path.join(root, name)',
      ['test_sandbox_integrity.SandboxIntegrityTests.test_run_protects_normalised_program_paths_inside_repo_only']),
     ('soso/engine.py', 'for path in (written, os.path.realpath(written)):', 'for path in (written,):',
@@ -358,8 +360,7 @@ GUARDS = [
     ('soso/process.py', '"-c", "core.hooksPath=/dev/null", ', '', ['test_evaluated_tree.EvaluatedTreeTests.test_runner_commits_ignore_repository_hooks']),
     # Third review: render binary-shown text instead of refusing it.
     ('soso/engine.py', 'if text != [nothing, nothing]:', 'if False:',
-     ['test_evaluated_tree.EvaluatedTreeTests.test_text_file_turned_binary_by_a_nul_byte_is_shown_as_text',
-      'test_evaluated_tree.EvaluatedTreeTests.test_conversion_to_text_and_a_removed_nul_are_shown_as_text',
+     ['test_evaluated_tree.EvaluatedTreeTests.test_conversion_to_text_and_a_removed_nul_are_shown_as_text',
       'test_evaluated_tree.EvaluatedTreeTests.test_old_git_shows_a_committed_lockfile_marked_minus_diff_as_text']),
     ('soso/engine.py', '"binary" if b"\\0" in head else "text"', '"text"',
      ['test_evaluated_tree.EvaluatedTreeTests.test_large_binary_files_are_approvable']),
@@ -380,7 +381,6 @@ GUARDS = [
     ('soso/engine.py', 'new if new_kind == "text" else nothing', 'new or nothing',
      ['test_evaluated_tree.EvaluatedTreeTests.test_text_and_large_binary_swaps_show_kinds_and_sizes_and_are_approvable',
       'test_evaluated_tree.EvaluatedTreeTests.test_symlink_replaced_by_a_large_binary_is_approvable',
-      'test_evaluated_tree.EvaluatedTreeTests.test_many_small_binaries_turned_text_are_shown_as_their_text_only',
       'test_evaluated_tree.EvaluatedTreeTests.test_text_gaining_a_nul_byte_shows_its_sizes_and_the_flag_whatever_its_size']),
     ('soso/engine.py', 'blob if blob.strip("0") and mode != "160000" else None', 'blob if blob.strip("0") else None',
      ['test_evaluated_tree.EvaluatedTreeTests.test_submodule_replaced_by_a_minus_diff_text_file_is_shown']),
@@ -444,6 +444,76 @@ GUARDS = [
      ['test_run_reliability.ParallelWorktreeTests.test_sibling_candidates_never_add_or_remove_worktrees_at_once']),
     ('soso/engine.py', 'with self.worktrees, contextlib.suppress(RuntimeError):', 'with contextlib.suppress(RuntimeError):',
      ['test_run_reliability.ParallelWorktreeTests.test_sibling_candidates_never_add_or_remove_worktrees_at_once']),
+    # Launcher, dashboard and entry-point review.
+    ('so-so', '    # Help skips the .so-so ownership check, so it never runs the runtime stored there.\n'
+     '    if [ -n "$so_so_help" ]; then\n        so_so_usage\n    fi\n    so_so_root="$so_so_state/runtime"',
+     '    so_so_root="$so_so_state/runtime"', ['test_bootstrap.BootstrapTests.test_help_never_runs_an_unchecked_managed_runtime']),
+    ('soso/dashboard.py', 'if wildcard(self.server.server_address[0]) and (', 'if False and (', ['test_dashboard.DashboardTests.test_wildcard_binding_needs_a_public_host_in_every_spelling']),
+    ('soso/dashboard.py', "int(getattr(address, 'ipv4_mapped', None) or address) == 0", 'int(address) == 0',
+     ['test_dashboard.DashboardTests.test_ipv4_mapped_wildcard_is_a_wildcard',
+      'test_dashboard.DashboardTests.test_wildcard_binding_needs_a_public_host_in_every_spelling']),
+    ('soso/dashboard.py', "socket.getaddrinfo(host.rstrip('.'), None,", 'socket.getaddrinfo(host, None,', ['test_dashboard.DashboardTests.test_wildcard_binding_needs_a_public_host_in_every_spelling']),
+    ('soso/dashboard.py', ' or blank:', ':', ['test_dashboard.DashboardTests.test_wildcard_binding_needs_a_public_host_in_every_spelling']),
+    ('soso/dashboard.py', 'not public_host or unspecified(public_host)):', 'not public_host):',
+     ['test_dashboard.DashboardTests.test_wildcard_binding_needs_a_public_host_in_every_spelling']),
+    ('soso/dashboard.py', 'if not (isinstance(host, str) and host) or blank:', 'if False:',
+     ['test_dashboard.DashboardTests.test_wildcard_binding_needs_a_public_host_in_every_spelling',
+      'test_dashboard.DashboardTests.test_attach_mode_reports_bad_settings_in_one_line']),
+    ('soso/dashboard.py', "family = socket.AF_INET6 if ':' in host else socket.AF_INET", 'family = socket.AF_INET',
+     ['test_dashboard.DashboardTests.test_ipv6_host_binds_and_is_bracketed_in_the_url']),
+    ('soso/dashboard.py', 'f"[{public_host}]" if ":" in public_host else public_host', 'public_host',
+     ['test_dashboard.DashboardTests.test_ipv6_host_binds_and_is_bracketed_in_the_url']),
+    ('soso/dashboard.py', 'if not isinstance(settings, dict):\n            raise', 'if False:\n            raise',
+     ['test_dashboard.DashboardTests.test_attach_mode_reports_bad_settings_in_one_line']),
+    ('soso/dashboard.py', "raise ValueError(f'{config} is not valid JSON: {exc}') from exc", 'raise',
+     ['test_dashboard.DashboardTests.test_attach_mode_reports_bad_settings_in_one_line']),
+    ('soso/dashboard.py', "raise OSError(f'cannot listen on {host} port {port}: {exc.strerror or exc}') from exc", 'raise',
+     ['test_dashboard.DashboardTests.test_attach_mode_reports_bad_settings_in_one_line']),
+    ('soso/dashboard.py', 'except (OSError, OverflowError, ValueError) as exc:  # e.g.', 'except () as exc:  # e.g.',
+     ['test_dashboard.DashboardTests.test_attach_mode_reports_bad_settings_in_one_line']),
+    ('soso/dashboard.py', 'return value if isinstance(value, kind) else default', 'return value',
+     ['test_dashboard.DashboardTests.test_api_tolerates_malformed_records']),
+    ('soso/dashboard.py', 'if isinstance(event, dict) and wellformed(event):', 'if isinstance(event, dict):',
+     ['test_dashboard.DashboardTests.test_api_tolerates_malformed_records']),
+    ('soso/dashboard.py', "except (ValueError, TypeError, AttributeError):\n                item['host'] = 'Unknown host'",
+     "except ():\n                item['host'] = 'Unknown host'", ['test_dashboard.DashboardTests.test_api_tolerates_malformed_records']),
+    ('soso/dashboard.py', 'if not isinstance(row, dict):\n                    continue', 'if False:\n                    continue',
+     ['test_dashboard.DashboardTests.test_api_tolerates_malformed_records']),
+    ('soso/dashboard.py', "for x in field(row, 'experiments', list, []) if isinstance(x, dict)]", "for x in field(row, 'experiments', list, [])]",
+     ['test_dashboard.DashboardTests.test_api_tolerates_malformed_records']),
+    ('soso/dashboard.py', 'stat.S_ISREG(info.st_mode) and ', '', ['test_dashboard.DashboardTests.test_image_inventory_lists_regular_files_only']),
+    ('soso/dashboard.py', ' | os.O_NONBLOCK', '', ['test_dashboard.DashboardTests.test_listed_image_replaced_by_a_fifo_is_not_waited_on']),
+    ('soso/dashboard.py', "if not stat.S_ISREG(os.fstat(stream.fileno()).st_mode):\n            raise", 'if False:\n            raise',
+     ['test_dashboard.DashboardTests.test_listed_image_replaced_by_a_fifo_is_not_waited_on']),
+    ('soso/dashboard.py', ' | os.O_NOFOLLOW', '', ['test_dashboard.DashboardTests.test_image_reads_are_bounded_regular_files']),
+    ('soso/dashboard.py', 'if len(data) > limit:', 'if False:', ['test_dashboard.DashboardTests.test_image_reads_are_bounded_regular_files']),
+    ('soso/dashboard.py', 'data = read_image(path)', 'data = path.read_bytes()',
+     ['test_dashboard.DashboardTests.test_listed_image_replaced_by_a_fifo_is_not_waited_on']),
+    ('soso/dashboard.py', '            timeout = owner.REQUEST_SECONDS\n', '', ['test_dashboard.DashboardTests.test_idle_connections_are_closed']),
+    ('soso/dashboard.py', 'ConnectionAbortedError, TimeoutError):', 'ConnectionAbortedError):',
+     ['test_dashboard.DashboardTests.test_client_abort_is_not_logged_or_answered']),
+    ('soso/dashboard.py', 'for start in range(0, len(data), CHUNK):  # the timeout bounds each send, not the whole body\n'
+     '                        self.wfile.write(data[start:start + CHUNK])', 'self.wfile.write(data)',
+     ['test_dashboard.DashboardTests.test_slow_client_gets_the_whole_image']),
+    ('soso/cli.py', "1 if result['status'] == 'blocked' else ", '', ['test_cli.CliTests.test_goal_exit_codes_match_the_launcher']),
+    ('soso/cli.py', 'except (TypeError, AttributeError) as exc:', 'except () as exc:',
+     ['test_cli.CliTests.test_malformed_config_is_a_one_line_error']),
+    # Spanning a line break, so that the guard text never matches this entry itself.
+    ('scripts/check_guards.py', "[-1]\n    return 'broken' if kind in BROKEN else 'error'", "[-1]\n    return 'error'",
+     ['test_check_guards.CheckGuardsTests.test_outcomes_tell_a_broken_or_killed_test_from_a_failing_one',
+      'test_check_guards.CheckGuardsTests.test_only_failures_and_ordinary_errors_count_as_red']),
+    ('scripts/check_guards.py', "if result.returncode < 0:\n        return 'killed'", "if False:\n        return 'killed'",
+     ['test_check_guards.CheckGuardsTests.test_outcomes_tell_a_broken_or_killed_test_from_a_failing_one',
+      'test_check_guards.CheckGuardsTests.test_only_failures_and_ordinary_errors_count_as_red']),
+    ('soso/skills.py', 'except (OverflowError, TypeError, ValueError) as exc:', 'except ValueError as exc:',
+     ['test_skills.SkillTests.test_page_bounds_keep_their_reading_but_overflow_is_an_error',
+      'test_core.WorkspaceTests.test_read_and_list_bounds_keep_their_reading_but_overflow_is_an_error']),
+    ('soso/workspace.py', 'whole(action.get("offset", 0), "offset")', 'int(action.get("offset", 0))',
+     ['test_core.WorkspaceTests.test_read_and_list_bounds_keep_their_reading_but_overflow_is_an_error']),
+    ('soso/workspace.py', 'whole(action.get("start", 1), "start")', 'int(action.get("start", 1))',
+     ['test_core.WorkspaceTests.test_read_and_list_bounds_keep_their_reading_but_overflow_is_an_error']),
+    ('soso/workspace.py', 'min(100, max(1, whole(action.get("lines", 60), "lines")))', 'min(100, max(1, int(action.get("lines", 60))))',
+     ['test_core.WorkspaceTests.test_read_and_list_bounds_keep_their_reading_but_overflow_is_an_error']),
 ]
 
 
@@ -451,11 +521,39 @@ GUARDS = [
 ENV = {**{k: v for k, v in os.environ.items() if not k.startswith('GIT_')}, 'PYTHONDONTWRITEBYTECODE': '1'}
 
 
-def tests_fail(root, tests):
+SEPARATOR = '-' * 70  # unittest's line between a traceback and its summary
+# Errors that mean the mutant broke the module or the test file, not that a guard is missing.
+BROKEN = {'ImportError', 'ModuleNotFoundError', 'NameError', 'SyntaxError', 'IndentationError', 'TabError'}
+# Mutants run side by side, each in its own snapshot; few, so timing tests do not fail from load alone.
+WORKERS = max(1, int(os.environ.get('CHECK_GUARDS_WORKERS', min(4, os.cpu_count() or 1))))
+
+
+def run_tests(root, tests):
+    """Run tests in one unittest call and return its outcome and log. The outcome is 'pass', 'fail'
+    (assertions only), 'error', or one that proves nothing: 'broken' (import, name or syntax error),
+    'killed' (by a signal) or 'timeout'."""
     env = {**ENV, 'PYTHONPATH': os.pathsep.join([str(root / 'tests'), str(root)])}
-    result = subprocess.run([sys.executable, '-m', 'unittest', *tests], cwd=root, env=env,
-                            capture_output=True, text=True, timeout=900)
-    return result.returncode != 0, result.stderr[-3000:]
+    try:
+        result = subprocess.run([sys.executable, '-m', 'unittest', *tests], cwd=root, env=env,
+                                capture_output=True, text=True, timeout=900)
+    except subprocess.TimeoutExpired:
+        return 'timeout', ''
+    if result.returncode == 0:
+        return 'pass', ''  # a skipped test passes too
+    if result.returncode < 0:
+        return 'killed', result.stderr
+    if result.stderr.rstrip().rsplit('\n', 1)[-1].startswith('FAILED (failures='):
+        return 'fail', result.stderr
+    kind = last_exception(result.stderr).split(':', 1)[0].rsplit('.', 1)[-1]
+    return 'broken' if kind in BROKEN else 'error', result.stderr
+
+
+def last_exception(log):
+    """The final line of the last traceback in a unittest log, e.g. 'TypeError: ...'."""
+    blocks = log.split('\n' + SEPARATOR + '\n')
+    # Without unittest's summary (a test module that fails to import) the traceback ends the log.
+    lines = [line for line in (blocks[-2] if len(blocks) > 1 else log).splitlines() if line.strip()]
+    return lines[-1][:300] if lines else ''
 
 
 def snapshot(source, root):
@@ -467,38 +565,62 @@ def snapshot(source, root):
         subprocess.run(['git', *argv], cwd=root, env=ENV, check=True, capture_output=True)
 
 
+def check(root, file, guard, disabled, tests):
+    """Disable one guard and run each of its tests alone. Returns (status line, notes, problem or None)."""
+    path = root / file
+    original = path.read_text()
+    if original.count(guard) != 1:
+        return None, [], f'{file}: guard text must occur exactly once: {guard}'
+    mutant = original.replace(guard, disabled)
+    if file.endswith('.py'):
+        try:
+            compile(mutant, file, 'exec')  # a syntax error would fail the tests for the wrong reason
+        except SyntaxError as exc:
+            return None, [], f'{file}: disabled guard does not compile ({exc.msg}): {guard.strip()}'
+    path.write_text(mutant)
+    try:
+        results = [(test, *run_tests(root, [test])) for test in tests]
+    finally:
+        path.write_text(original)
+    passed = [test for test, outcome, _ in results if outcome == 'pass']
+    invalid = [f'{test} ({outcome})' for test, outcome, _ in results if outcome in ('broken', 'killed', 'timeout')]
+    # An error is red, but it is listed so that a crash unrelated to the guard can be told from a real failure.
+    notes = [f'    {outcome}: {test}' + (': ' + last_exception(log) if outcome in ('error', 'broken', 'killed') else '')
+             for test, outcome, log in results if outcome != 'fail']
+    line = ('GREEN ' if passed else 'NOPROOF ' if invalid else 'red   ') + file + ': ' + guard.strip()
+    problem = None
+    if passed:
+        problem = f'{file}: tests still pass with this guard disabled ({", ".join(passed)}): {guard.strip()}'
+    elif invalid:
+        problem = f'{file}: tests broke, were killed or timed out rather than failing ({", ".join(invalid)}): {guard.strip()}'
+    return line, notes, problem
+
+
 def main():
     problems = []
     with tempfile.TemporaryDirectory() as folder:
-        root = Path(folder) / 'repo'
-        snapshot(Path(__file__).resolve().parent.parent, root)
-        failed, log = tests_fail(root, sorted({t for *_, tests in GUARDS for t in tests}))
-        if failed:
-            print('check_guards: guard tests fail with every guard in place\n' + log, file=sys.stderr)
+        source = Path(__file__).resolve().parent.parent
+        roots = queue.Queue()
+        for n in range(WORKERS):
+            snapshot(source, Path(folder) / f'repo{n}')
+            roots.put(Path(folder) / f'repo{n}')
+        outcome, log = run_tests(Path(folder) / 'repo0', sorted({t for *_, tests in GUARDS for t in tests}))
+        if outcome != 'pass':
+            print('check_guards: guard tests fail with every guard in place\n' + log[-3000:], file=sys.stderr)
             return 1
-        for file, guard, disabled, tests in GUARDS:
-            path = root / file
-            original = path.read_text()
-            if original.count(guard) != 1:
-                problems.append(f'{file}: guard text must occur exactly once: {guard}')
-                continue
-            mutant = original.replace(guard, disabled)
+
+        def checked(entry):
+            root = roots.get()
             try:
-                compile(mutant, file, 'exec')  # a syntax error would fail the tests for the wrong reason
-            except SyntaxError as exc:
-                problems.append(f'{file}: disabled guard does not compile ({exc.msg}): {guard.strip()}')
-                continue
-            path.write_text(mutant)
-            try:
-                failed, _ = tests_fail(root, tests)
-            except subprocess.TimeoutExpired:
-                problems.append(f'{file}: tests timed out with this guard disabled: {guard.strip()}')
-                continue
+                return check(root, *entry)
             finally:
-                path.write_text(original)
-            print(('red   ' if failed else 'GREEN ') + file + ': ' + guard.strip(), flush=True)
-            if not failed:
-                problems.append(f'{file}: tests still pass with this guard disabled: {guard.strip()}')
+                roots.put(root)
+        with concurrent.futures.ThreadPoolExecutor(WORKERS) as pool:
+            for line, notes, problem in pool.map(checked, GUARDS):  # in GUARDS order
+                if line:
+                    print('\n'.join([line, *notes]), flush=True)
+                if problem:
+                    problems.append(problem)
     for problem in problems:
         print('check_guards: ' + problem, file=sys.stderr)
     return 1 if problems else 0

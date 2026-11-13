@@ -15,6 +15,15 @@ def catalog():
     return sorted(p.parent.name for p in PACK.glob('*/SKILL.md'))
 
 
+def whole(value, name):
+    """int(value), as models have always been answered ("10", 10.7 and true work); an infinity such as
+    1e999 in JSON, a missing value or text that is no number is a ValueError naming the field."""
+    try:
+        return int(value)
+    except (OverflowError, TypeError, ValueError) as exc:
+        raise ValueError(f'{name} must be an integer: {exc}') from None
+
+
 def read_skill(name, start=1, lines=60):
     if name not in catalog():
         raise ValueError('unknown skill; choose from ' + ', '.join(catalog()))
@@ -24,8 +33,8 @@ def read_skill(name, start=1, lines=60):
     if hashlib.sha256(data).hexdigest() != manifest['files'][f'{name}/SKILL.md']:
         raise ValueError('skill content differs from pinned manifest')
     content = data.decode().splitlines()
-    start = max(1, int(start))
-    count = min(80, max(1, int(lines)))
+    start = max(1, whole(start, 'start'))
+    count = min(80, max(1, whole(lines, 'lines')))
     return {'skill': name, 'revision': manifest['revision'], 'start': start,
             'total_lines': len(content), 'content': '\n'.join(content[start - 1:start - 1 + count])[:7000]}
 

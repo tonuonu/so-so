@@ -58,7 +58,9 @@ By default the server binds to loopback and uses an unguessable URL path.
 A project can set `dashboard.host` in its existing `soso.json` to a reachable LAN
 address. The launcher binds that address and prints it automatically, including
 when invoked as plain `./so-so`. `dashboard.public_host` optionally separates the
-advertised hostname from the bind address; it is required for wildcard binding.
+advertised hostname from the bind address; it is required for wildcard binding,
+however the all-interfaces address is spelled (`0.0.0.0`, `0`, `::`). An IPv6
+address such as `::1` can be bound; the printed URL puts it in brackets.
 The environment equivalents are `SOSO_DASHBOARD_HOST` and
 `SOSO_DASHBOARD_PUBLIC_HOST`. These settings expose read-only run evidence on the
 selected interface; the random URL path remains required. For a remote Linux
