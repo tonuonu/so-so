@@ -276,10 +276,10 @@ def review_diff(root, base, commit, seconds=300):
     No external diff program or textconv, and, where Git accepts --attr-source, attributes from the base
     commit, so a -diff, binary or diff driver the candidate commits cannot hide its change, while the
     user's own attributes still apply. Each file Git still shows only as binary gets a line with both sides'
-    kinds and sizes, read by blob id (a gitlink side counts as absent), and its text sides in full: both
-    sides as a text diff when neither is binary, otherwise the one text side alone (its old text removed or
-    its new text added). A binary side is never shown as text. So attributes, an older Git, or a NUL byte
-    added or removed cannot hide text: the reviewer sees all of it, and a change to binary is flagged.
+    kinds and sizes, read by blob id (a gitlink side counts as absent), and the text that is evaluated: a
+    text diff when both sides are text, the new text in full when only the new side is text, and nothing
+    more when the new side is binary or absent. A binary side is never shown as text. So attributes, an
+    older Git, or a NUL byte added or removed cannot hide new text, and a change to binary is flagged.
     Withheld: text over 2 MB (UTF-8 bytes of what the reviewer would receive), a side that cannot be read,
     or binary-shown files beyond the seconds allowed."""
     # Attributes as the base commit holds them: the user's own (e.g. "diff" forcing text) apply, while
@@ -317,11 +317,13 @@ def review_diff(root, base, commit, seconds=300):
             if old_kind == "text" and new_kind == "binary":
                 note += "; this change adds NUL bytes; later edits to this file will show only as binary"
             note += ")"
-            # Text sides only: an empty, absent or binary side is diffed as the empty blob.
-            text = [blob if kind == "text" else nothing for (_, blob), (kind, _) in zip(sides, found)]
+            # Only what is evaluated: the new side when it is text, and the old side only next to new text.
+            # Any other side is diffed as the empty blob; a binary side is never shown as text.
+            (_, old), (_, new) = sides
+            text = [old if old_kind == new_kind == "text" else nothing, new if new_kind == "text" else nothing]
             if text != [nothing, nothing]:
-                note += ("\n(Git shows it as binary; the change as text:)\n" if "binary" not in (old_kind, new_kind)
-                         else "\n(Git shows it as binary; its text side as text, the binary side not shown:)\n")
+                note += ("\n(Git shows it as binary; the change as text:)\n" if old_kind != "binary"
+                         else "\n(Git shows it as binary; its new text, the binary side not shown:)\n")
                 note += git(root, "diff", "--text", "--no-ext-diff", "--no-textconv", *text)
             sent += len(note.encode())
             if sent > GIT_OUTPUT_LIMIT:

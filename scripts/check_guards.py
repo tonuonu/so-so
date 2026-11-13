@@ -297,8 +297,7 @@ GUARDS = [
     ('soso/engine.py', '*options, "diff", "--no-ext-diff", "--no-textconv",', '*options, "diff", "--no-ext-diff",',
      ['test_evaluated_tree.EvaluatedTreeTests.test_textconv_does_not_hide_the_change_from_the_reviewer']),
     ('soso/engine.py', 'except OutputLimit:\n        return None', 'except ():\n        return None',
-     ['test_evaluated_tree.EvaluatedTreeTests.test_diff_over_the_output_limit_is_withheld_and_not_approved',
-      'test_evaluated_tree.EvaluatedTreeTests.test_text_side_over_the_limit_is_withheld_next_to_a_binary_side']),
+     ['test_evaluated_tree.EvaluatedTreeTests.test_diff_over_the_output_limit_is_withheld_and_not_approved']),
     ('soso/engine.py', 'except RuntimeError:\n            continue  # e.g. a file', 'except ():\n            continue  # e.g. a file',
      ['test_evaluated_tree.EvaluatedTreeTests.test_include_whose_condition_never_holds_does_not_stop_runs']),
     ('soso/engine.py', 'len(data or b"") > MAX_CONFIG_BYTES or ', '',
@@ -333,11 +332,11 @@ GUARDS = [
     ('soso/engine.py', 'base + "^{commit}", quiet=True)', 'base + "^{commit}")', ['test_evaluated_tree.EvaluatedTreeTests.test_stderr_never_mixes_into_ids_on_this_git']),
     ('soso/engine.py', '"--stdin", stdin="", quiet=True)', '"--stdin", stdin="")', ['test_evaluated_tree.EvaluatedTreeTests.test_stderr_never_mixes_into_ids_on_this_git']),
     # Fourth review: kinds and sizes for binary swaps, rename-aware pairing, gitlinks, bounded blob reads.
-    ('soso/engine.py', 'blob if kind == "text" else nothing', 'blob or nothing',
+    ('soso/engine.py', 'new if new_kind == "text" else nothing', 'new or nothing',
      ['test_evaluated_tree.EvaluatedTreeTests.test_text_and_large_binary_swaps_show_kinds_and_sizes_and_are_approvable',
       'test_evaluated_tree.EvaluatedTreeTests.test_symlink_replaced_by_a_large_binary_is_approvable',
       'test_evaluated_tree.EvaluatedTreeTests.test_many_small_binaries_turned_text_are_shown_as_their_text_only',
-      'test_evaluated_tree.EvaluatedTreeTests.test_text_gaining_a_nul_byte_shows_its_old_text_whatever_its_size']),
+      'test_evaluated_tree.EvaluatedTreeTests.test_text_gaining_a_nul_byte_shows_its_sizes_and_the_flag_whatever_its_size']),
     ('soso/engine.py', 'blob if blob.strip("0") and mode != "160000" else None', 'blob if blob.strip("0") else None',
      ['test_evaluated_tree.EvaluatedTreeTests.test_submodule_replaced_by_a_minus_diff_text_file_is_shown']),
     ('soso/engine.py', 'if status[:1] in ("R", "C"):', 'if False:', ['test_evaluated_tree.EvaluatedTreeTests.test_renamed_file_turned_binary_is_shown_as_text']),
@@ -381,6 +380,11 @@ GUARDS = [
     ('soso/engine.py', 'READERS = 8  #', 'READERS = 64  #', ['test_evaluated_tree.EvaluatedTreeTests.test_blob_reads_run_side_by_side_and_bounded']),
     ('soso/engine.py', 'if sent > GIT_OUTPUT_LIMIT:  # e.g. invalid UTF-8', 'if False:  # e.g. invalid UTF-8',
      ['test_evaluated_tree.EvaluatedTreeTests.test_plain_diff_is_limited_in_bytes_too']),
+    # Only what is evaluated: no old text next to a binary or absent new side.
+    ('soso/engine.py', 'old if old_kind == new_kind == "text" else nothing', 'old if old_kind == "text" else nothing',
+     ['test_evaluated_tree.EvaluatedTreeTests.test_large_text_swapped_for_a_binary_is_approvable',
+      'test_evaluated_tree.EvaluatedTreeTests.test_deleted_text_shown_as_binary_shows_only_its_sizes',
+      'test_evaluated_tree.EvaluatedTreeTests.test_text_gaining_a_nul_byte_shows_its_sizes_and_the_flag_whatever_its_size']),
 ]
 
 

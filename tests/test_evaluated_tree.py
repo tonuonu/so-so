@@ -631,11 +631,12 @@ class EvaluatedTreeTests(RepoCase):
         return base
 
     def test_text_file_turned_binary_by_a_nul_byte_is_shown_as_text(self):
-        # One NUL byte makes Git show only "Binary files differ" for a file the base held as text: its old
-        # text is shown in full as removed, and the change is flagged; the binary side is never shown as text.
+        # One NUL byte makes Git show only "Binary files differ" for a file the base held as text: the change
+        # is flagged, and since the new side is binary, neither side is shown as text.
         diff, reason = self.reviewed(self.change('data.txt', b'safe\n', b'gamed\n\0'))
         self.assertIsNone(reason)
-        self.assertIn('-safe', diff)
+        self.assertIn('(data.txt: text 5 B \u2192 binary 7 B', diff)
+        self.assertNotIn('safe', diff)  # only what is evaluated: the new side is binary
         self.assertNotIn('gamed', diff)
         self.assertIn('this change adds NUL bytes; later edits to this file will show only as binary', diff)
 
@@ -676,7 +677,8 @@ class EvaluatedTreeTests(RepoCase):
         self.assertIsNone(reason)
         self.assertIn('rename to b.cfg', diff)
         self.assertIn('(b.cfg: text', diff)  # named as the diff names it
-        self.assertIn('-setting20 = 20', diff)  # the old text in full; the binary side is not shown
+        self.assertIn('this change adds NUL bytes', diff)
+        self.assertNotIn('setting20', diff)  # only what is evaluated: the new side is binary
         self.assertNotIn('EVIL', diff)
 
     def test_submodule_replaced_by_a_minus_diff_text_file_is_shown(self):
@@ -992,13 +994,14 @@ class EvaluatedTreeTests(RepoCase):
         self.assertIn('payload.dat: binary 33.8 kB \u2192 text 29 B', diff)
         self.assertIn('+import os; os.system("true")', diff)
 
-    def test_text_gaining_a_nul_byte_shows_its_old_text_whatever_its_size(self):
-        before = b''.join(b'line %05d of the old text\n' % i for i in range(1600))  # 41.6 kB
+    def test_text_gaining_a_nul_byte_shows_its_sizes_and_the_flag_whatever_its_size(self):
+        # Only what is evaluated is shown: the new side is binary, so neither side's text is shown.
+        before = b''.join(b'line %05d of the old text\n' % i for i in range(1600))  # 43.2 kB
         after = before[:270] + b'\0PAYLOAD\n' + before[270:]  # within the first 8000 bytes: binary to Git
         diff, reason = self.reviewed(self.change('notes.txt', before, after))
         self.assertIsNone(reason)
-        self.assertIn('-line 01599 of the old text', diff)
-        self.assertIn('this change adds NUL bytes', diff)
+        self.assertIn('(notes.txt: text 43.2 kB \u2192 binary 43.2 kB; this change adds NUL bytes', diff)
+        self.assertNotIn('old text', diff)
         self.assertNotIn('PAYLOAD', diff)  # the binary side is never shown as text
 
     def test_reviewer_text_is_limited_in_bytes(self):
@@ -1023,12 +1026,28 @@ class EvaluatedTreeTests(RepoCase):
         self.assertIsNone(diff)
         self.assertIn('exceeds 2 MB', reason)
 
-    def test_text_side_over_the_limit_is_withheld_next_to_a_binary_side(self):
-        # Shown in full like any deleted text file, so 3 MB of old text is over the limit; documented.
+    def test_large_text_swapped_for_a_binary_is_approvable(self):
+        # The old text is not evaluated, so it is not shown: only the sizes and the NUL flag.
         before = b''.join(b'row %07d\n' % i for i in range(250000))  # 3 MB
-        diff, reason = self.reviewed(self.change('table.txt', before, b'\0' * 1024))
-        self.assertIsNone(diff)
-        self.assertIn('exceeds 2 MB', reason)
+        for name, after in (('table.txt', b'\0' * 1024), ('sheet.txt', bytes(range(256)) * 200)):
+            with self.subTest(name=name):
+                diff, reason = self.reviewed(self.change(name, before, after))
+                self.assertIsNone(reason)
+                self.assertIn(f'({name}: text 3.0 MB \u2192 binary', diff)
+                self.assertIn('this change adds NUL bytes', diff)
+                self.assertLess(len(diff.encode()), 2000)
+
+    def test_deleted_text_shown_as_binary_shows_only_its_sizes(self):
+        (self.common_dir() / 'info/attributes').write_text('*.lock -diff\n')
+        (self.root / 'deps.lock').write_text('version = 1\n')
+        self.commit('lock', 'deps.lock')
+        base = git(self.root, 'rev-parse', 'HEAD')
+        git(self.root, 'rm', '-q', 'deps.lock')
+        git(self.root, '-c', 'commit.gpgsign=false', 'commit', '-qm', 'deleted')
+        diff, reason = self.reviewed(base)
+        self.assertIsNone(reason)
+        self.assertIn('(deps.lock: text 12 B \u2192 absent 0 B)', diff)
+        self.assertNotIn('version = 1', diff)
 
     def test_file_names_are_quoted_as_git_quotes_them(self):
         # A newline in a name must not let it forge a runner line, a header or a hunk.
