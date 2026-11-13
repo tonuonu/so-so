@@ -52,8 +52,7 @@ def read_image(path, limit=IMAGE_LIMIT):
 def wildcard(address):
     """Whether an IP address names every interface, also as IPv4-mapped IPv6 ('::ffff:0.0.0.0')."""
     address = ipaddress.ip_address(address)
-    mapped = getattr(address, 'ipv4_mapped', None)
-    return address.is_unspecified or bool(mapped and mapped.is_unspecified)
+    return int(getattr(address, 'ipv4_mapped', None) or address) == 0  # not is_unspecified: mapped is False on 3.11
 
 
 def unspecified(host):

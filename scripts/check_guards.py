@@ -408,7 +408,7 @@ GUARDS = [
      '    if [ -n "$so_so_help" ]; then\n        so_so_usage\n    fi\n    so_so_root="$so_so_state/runtime"',
      '    so_so_root="$so_so_state/runtime"', ['test_bootstrap.BootstrapTests.test_help_never_runs_an_unchecked_managed_runtime']),
     ('soso/dashboard.py', 'if wildcard(self.server.server_address[0]) and (', 'if False and (', ['test_dashboard.DashboardTests.test_wildcard_binding_needs_a_public_host_in_every_spelling']),
-    ('soso/dashboard.py', 'return address.is_unspecified or bool(mapped and mapped.is_unspecified)', 'return address.is_unspecified',
+    ('soso/dashboard.py', "int(getattr(address, 'ipv4_mapped', None) or address) == 0", 'int(address) == 0',
      ['test_dashboard.DashboardTests.test_ipv4_mapped_wildcard_is_a_wildcard',
       'test_dashboard.DashboardTests.test_wildcard_binding_needs_a_public_host_in_every_spelling']),
     ('soso/dashboard.py', "socket.getaddrinfo(host.rstrip('.'), None,", 'socket.getaddrinfo(host, None,', ['test_dashboard.DashboardTests.test_wildcard_binding_needs_a_public_host_in_every_spelling']),
