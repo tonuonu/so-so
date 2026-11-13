@@ -492,6 +492,7 @@ print(json.dumps({'score':100 if stage>=2 else 0,'complete':stage>=2}))
                 self.assertRaisesRegex(ValueError, 'retained candidate ref or history changed'):
             self.start(resume_goal=first['goal_id'])
         worker.assert_not_called()
+        self.assert_dropped_then_planned(first, 'retained candidate ref or history changed')
 
     def test_retained_candidate_changed_base_is_rejected_before_worker(self):
         def pause(router, task, path, config, log, index):
@@ -508,6 +509,117 @@ print(json.dumps({'score':100 if stage>=2 else 0,'complete':stage>=2}))
                 self.assertRaisesRegex(ValueError, 'retained candidate base or policy binding changed'):
             self.start(resume_goal=first['goal_id'])
         worker.assert_not_called()
+        self.assert_dropped_then_planned(first, 'retained candidate base or policy binding changed')
+
+    def assert_dropped_then_planned(self, first, reason):
+        """The failed draft blocks the goal once and is dropped, its ref kept; the next resume plans afresh."""
+        state = json.loads(Path(first['report']).read_text())
+        self.assertEqual(state['status'], 'blocked')
+        self.assertIn(reason, state['reason'])
+        self.assertIsNone(state['draft'])
+        report = json.loads(Path(state.get('active_epoch') or state['epochs'][-1]['report']).read_text())
+        self.assertNotIn('draft', report)
+        dropped = report['rounds'][-1]['dropped_draft']
+        self.assertIn(reason, dropped['reason'])
+        git(self.repo, 'rev-parse', '--verify', dropped['ref'])  # kept for inspection
+        plans = len([p for r, p in self.prompts if 'Plan one small useful next milestone step' in p])
+        with patch('soso.delivery.time.time', return_value=time.time() + 10):
+            resumed = self.start(resume_goal=first['goal_id'])
+        planned = [p for r, p in self.prompts if 'Plan one small useful next milestone step' in p]
+        self.assertGreater(len(planned), plans)
+        self.assertIn(reason, planned[plans])
+        return resumed
+
+    def test_draft_whose_evaluation_leaves_a_file_is_dropped_not_retried(self):
+        def work(router, task, path, config, log, index):
+            (Path(path) / 'stage.txt').write_text('2')
+            return {'finished': True}
+        def leaves_file(path, config, budget):
+            result = evaluate(path, config, budget)
+            (Path(path) / 'leftover.txt').write_text('left by the evaluation')
+            return result
+        with patch('soso.engine.worker', side_effect=work) as worker:
+            with patch('soso.engine.evaluate', side_effect=leaves_file):
+                first = self.start()
+            self.assertEqual(first['status'], 'blocked')
+            report = json.loads(Path(first['epochs'][-1]['report']).read_text())
+            self.assertEqual(report['rounds'][-1]['dropped_draft']['phase'], 'evaluate')
+            resumed = self.assert_dropped_then_planned(first, 'evaluation modified source or protected files')
+        self.assertEqual(worker.call_count, 2)
+        self.assertEqual(resumed['status'], 'complete')
+
+    def test_draft_whose_review_overflows_the_reviewer_context_is_dropped_not_retried(self):
+        original = self.answer
+        reviews = []
+        overflow = 'all routes failed: test: context budget exceeded'
+        def answer(router, role, prompt, cwd, **kwargs):
+            if role == 'reviewer' and prompt.startswith('Independently review this increment.'):
+                reviews.append(prompt)
+                if len(reviews) == 1:
+                    raise RuntimeError(overflow)
+            return original(router, role, prompt, cwd, **kwargs)
+        self.answer = answer
+        with self.assertRaisesRegex(RuntimeError, overflow):
+            self.start()
+        state_file = next((self.repo / '.git/soso/goals').glob('*/state.json'))
+        first = {**json.loads(state_file.read_text()), 'report': str(state_file)}
+        report = json.loads(Path(first['active_epoch']).read_text())
+        self.assertEqual(report['rounds'][-1]['dropped_draft']['phase'], 'review')
+        resumed = self.assert_dropped_then_planned(first, overflow)
+        self.assertEqual(len(reviews), 2)
+        self.assertEqual(resumed['status'], 'incomplete')
+
+    def test_draft_whose_repair_cannot_be_kept_is_dropped(self):
+        original = self.answer
+        def answer(router, role, prompt, cwd, **kwargs):
+            if role == 'reviewer' and prompt.startswith('Independently review this increment.'):
+                (Path(cwd) / 'review-notes.txt').write_text('left in the goal worktree')
+                return {'approve': False, 'useful': True, 'reason': 'Repair the API tests.'}
+            return original(router, role, prompt, cwd, **kwargs)
+        self.answer = answer
+        with self.assertRaisesRegex(ValueError, 'review modified accepted source'):
+            self.start()
+        state = json.loads(next((self.repo / '.git/soso/goals').glob('*/state.json')).read_text())
+        self.assertIsNone(state['draft'])
+        dropped = json.loads(Path(state['active_epoch']).read_text())['rounds'][-1]['dropped_draft']
+        self.assertIn('review modified accepted source', dropped['reason'])
+        git(self.repo, 'rev-parse', '--verify', dropped['ref'])
+
+    def test_resume_without_exec_keeps_the_draft_and_the_goal_permission(self):
+        calls = []
+        def work(router, task, path, config, log, index):
+            calls.append((task, config['allow_exec']))
+            (Path(path) / 'stage.txt').write_text(str(len(calls)))
+            if len(calls) == 1:
+                raise BudgetExceeded('pause')
+            return {'finished': True}
+        with patch('soso.engine.worker', side_effect=work):
+            first = self.start()
+            self.assertEqual(first['draft']['phase'], 'worker')
+            with patch('soso.delivery.time.time', return_value=time.time() + 5):
+                resumed = self.start(resume_goal=first['goal_id'], allow_exec=False)
+        self.assertEqual(resumed['status'], 'complete')
+        self.assertEqual(calls, [(calls[0][0], True), (calls[0][0], False)])  # the draft resumed, without exec
+        self.assertTrue(resumed['allow_exec'])  # a later resume may use exec again
+
+    def test_model_override_on_resume_drops_the_retained_draft_once(self):
+        # --backend/--model replace the epoch's models and routes, which the draft binding covers: the draft is
+        # dropped like any other draft that cannot resume, and the next resume plans afresh.
+        def pause(router, task, path, config, log, index):
+            (Path(path) / 'stage.txt').write_text('1')
+            raise BudgetExceeded('pause')
+        with patch('soso.engine.worker', side_effect=pause):
+            first = self.start()
+        def configured(c, backend='auto', model=None):
+            models = {'other': {'kind': 'command', 'command': ['false']}} if backend == 'codex' else self.config['models']
+            return {**c, **self.config, 'models': models, 'routes': {r: list(models) for r in ('worker', 'planner', 'reviewer')},
+                    **{k: c[k] for k in ('evaluate', 'protected', 'delivery') if k in c}}
+        with patch('soso.delivery.configure_models', side_effect=configured), \
+                patch.object(Router, 'ask', lambda router, *a, **k: self.answer(router, *a, **k)), \
+                patch('soso.delivery.time.time', return_value=time.time() + 5), \
+                self.assertRaisesRegex(ValueError, 'retained candidate base or policy binding changed'):
+            start_goal(self.repo, once=True, resume_goal=first['goal_id'], backend='codex')
+        self.assertEqual(self.assert_dropped_then_planned(first, 'binding changed')['status'], 'incomplete')
 
     def test_interrupt_during_checkout_keeps_the_retained_draft(self):
         # The checkout deletes every file before writing them again; an interrupt in between must not
@@ -577,6 +689,7 @@ print(json.dumps({'score':10*stage+(50 if expanded else 0),'complete':False}))
             third = self.start(resume_goal=first['goal_id'])
         self.assertEqual(third['status'], 'complete')
         self.assertEqual((Path(third['worktree']) / 'stage.txt').read_text(), '2')
+
     def test_killed_epoch_leaves_no_watched_setting_for_the_next_baseline(self):
         # A worker with exec changed a watched setting and the process was killed before the restore.
         first = self.start()

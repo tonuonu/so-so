@@ -339,8 +339,10 @@ class DeliveryEpoch(Run):
     """Reuse isolated candidates and commit guards, with nonregressing acceptance."""
     MAX_REPAIRS = 3
 
-    def __init__(self, root, config, intent, contract, feedback, allow_exec, draft=None):
+    def __init__(self, root, config, intent, contract, feedback, allow_exec, draft=None, goal_exec=None):
         super().__init__(root, config, intent, allow_exec)
+        # The draft binding uses the goal's own permission: one resume with --no-exec narrows only that epoch.
+        self.goal_exec = allow_exec if goal_exec is None else goal_exec
         self.integration = root
         self.contract = contract
         self.feedback = feedback
@@ -356,7 +358,8 @@ class DeliveryEpoch(Run):
         yield  # start_goal holds the repository's run lock around every epoch; a second flock would refuse it
 
     def draft_binding(self):
-        return {'config_sha256': hashlib.sha256(json.dumps(self.config, sort_keys=True).encode()).hexdigest(),
+        config = dict(self.config, allow_exec=self.goal_exec)
+        return {'config_sha256': hashlib.sha256(json.dumps(config, sort_keys=True).encode()).hexdigest(),
                 'intent_sha256': hashlib.sha256(self.intent.encode()).hexdigest(), 'policy': self.pinned}
 
     def pending_candidate(self):
@@ -404,6 +407,22 @@ class DeliveryEpoch(Run):
                                 'repairs': previous.get('repairs', 0),
                                 'repair_feedback': previous.get('repair_feedback', '')}
         self.checkpoint()  # ref and descriptor are durable before the worktree is removed
+
+    def drop_draft(self, reason, number):
+        """A retained draft whose round ended in a non-waiting error is not resumed again; its ref stays for
+        inspection and the reason reaches the next planner through the round."""
+        draft = self.report.pop('draft', None) or self._continuation
+        self._continuation = None
+        if not draft:
+            return
+        dropped = {**{k: draft.get(k) for k in ('ref', 'commit', 'phase', 'repairs')}, 'reason': str(reason)[:2000]}
+        rounds = self.report['rounds']
+        if rounds and rounds[-1].get('round') == number:
+            rounds[-1]['dropped_draft'] = dropped
+        else:
+            rounds.append({'round': number, 'experiments': [], 'accepted': None, 'outcome': 'draft_dropped',
+                           'dropped_draft': dropped})
+        self.log('draft_dropped', **dropped)
 
     def repair_candidate(self, candidate):
         """Keep a useful rejected increment for a bounded repair, never integration."""
@@ -516,7 +535,11 @@ class DeliveryEpoch(Run):
                 return self.report
             for number in range(1, self.config['rounds'] + 1):
                 self.budget.remaining()
-                draft = self.pending_candidate()
+                try:
+                    draft = self.pending_candidate()
+                except Exception as exc:
+                    self.drop_draft('retained draft not resumed: ' + str(exc), number)
+                    raise
                 task = draft['task'] if draft else self.plan()[0]
                 if draft and draft.get('repair_feedback'):
                     task += ('\nREVIEW REPAIR REQUIRED:\nKeep the useful existing candidate and fix the following '
@@ -535,6 +558,7 @@ class DeliveryEpoch(Run):
                     raise KeyboardInterrupt
                 if candidate.get('error'):
                     round_result['outcome'] = 'execution_failed'
+                    self.drop_draft(candidate['error'], number)
                     self.report.update(status='execution_failed', reason=candidate['error'])
                     break
                 evaluation = candidate.get('evaluation', {})
@@ -542,7 +566,13 @@ class DeliveryEpoch(Run):
                 if evaluation.get('valid') and evaluation['score'] >= self.report['best']:
                     self.report['draft']['phase'] = 'review'
                     self.checkpoint()
-                    approved = self.review(candidate)
+                    try:
+                        approved = self.review(candidate)
+                    except (ModelUnavailable, BudgetExceeded):
+                        raise
+                    except Exception as exc:
+                        self.drop_draft('review failed: ' + str(exc), number)
+                        raise
                 if approved:
                     if fingerprint(self.integration, self.config['protected']) != self.pinned or git(self.integration, 'status', '--porcelain'):
                         raise ValueError('review modified accepted source')
@@ -559,7 +589,12 @@ class DeliveryEpoch(Run):
                         self.report['status'] = 'complete'
                         break
                 else:
-                    if not self.repair_candidate(candidate):
+                    try:
+                        repairing = self.repair_candidate(candidate)
+                    except Exception as exc:
+                        self.drop_draft('repair not retained: ' + str(exc), number)
+                        raise
+                    if not repairing:
                         self.report.pop('draft', None)
                     self.report['plateau'] += 1
                 self.checkpoint()
@@ -619,7 +654,6 @@ def start_goal(repo: Path, intent: str | None = None, *, backend='auto', model=N
             state = json.loads((folder / 'state.json').read_text())
             if state['source'] != str(repo):
                 raise ValueError('resume goal belongs to another source repository')
-            state['allow_exec'] = state.get('allow_exec', True) and allow_exec
         else:
             if (repo / POLICY).exists():
                 raise ValueError('reserved .soso-delivery directory already exists in source')
@@ -700,6 +734,7 @@ def start_goal(repo: Path, intent: str | None = None, *, backend='auto', model=N
         if state['status'] == 'complete':
             return {**state, 'report': str(folder / 'state.json')}
         while True:
+            epoch = None
             try:
                 if state.get('next_retry_at') and state['next_retry_at'] > time.time():
                     if once:
@@ -735,7 +770,8 @@ def start_goal(repo: Path, intent: str | None = None, *, backend='auto', model=N
                                  head=git(root, 'rev-parse', 'HEAD'),
                                  config_sha256=hashlib.sha256((folder / 'config.json').read_bytes()).hexdigest())
                     _save(folder, state)
-                epoch = DeliveryEpoch(root, config, state['intent'], state['contract'], state['epochs'][-2:], state['allow_exec'], state.get('draft'))
+                epoch = DeliveryEpoch(root, config, state['intent'], state['contract'], state['epochs'][-2:],
+                                      goal_exec and allow_exec, state.get('draft'), goal_exec=goal_exec)
                 state['active_epoch'] = str(epoch.report_path)
                 _save(folder, state)
                 report = epoch.run_epoch()
@@ -789,6 +825,8 @@ def start_goal(repo: Path, intent: str | None = None, *, backend='auto', model=N
                 _save(folder, state)
                 break
             except Exception as exc:
+                if epoch is not None:
+                    state['draft'] = epoch.report.get('draft')  # e.g. a draft its failure dropped
                 state.update(status='blocked', reason=redact(str(exc))[:2000], next_retry_at=None)
                 _save(folder, state)
                 raise

@@ -212,7 +212,15 @@ a completed or accepted result. When review explicitly marks a nonregressing
 candidate useful but rejects it with concrete findings, delivery keeps it for up
 to three repair attempts. Each attempt receives the findings and still requires
 fresh evaluation and review. Useless, invalid or exhausted repair candidates are
-not resumed automatically. Optimization workers retain their existing cleanup
+not resumed automatically. A retained draft whose round ends in an error other
+than a provider wait, an exhausted budget or an interrupt (for example an
+evaluation that leaves files behind, a reviewer that fails, or a binding that no
+longer matches) is dropped: the goal blocks once with the reason, the reason is
+recorded with the round for the next planner, its ref stays for inspection, and
+the next resume plans a fresh step. A resume with `--no-exec` narrows only that
+run; it does not change the goal's own permission or its draft's binding. A
+resume with `--backend` or `--model` changes the epoch's models, which the
+binding covers, so a draft retained at that point is dropped the same way. Optimization workers retain their existing cleanup
 behavior for uncommitted failed experiments; tool events remain. The JSON report lists base/head commit hashes,
 scores, stop reason, timing, model calls, candidate summaries and review verdicts.
 

@@ -403,6 +403,21 @@ GUARDS = [
      ['test_run_reliability.ParallelWorktreeTests.test_sibling_candidates_never_add_or_remove_worktrees_at_once']),
     ('soso/engine.py', 'with self.worktrees, contextlib.suppress(RuntimeError):', 'with contextlib.suppress(RuntimeError):',
      ['test_run_reliability.ParallelWorktreeTests.test_sibling_candidates_never_add_or_remove_worktrees_at_once']),
+    # A retained draft whose round ends in a non-waiting error is dropped (ref kept), not retried on every resume.
+    ('soso/delivery.py', "self.drop_draft('retained draft not resumed: ' + str(exc), number)", 'pass',
+     ['test_delivery.DeliveryTests.test_retained_candidate_changed_ref_is_rejected_before_worker',
+      'test_delivery.DeliveryTests.test_retained_candidate_changed_base_is_rejected_before_worker']),
+    ('soso/delivery.py', "self.drop_draft(candidate['error'], number)", 'pass',
+     ['test_delivery.DeliveryTests.test_draft_whose_evaluation_leaves_a_file_is_dropped_not_retried']),
+    ('soso/delivery.py', "self.drop_draft('review failed: ' + str(exc), number)", 'pass',
+     ['test_delivery.DeliveryTests.test_draft_whose_review_overflows_the_reviewer_context_is_dropped_not_retried']),
+    ('soso/delivery.py', "self.drop_draft('repair not retained: ' + str(exc), number)", 'pass',
+     ['test_delivery.DeliveryTests.test_draft_whose_repair_cannot_be_kept_is_dropped']),
+    ('soso/delivery.py', "state['draft'] = epoch.report.get('draft')  # e.g. a draft its failure dropped", 'pass',
+     ['test_delivery.DeliveryTests.test_retained_candidate_changed_base_is_rejected_before_worker']),
+    # One resume without exec must not change the binding of the goal's retained draft.
+    ('soso/delivery.py', 'config = dict(self.config, allow_exec=self.goal_exec)', 'config = self.config',
+     ['test_delivery.DeliveryTests.test_resume_without_exec_keeps_the_draft_and_the_goal_permission']),
     # A killed epoch's record is compared before the next epoch, so its worker's setting is no baseline.
     ('soso/delivery.py', "atomic_json(storage / 'unrestored.json', {'run': record.parent.name,", "(lambda *a: None)(None, {'run': record.parent.name,",
      ['test_delivery.DeliveryTests.test_killed_epoch_leaves_no_watched_setting_for_the_next_baseline']),
