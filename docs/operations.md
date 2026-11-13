@@ -208,7 +208,10 @@ worker leaves running detached from its process group can still write into the
 candidate worktree between the checkout and the evaluation. Use a container or
 VM to bound both. Two parallel workers can still race: a shared setting one
 changes and changes back while another candidate is checked out is not seen;
-run with `parallel` 1 when that matters.
+run with `parallel` 1 when that matters. A goal's contract setup runs its
+evaluator before any setting is recorded, so a setting that evaluator changes
+becomes the first epoch's baseline; review a planner-written evaluator, or
+supply your own, when that matters.
 
 A run retains its result branch/worktree and candidate commit refs. Successful
 candidate commits are kept under `refs/soso/RUN_ID/`, including measured rejected
