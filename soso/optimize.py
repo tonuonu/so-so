@@ -136,6 +136,10 @@ def optimize_project(project: Path, intent: str, folder: Path, models_path=None,
                     checkpoint()
                     continue
                 epoch = state['epochs'][-1]
+                completed = sum(r.get('outcome') != 'incomplete' for r in report.get('rounds', []))
+                if completed != epoch.get('completed', 0):
+                    state['failures'] = 0  # a round completed since the last wait: the next wait is a first failure
+                epoch['completed'] = completed
                 accepted = any(round_result.get('accepted') for round_result in report.get('rounds', []))
                 state['plateau'] = report.get('plateau', 0) + (0 if accepted else epoch['plateau_before'])
                 epoch.update(status=report['status'], head=report.get('head'), best=report.get('best'), plateau=state['plateau'])

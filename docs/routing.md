@@ -72,7 +72,11 @@ available, the goal waits until the earliest known reset. Unknown reset times us
 increasing delays (30 s, doubling to 900 s). A known reset time is kept, but from
 the second consecutive failure no sooner than the delay one step behind (30 s,
 60 s, ... 900 s), so a provider whose reset time is always now cannot make a tight
-retry loop. A successful call starts the count again.
+retry loop. Parallel calls that fail while the model is already cooling down count
+as one failure, and the later reset time is kept. The count starts again after
+progress: for a model's cooldown, when the model answers; for a goal's wait, when
+an epoch moves the accepted commit; for an optimization's wait, when a round
+completes.
 
 Command and Codex adapters must report quota and rate limits with a non-zero exit
 status. Quota text is recognized only in the output of a process that fails, returns

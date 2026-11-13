@@ -203,6 +203,38 @@ class DeliveryTests(unittest.TestCase):
         self.assertNotEqual(result['head'], first['head'])
         self.assertEqual(result.get('stalled'), 0)
 
+    def test_killed_epoch_that_accepted_a_change_resets_the_stall_count(self):
+        first = self.start()  # accepts stage 1
+        root = Path(first['worktree'])
+        killed = first['epochs'][-1]['report']
+        self.set_state(first, active_epoch=killed, epochs=first['epochs'][:-1], head=git(root, 'rev-parse', 'HEAD~1'),
+                       status='running', stalled=5)  # killed after the merge, before the goal recorded it
+        self.reject_increments()
+        result = self.resume(first)
+        self.assertEqual(result['head'], first['head'])
+        self.assertEqual((result['status'], result.get('stalled')), ('incomplete', 1))
+
+    def test_epochs_that_accept_and_then_wait_keep_the_provider_time(self):
+        # Each epoch accepts a change, then a provider asks for a short wait: that wait is a first failure again.
+        self.use_evaluator(EVALUATOR.replace('stage>=2', 'stage>=9'))
+        accept = self.answer
+        plans = []
+        def answer(router, role, prompt, cwd, **kwargs):
+            if role == 'planner' and prompt.startswith('Plan one small useful next milestone step.'):
+                plans.append(prompt)
+                if len(plans) % 2 == 0:
+                    raise ModelUnavailable(time.time() + 5)
+            return accept(router, role, prompt, cwd, **kwargs)
+        self.answer = answer
+        self.config['rounds'] = 2
+        first = self.start()
+        self.assertEqual((first['status'], first['failures']), ('waiting', 1))
+        second = self.resume(first)
+        self.assertEqual(second['status'], 'waiting')
+        self.assertNotEqual(second['head'], first['head'])
+        self.assertEqual(second['failures'], 1)
+        self.assertEqual(second['next_retry_at'], self.clock + 5)
+
     def test_setup_that_never_freezes_a_contract_blocks_after_six_attempts(self):
         self.reject_contracts()
         result = self.start()

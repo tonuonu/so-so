@@ -191,6 +191,38 @@ class PreparedOptimizationTests(unittest.TestCase):
         self.assertLess(waits[0], 2)
         self.assertGreater(waits[1], 29)
 
+    def test_rounds_that_complete_and_then_wait_keep_the_provider_time(self):
+        # Within one resumed run, a round that completed since the last wait makes the next wait a first failure.
+        self.config.update(rounds=3, patience=3)
+        self.write_config()
+        clock = time.time()
+        plans, waits = [], []
+        def answer(router, role, prompt, cwd, **kwargs):
+            if role == 'planner':
+                plans.append(prompt)
+                if len(plans) in (2, 4):
+                    router.budget.claim()
+                    raise ModelUnavailable(clock + 5)
+                return self.answer(router, role, prompt, cwd, **kwargs)
+            if role == 'worker':
+                last = json.loads(prompt.split('LAST RESULT:\n')[1])
+                if 'files' in last:
+                    return {'tool': 'read', 'path': 'value.txt'}
+                if last.get('content', '').strip().isdigit() and int(last['content']) > 25:
+                    return {'tool': 'write', 'path': 'value.txt', 'content': str(int(last['content']) // 2)}
+                return {'tool': 'done', 'summary': 'halved'}
+            return self.answer(router, role, prompt, cwd, **kwargs)
+        def wait(until):
+            nonlocal clock
+            waits.append(until - clock)
+            clock = max(clock, until)
+            if len(waits) == 2:
+                raise KeyboardInterrupt
+        with patch('soso.optimize.time.time', side_effect=lambda: clock), patch('soso.optimize._wait', side_effect=wait):
+            result = self.run_goal(answer)
+        self.assertEqual(result['status'], 'interrupted')
+        self.assertEqual(waits, [5, 5])
+
     def test_quota_longer_than_original_deadline_opens_explicit_new_budget_epoch(self):
         now = time.time()
         retry = now + 3600

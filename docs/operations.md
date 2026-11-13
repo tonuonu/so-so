@@ -270,7 +270,9 @@ accepted commit. Provider rate/quota failures carry safe retry metadata. HTTP
 `Retry-After` is honored, including long waits; unknown reset times use backoff.
 From the second consecutive provider failure a known reset time is kept but
 waited for at least as long as the backoff one step behind (see
-[routing](routing.md)), so a reset time that is always now cannot spin.
+[routing](routing.md)), so a reset time that is always now cannot spin. An epoch
+that moves the accepted commit, or an optimization round that completes, makes the
+next wait a first failure again.
 Waiting is persisted before sleeping and is distinct from completion. `--once`
 returns after a bounded epoch or wait decision so an external service can manage
 lifetime. A process must be running, or restarted by your service manager, to wake
@@ -284,10 +286,14 @@ row the goal is `blocked` with the reason `stalled: no accepted change in 6
 consecutive epochs (last: <status>); resume to try again`, or `acceptance setup:
 stalled: ...` followed by the last setup feedback. An epoch that moves the
 accepted commit, even one that then waits for a provider, and freezing the
-contract start the count again. A retained draft is not an accepted change, and
+contract start the count again, and so does an epoch killed after it accepted a
+change, when the goal is resumed. A retained draft is not an accepted change, and
 waiting or interrupted epochs neither count nor reset. The count is kept in the
-goal's `state.json`, so separate `--once` invocations share it. A resume keeps the
-draft and the setup feedback and gets six more.
+goal's `state.json`, so it carries over across resumes and separate `--once`
+invocations. A resume after a stall block keeps the draft and the setup feedback
+and gets six more. Acceptance is non-regressing (a score at least the best so far,
+plus the reviewer's approval), so a goal that keeps accepting changes of equal
+score never counts as stalled; that is by design.
 
 When an epoch's baseline scores the commit the previous epoch ended on lower than
 that epoch's best, the epoch report records `baseline_drift` (`previous_best` and

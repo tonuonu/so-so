@@ -502,6 +502,15 @@ GUARDS = [
     ('soso/launch.py', 'next_retry_at=retry_time(exc.retry_at, failures)',
      'next_retry_at=max(time.time() + 1, exc.retry_at) if exc.retry_at else retry_time(None, failures)',
      ['test_launch.LauncherTests.test_setup_reset_that_is_always_now_still_backs_off']),
+    # Progress since the last wait makes the next wait a first failure; a burst of failing parallel calls is one failure.
+    ('soso/delivery.py', "state['failures'] = 0  # its wait, if any, is a first failure again", 'pass',
+     ['test_delivery.DeliveryTests.test_epochs_that_accept_and_then_wait_keep_the_provider_time']),
+    ('soso/optimize.py', "state['failures'] = 0  # a round completed since the last wait: the next wait is a first failure", 'pass',
+     ['test_optimize_launch.PreparedOptimizationTests.test_rounds_that_complete_and_then_wait_keep_the_provider_time']),
+    ('soso/models.py', 'failures = max(1, self.failures.get(name, 0) + (not cooling))', 'failures = self.failures.get(name, 0) + 1',
+     ['test_router_pool.RoutingPolicyTests.test_calls_failing_together_are_one_failure']),
+    ('soso/models.py', 'until = max(retry_time(retry_at, failures), self.cooldowns.get(name, 0))',
+     'until = retry_time(retry_at, failures)', ['test_router_pool.RoutingPolicyTests.test_calls_failing_together_are_one_failure']),
     # A goal blocks after MAX_STALLED epochs or setup attempts without an accepted change; a resume gets as many again.
     ('soso/delivery.py', "if state['stalled'] < MAX_STALLED:", 'if True:',
      ['test_delivery.DeliveryTests.test_goal_blocks_after_six_epochs_without_an_accepted_change',
@@ -519,6 +528,8 @@ GUARDS = [
      ['test_delivery.DeliveryTests.test_frozen_contract_resets_the_stall_count']),
     ('soso/delivery.py', "protected=recovered['protected'], stalled=0,", "protected=recovered['protected'],",
      ['test_delivery.DeliveryTests.test_recovered_contract_resets_the_stall_count']),
+    ('soso/delivery.py', "state['stalled'] = 0  # the killed epoch accepted a change", 'pass',
+     ['test_delivery.DeliveryTests.test_killed_epoch_that_accepted_a_change_resets_the_stall_count']),
     # A lower baseline for the commit the last epoch ended on is recorded as drift; an epoch without a best is skipped.
     ('soso/delivery.py', "\n                    and baseline['score'] < previous['best']):", ' and False):',
      ['test_delivery.DeliveryTests.test_lower_baseline_for_the_same_commit_is_recorded_as_drift']),

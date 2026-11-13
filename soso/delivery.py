@@ -757,6 +757,8 @@ def start_goal(repo: Path, intent: str | None = None, *, backend='auto', model=N
             current = git(root, 'rev-parse', 'HEAD')
             accepted = [r['accepted'] for r in active.get('rounds', []) if r.get('accepted')]
             if current == active.get('head') or current in accepted:
+                if current != state['head']:
+                    state['stalled'] = 0  # the killed epoch accepted a change
                 state['head'] = current
                 draft = active.get('draft')
                 state['draft'] = None if draft and draft['commit'] == current and current in accepted else draft
@@ -818,6 +820,7 @@ def start_goal(repo: Path, intent: str | None = None, *, backend='auto', model=N
                 moved = report['head'] != state['head']
                 if moved:  # before the status branch: a waiting or interrupted epoch that accepted a change counts
                     state['stalled'] = 0
+                    state['failures'] = 0  # its wait, if any, is a first failure again
                 state['epochs'].append({'status': report['status'], 'head': report['head'], 'best': report.get('best'),
                                         'report': str(epoch.report_path), 'feedback': report.get('rounds', [])[-2:],
                                         'completion_review': report.get('completion_review')})

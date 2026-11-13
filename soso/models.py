@@ -306,9 +306,11 @@ class Router:
 
     def _cooldown(self, name, retry_at):
         with self.state_lock:
-            failures = self.failures.get(name, 0) + 1
+            # Calls already in flight when the model began cooling down fail together: one failure, not several.
+            cooling = self.cooldowns.get(name, 0) > time.time()
+            failures = max(1, self.failures.get(name, 0) + (not cooling))
             self.failures[name] = failures
-            until = retry_time(retry_at, failures)
+            until = max(retry_time(retry_at, failures), self.cooldowns.get(name, 0))
             self.cooldowns[name] = until
             self._persist()
             return until
