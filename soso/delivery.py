@@ -26,6 +26,9 @@ from .workspace import Workspace
 
 
 POLICY = '.soso-delivery'
+MAX_STALLED = 6  # consecutive epochs or setup attempts without an accepted change before a goal blocks
+SETUP_STALLED = (f'acceptance setup: stalled: no approved acceptance contract in {MAX_STALLED} consecutive attempts; '
+                 'resume to try again: ')
 
 
 class ContractRepairNeeded(RuntimeError):
@@ -635,6 +638,16 @@ def _wait(until):
         time.sleep(min(1, max(0, until - time.time())))
 
 
+def _stall(state, reason):
+    """Count an epoch or setup attempt that changed nothing. At MAX_STALLED, block the goal with reason and start the
+    count again, so a resume gets as many attempts again; return whether it blocked."""
+    state['stalled'] = state.get('stalled', 0) + 1
+    if state['stalled'] < MAX_STALLED:
+        return False
+    state.update(status='blocked', reason=reason, next_retry_at=None, stalled=0)
+    return True
+
+
 def start_goal(repo: Path, intent: str | None = None, *, backend='auto', model=None, once=False,
                resume_goal=None, allow_exec=True, config_path='soso.json', state_dir=None, models_path=None, ignore_project_config=False):
     """Deliver persistently; --once returns after one bounded epoch or provider wait.
@@ -711,7 +724,7 @@ def start_goal(repo: Path, intent: str | None = None, *, backend='auto', model=N
                     (root / '.gitignore').write_text('__pycache__/\n*.pyc\nnode_modules/\n.venv/\n.DS_Store\n')
                 git(root, 'add', '--', POLICY, 'INTENT.md', '.gitignore')
                 git(root, '-c', 'commit.gpgsign=false', 'commit', '-m', 'Freeze goal acceptance contract')
-            state.update(contract=contract, protected=recovered['protected'],
+            state.update(contract=contract, protected=recovered['protected'], stalled=0,
                          policy=fingerprint(root, recovered['protected']), head=git(root, 'rev-parse', 'HEAD'),
                          config_sha256=hashlib.sha256((folder / 'config.json').read_bytes()).hexdigest())
         for report in (state.get('active_epoch'), *(epoch['report'] for epoch in state['epochs'][-1:])):
@@ -782,7 +795,7 @@ def start_goal(repo: Path, intent: str | None = None, *, backend='auto', model=N
                     router = Router(config, Budget(min(config['max_calls'], 8), config['max_seconds']), setup_log)
                     contract = _contract(root, config, state['intent'], router, folder, state.get('setup_repair_reason', ''))
                     state.pop('setup_repair_reason', None)
-                    state['setup_repairs'] = 0
+                    state.update(setup_repairs=0, stalled=0)
                     state.update(contract=contract, protected=config['protected'], policy=fingerprint(root, config['protected']),
                                  head=git(root, 'rev-parse', 'HEAD'),
                                  config_sha256=hashlib.sha256((folder / 'config.json').read_bytes()).hexdigest())
@@ -793,6 +806,9 @@ def start_goal(repo: Path, intent: str | None = None, *, backend='auto', model=N
                 _save(folder, state)
                 report = epoch.run_epoch()
                 state.pop('active_epoch', None)
+                moved = report['head'] != state['head']
+                if moved:  # before the status branch: a waiting or interrupted epoch that accepted a change counts
+                    state['stalled'] = 0
                 state['epochs'].append({'status': report['status'], 'head': report['head'], 'best': report.get('best'),
                                         'report': str(epoch.report_path), 'feedback': report.get('rounds', [])[-2:],
                                         'completion_review': report.get('completion_review')})
@@ -808,6 +824,9 @@ def start_goal(repo: Path, intent: str | None = None, *, backend='auto', model=N
                     state.update(status='interrupted', next_retry_at=None)
                 else:
                     state.update(status='incomplete', next_retry_at=time.time() + 2)
+                    if not moved:  # a retained draft is no accepted change
+                        _stall(state, f"stalled: no accepted change in {MAX_STALLED} consecutive epochs "
+                                      f"(last: {report['status']}); resume to try again")
                 state['failures'] = 0
                 _save(folder, state)
                 if once or state['status'] in ('complete', 'interrupted', 'blocked'):
@@ -823,13 +842,15 @@ def start_goal(repo: Path, intent: str | None = None, *, backend='auto', model=N
                 state['setup_repairs'] = state.get('setup_repairs', 0) + 1
                 state.update(status='incomplete', setup_repair_reason=str(exc)[:2000], next_retry_at=
                              time.time() + min(60, 2 * 2 ** min(state['setup_repairs'] - 1, 5)))
+                blocked = _stall(state, SETUP_STALLED + state['setup_repair_reason'].strip()[:500])
                 _save(folder, state)
-                if once:
+                if once or blocked:
                     break
-            except BudgetExceeded:
+            except BudgetExceeded as exc:
                 state.update(status='incomplete', next_retry_at=time.time() + 2)
+                blocked = _stall(state, SETUP_STALLED + (state.get('setup_repair_reason') or str(exc)).strip()[:500])
                 _save(folder, state)
-                if once:
+                if once or blocked:
                     break
             except KeyboardInterrupt:
                 state['status'] = 'interrupted'

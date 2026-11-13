@@ -271,6 +271,19 @@ returns after a bounded epoch or wait decision so an external service can manage
 lifetime. A process must be running, or restarted by your service manager, to wake
 and continue; writing a checkpoint is not an operating-system scheduler.
 
+A goal that stops making progress blocks instead of opening epochs forever. An
+epoch that ends in a plateau, at its round limit or with its budget spent, without
+moving the goal's accepted commit, counts as stalled; so does an acceptance setup
+attempt that ends without an approved contract or out of budget. After six in a
+row the goal is `blocked` with the reason `stalled: no accepted change in 6
+consecutive epochs (last: <status>); resume to try again`, or `acceptance setup:
+stalled: ...` followed by the last setup feedback. An epoch that moves the
+accepted commit, even one that then waits for a provider, and freezing the
+contract start the count again. A retained draft is not an accepted change, and
+waiting or interrupted epochs neither count nor reset. The count is kept in the
+goal's `state.json`, so separate `--once` invocations share it. A resume keeps the
+draft and the setup feedback and gets six more.
+
 The goal controller does not infer that credentials grant unlimited scope. Put the
 allowed accounts, regions, resource limits and release destination in INTENT.md.
 Keep secret values in environment/keychain/provider profiles, not in intent prose.

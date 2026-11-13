@@ -140,6 +140,124 @@ class DeliveryTests(unittest.TestCase):
         common = Path(git(self.repo, 'rev-parse', '--path-format=absolute', '--git-common-dir'))
         self.assertTrue((common / 'soso/unrestored.json').exists())
 
+    def resume(self, result):
+        # A clock that only moves forward, past any retry time a previous call saved.
+        self.clock = max(getattr(self, 'clock', 0), time.time()) + 100
+        with patch('soso.delivery.time.time', return_value=self.clock):
+            return self.start(resume_goal=result['goal_id'])
+
+    def set_state(self, result, **values):
+        path = Path(result['report'])
+        path.write_text(json.dumps({**json.loads(path.read_text()), **values}))
+
+    def reject_increments(self):
+        original = self.answer
+        def answer(router, role, prompt, cwd, **kwargs):
+            if role == 'reviewer' and prompt.startswith('Independently review this increment.'):
+                router.budget.claim()
+                return {'approve': False, 'useful': False, 'reason': 'not useful'}
+            return original(router, role, prompt, cwd, **kwargs)
+        self.answer = answer
+
+    def reject_contracts(self):
+        original = self.answer
+        def answer(router, role, prompt, cwd, **kwargs):
+            if role == 'reviewer' and prompt.startswith('Independently review this proposed acceptance contract'):
+                router.budget.claim()
+                return {'approve': False, 'reason': 'it checks file presence only'}
+            return original(router, role, prompt, cwd, **kwargs)
+        self.answer = answer
+
+    def test_goal_blocks_after_six_epochs_without_an_accepted_change(self):
+        self.reject_increments()
+        result = self.start()
+        self.assertEqual((result['status'], result.get('stalled')), ('incomplete', 1))
+        self.set_state(result, stalled=4)  # as after four more such epochs, each a --once resume
+        result = self.resume(result)
+        self.assertEqual((result['status'], result.get('stalled')), ('incomplete', 5))
+        result = self.resume(result)
+        self.assertEqual(result['status'], 'blocked')
+        self.assertEqual(result['reason'], 'stalled: no accepted change in 6 consecutive epochs (last: plateau); '
+                                           'resume to try again')
+        self.assertIsNone(result['next_retry_at'])
+        self.assertEqual(result.get('stalled'), 0)
+        resumed = self.resume(result)  # a resume gets six more
+        self.assertEqual((resumed['status'], resumed.get('stalled')), ('incomplete', 1))
+
+    def test_epoch_that_accepts_a_change_resets_the_stall_count_even_when_it_waits(self):
+        accept = self.answer
+        self.reject_increments()
+        first = self.start()
+        self.set_state(first, stalled=5)
+        plans = []
+        def answer(router, role, prompt, cwd, **kwargs):
+            if role == 'planner' and prompt.startswith('Plan one small useful next milestone step.'):
+                plans.append(prompt)
+                if len(plans) == 2:
+                    raise ModelUnavailable(time.time() + 3600)
+            return accept(router, role, prompt, cwd, **kwargs)
+        self.answer = answer
+        self.config['rounds'] = 2
+        result = self.resume(first)
+        self.assertEqual(result['status'], 'waiting')
+        self.assertNotEqual(result['head'], first['head'])
+        self.assertEqual(result.get('stalled'), 0)
+
+    def test_setup_that_never_freezes_a_contract_blocks_after_six_attempts(self):
+        self.reject_contracts()
+        result = self.start()
+        self.assertEqual((result['status'], result.get('stalled')), ('incomplete', 1))
+        self.set_state(result, stalled=4)
+        result = self.resume(result)
+        self.assertEqual((result['status'], result.get('stalled')), ('incomplete', 5))
+        result = self.resume(result)
+        self.assertEqual(result['status'], 'blocked')
+        self.assertEqual(result['reason'], 'acceptance setup: stalled: no approved acceptance contract in 6 consecutive '
+                         'attempts; resume to try again: REPAIR ACCEPTANCE CONTRACT AFTER INDEPENDENT REVIEW: '
+                         'it checks file presence only')
+        self.assertIn('it checks file presence only', result['setup_repair_reason'])  # kept for the next attempt
+        self.assertIsNone(result['next_retry_at'])
+        self.assertEqual(result.get('stalled'), 0)
+        resumed = self.resume(result)
+        self.assertEqual((resumed['status'], resumed.get('stalled')), ('incomplete', 1))
+
+    def test_setup_that_keeps_running_out_of_budget_blocks_after_six_attempts(self):
+        def exhausted(router, role, prompt, cwd, **kwargs):
+            raise BudgetExceeded('model call budget exhausted')
+        self.answer = exhausted
+        result = self.start()
+        for _ in range(5):
+            self.assertEqual(result['status'], 'incomplete')
+            result = self.resume(result)
+        self.assertEqual(result['status'], 'blocked')
+        self.assertTrue(result['reason'].startswith('acceptance setup: stalled: '))
+        self.assertTrue(result['reason'].endswith('resume to try again: model call budget exhausted'))
+
+    def test_frozen_contract_resets_the_stall_count(self):
+        self.reject_contracts()
+        first = self.start()
+        self.assertEqual((first['status'], first.get('stalled')), ('incomplete', 1))
+        self.set_state(first, stalled=5)
+        self.answer = DeliveryTests.answer.__get__(self)
+        self.reject_increments()
+        result = self.resume(first)
+        self.assertIn('policy', result)
+        self.assertEqual((result['status'], result.get('stalled')), ('incomplete', 1))  # the stalled epoch, not 6
+
+    def test_recovered_contract_resets_the_stall_count(self):
+        def interrupt(root, *args):
+            if 'Freeze goal acceptance contract' in args:
+                raise KeyboardInterrupt
+            return git(root, *args)
+        with patch('soso.delivery.git', side_effect=interrupt):
+            first = self.start()
+        self.assertNotIn('policy', first)
+        self.set_state(first, stalled=5)
+        self.reject_increments()
+        result = self.resume(first)
+        self.assertIn('policy', result)
+        self.assertEqual((result['status'], result.get('stalled')), ('incomplete', 1))
+
     def test_baseline_ignores_files_left_by_earlier_evaluator_runs(self):
         # The goal worktree is long-lived; the contract-time evaluator run leaves an ignored marker there.
         # A slow machine must not run out of the 15 s epoch budget before the candidate is accepted.

@@ -502,6 +502,23 @@ GUARDS = [
     ('soso/launch.py', 'next_retry_at=retry_time(exc.retry_at, failures)',
      'next_retry_at=max(time.time() + 1, exc.retry_at) if exc.retry_at else retry_time(None, failures)',
      ['test_launch.LauncherTests.test_setup_reset_that_is_always_now_still_backs_off']),
+    # A goal blocks after MAX_STALLED epochs or setup attempts without an accepted change; a resume gets as many again.
+    ('soso/delivery.py', "if state['stalled'] < MAX_STALLED:", 'if True:',
+     ['test_delivery.DeliveryTests.test_goal_blocks_after_six_epochs_without_an_accepted_change',
+      'test_delivery.DeliveryTests.test_setup_that_never_freezes_a_contract_blocks_after_six_attempts',
+      'test_delivery.DeliveryTests.test_setup_that_keeps_running_out_of_budget_blocks_after_six_attempts']),
+    ('soso/delivery.py', "if not moved:  # a retained draft is no accepted change", 'if False:',
+     ['test_delivery.DeliveryTests.test_goal_blocks_after_six_epochs_without_an_accepted_change']),
+    ('soso/delivery.py', "                    state['stalled'] = 0\n", '                    pass\n',
+     ['test_delivery.DeliveryTests.test_epoch_that_accepts_a_change_resets_the_stall_count_even_when_it_waits']),
+    ('soso/delivery.py', "blocked = _stall(state, SETUP_STALLED + state[", "blocked = (lambda *a: False)(state, SETUP_STALLED + state[",
+     ['test_delivery.DeliveryTests.test_setup_that_never_freezes_a_contract_blocks_after_six_attempts']),
+    ('soso/delivery.py', "blocked = _stall(state, SETUP_STALLED + (state.get(", "blocked = (lambda *a: False)(state, SETUP_STALLED + (state.get(",
+     ['test_delivery.DeliveryTests.test_setup_that_keeps_running_out_of_budget_blocks_after_six_attempts']),
+    ('soso/delivery.py', 'state.update(setup_repairs=0, stalled=0)', 'state.update(setup_repairs=0)',
+     ['test_delivery.DeliveryTests.test_frozen_contract_resets_the_stall_count']),
+    ('soso/delivery.py', "protected=recovered['protected'], stalled=0,", "protected=recovered['protected'],",
+     ['test_delivery.DeliveryTests.test_recovered_contract_resets_the_stall_count']),
     # Launcher, dashboard and entry-point review.
     ('so-so', '    # Help skips the .so-so ownership check, so it never runs the runtime stored there.\n'
      '    if [ -n "$so_so_help" ]; then\n        so_so_usage\n    fi\n    so_so_root="$so_so_state/runtime"',
