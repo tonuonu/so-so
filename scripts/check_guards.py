@@ -451,7 +451,14 @@ GUARDS = [
     ('soso/cli.py', 'except (TypeError, AttributeError) as exc:', 'except () as exc:',
      ['test_cli.CliTests.test_malformed_config_is_a_one_line_error']),
     ('soso/skills.py', 'if type(value) is int or type(value) is float and value.is_integer():', 'if True:',
-     ['test_skills.SkillTests.test_page_bounds_must_be_finite_integers']),
+     ['test_skills.SkillTests.test_page_bounds_must_be_finite_integers',
+      'test_core.WorkspaceTests.test_read_and_list_bounds_must_be_finite_integers']),
+    ('soso/workspace.py', 'whole(action.get("offset", 0), "offset")', 'int(action.get("offset", 0))',
+     ['test_core.WorkspaceTests.test_read_and_list_bounds_must_be_finite_integers']),
+    ('soso/workspace.py', 'whole(action.get("start", 1), "start")', 'int(action.get("start", 1))',
+     ['test_core.WorkspaceTests.test_read_and_list_bounds_must_be_finite_integers']),
+    ('soso/workspace.py', 'min(100, max(1, whole(action.get("lines", 60), "lines")))', 'min(100, max(1, int(action.get("lines", 60))))',
+     ['test_core.WorkspaceTests.test_read_and_list_bounds_must_be_finite_integers']),
 ]
 
 

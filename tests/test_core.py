@@ -52,6 +52,17 @@ class WorkspaceTests(RepoCase):
         self.assertEqual((self.root/'value.txt').read_text(),'0')
         self.assertTrue((self.root/'link.txt').is_symlink())
         self.assertFalse((self.root/'real/new.txt').exists())
+    def test_read_and_list_bounds_must_be_finite_integers(self):
+        # JSON reads 1e999 as infinity; int() of it raised OverflowError, which the worker loop does not catch.
+        ws=Workspace(self.root,[])
+        self.assertEqual(ws.tool({'tool':'read','path':'value.txt','start':1.0,'lines':2.0})['start'],1)
+        self.assertEqual(ws.tool({'tool':'list','offset':0.0})['offset'],0)
+        for value in (float('inf'),float('-inf'),float('nan'),2.5,'abc','2',True,None):
+            for action in ({'tool':'read','path':'value.txt','start':value},{'tool':'read','path':'value.txt','lines':value},
+                           {'tool':'list','offset':value}):
+                with self.subTest(action=action):
+                    with self.assertRaises(Exception) as caught:ws.tool(action)
+                    self.assertIsInstance(caught.exception,ValueError)
     def test_protection(self):
         ws=Workspace(self.root,['evaluate.py'])
         with self.assertRaises(PermissionError): ws.tool({'tool':'write','path':'evaluate.py','content':''})

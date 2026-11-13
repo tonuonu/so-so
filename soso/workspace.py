@@ -5,7 +5,7 @@ import json
 import re
 from pathlib import Path, PurePosixPath
 from .process import execute, git
-from .skills import prelude, read_skill
+from .skills import prelude, read_skill, whole
 from .models import BudgetExceeded, redact
 
 
@@ -107,7 +107,7 @@ class Workspace:
             return {"checks": results}
         if op == "list":
             prefix = action.get("prefix", "")
-            offset = max(0, int(action.get("offset", 0)))
+            offset = max(0, whole(action.get("offset", 0), "offset"))
             files = [x for x in self.files() if x.startswith(prefix)]
             return {"files": files[offset:offset + 100], "total": len(files), "offset": offset}
         if op == "search":
@@ -142,8 +142,8 @@ class Workspace:
         if op == "read":
             if path.stat().st_size > 1_000_000:
                 raise ValueError("file too large; use search or an external tool")
-            start = max(1, int(action.get("start", 1)))
-            count = min(100, max(1, int(action.get("lines", 60))))
+            start = max(1, whole(action.get("start", 1), "start"))
+            count = min(100, max(1, whole(action.get("lines", 60), "lines")))
             lines = path.read_text().splitlines()
             selected = lines[start - 1:start - 1 + count]
             full = "\n".join(selected)
@@ -357,7 +357,7 @@ class _Progress:
             identity.update(prefix=action.get("prefix", ""), text=action["text"])
         elif op == "skill":
             identity.update(name=action["name"], start=result["start"],
-                            lines=min(80, max(1, int(action.get("lines", 60)))))
+                            lines=min(80, max(1, whole(action.get("lines", 60), "lines"))))
         key = hashlib.sha256(json.dumps(identity, sort_keys=True).encode()).digest()
         if key in self.seen and (op != "read" or remembered):
             self.stalls += 1
