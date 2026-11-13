@@ -253,6 +253,8 @@ GUARDS = [
     ('soso/process.py', 'GIT_ADVICE="0", ', '', ['test_evaluated_tree.EvaluatedTreeTests.test_sparse_cone_with_sparse_index_stays_valid']),
     ('soso/engine.py', 'with self.owned():  # a run started meanwhile', 'with contextlib.nullcontext():  # a run started meanwhile',
      ['test_evaluated_tree.EvaluatedTreeTests.test_restore_check_waits_for_no_live_run']),
+    ('soso/delivery.py', 'def owned(self):\n        yield  # start_goal', 'def unused(self):\n        yield  # start_goal',
+     ['test_delivery.DeliveryTests.test_goal_resume_checks_a_failed_restore_under_its_own_lock']),
     ('soso/process.py', 'GIT_NO_REPLACE_OBJECTS="1", ', '', ['test_evaluated_tree.EvaluatedTreeTests.test_replace_objects_do_not_hide_the_change_from_the_reviewer']),
     ('soso/delivery.py', "diff, withheld = review_diff(self.integration, base, candidate['commit'], min(300, self.budget.remaining()))",
      "diff, withheld = git(self.integration, 'diff', base, candidate['commit']), None", ['test_evaluated_tree.EvaluatedTreeTests.test_delivery_reviewer_diff_ignores_external_diff_and_textconv']),
