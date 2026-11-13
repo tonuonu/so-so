@@ -86,8 +86,8 @@ worktree is checked out again the same way before each epoch's baseline, because
 `merge --ff-only` rewrites only the files that changed; when an interrupt cuts that
 checkout short, resuming the goal finishes it.
 
-With command execution, settings that change how content is staged or checked
-out (`filter.*`, `core.attributesFile`, `core.autocrlf`, `core.eol`,
+Settings that change how content is staged or checked out (`filter.*`,
+`core.attributesFile`, `core.autocrlf`, `core.eol`,
 `core.safecrlf`, `core.fsmonitor`, `core.worktree`, `core.sparseCheckout*`,
 `core.symlinks`, `core.fileMode`, `sparse.*`, `attr.*`, `index.*`, `diff.*`
 (which shapes the reviewer's diff), and the `include.*`, `includeIf.*` and
@@ -118,10 +118,12 @@ Whatever a restore replaces is first kept, owner-only, under `replaced/` in the
 run folder (a folder is moved there whole, a file's first MiB is copied), and the candidate's record names it as
 `kept`, so your unrelated edits can be recovered. A value that comes from an
 included file is never overridden in `.git/config`. Replace refs the worker added or changed are
-removed or put back. This includes watched changes you make yourself during a
-run with command execution enabled; without it a worker cannot change config,
-so nothing is restored. Other config, such as remotes and branch tracking, is
-never touched. When a difference cannot be restored (for example an
+removed or put back. This holds with or without command execution: a worker
+without it still runs the checks and the evaluator through `check`, and code
+they load from the candidate (for example a `json.py` beside `evaluate.py`)
+can change config. It includes watched changes you make yourself during a run;
+one made while a single candidate runs is blamed on that candidate. Other
+config, such as remotes and branch tracking, is never touched. When a difference cannot be restored (for example an
 `includeIf "hasconfig:remote.*.url:..."` that a new remote turned on), or any
 error stops a restore, the candidate ends with an error naming the file, and
 `soso/unrestored.json` in the
@@ -189,9 +191,9 @@ expect no fsmonitor speed-up in them.
 
 Not covered: global, system and XDG Git configuration, the attributes file that
 `core.attributesFile` (or the XDG default) names, and `GIT_CONFIG_*` variables
-are neither watched nor restored, so a worker with command execution
-that edits your global config (for example a smudge filter) can still change
-what is checked out, here and in your other repositories. Likewise, a process a
+are neither watched nor restored, so a worker that edits your global config
+(for example a smudge filter), with command execution or through code the
+checks or evaluator load, can still change what is checked out, here and in your other repositories. Likewise, a process a
 worker leaves running detached from its process group can still write into the
 candidate worktree between the checkout and the evaluation. Use a container or
 VM to bound both. Two parallel workers can still race: a shared setting one

@@ -349,8 +349,9 @@ class SandboxIntegrityTests(RepoCase):
         self.assertEqual(differs_from_commit(self.root, 'HEAD', set()), ['value.txt'])
         self.assertEqual((git(self.root, 'ls-files', '-v'), git(self.root, 'diff', '--cached', '--name-only')), before)
 
-    def test_user_setting_during_a_run_without_exec_is_left_alone(self):
-        # Without command execution a worker cannot change config, so nothing is blamed or restored.
+    def test_user_setting_during_a_run_without_exec_is_restored_and_blamed(self):
+        # Without command execution a worker still runs the checks and evaluator (check), which can change
+        # config, so a watched change made while it runs alone is restored and blamed on it, as with exec.
         steps = iter([{'tool': 'write', 'path': 'value.txt', 'content': '5'}, {'tool': 'done', 'summary': 'done'}])
         def answer(router, role, prompt, cwd, attempt=0, task=None):
             router.budget.claim()
@@ -360,9 +361,43 @@ class SandboxIntegrityTests(RepoCase):
                 git(self.root, 'config', 'core.autocrlf', 'input')
             return step
         experiment = self.improving_run(answer, allow_exec=False)
-        self.assertEqual(experiment['evaluation'].get('score'), 5, experiment['evaluation'])
-        self.assertEqual(self.config_value('core.autocrlf'), 'input')
-        self.assertNotIn('config_restored', experiment)
+        self.assertEqual(experiment['evaluation'], {'valid': False, 'reason': 'worker changed repository configuration'})
+        self.assertEqual(self.config_value('core.autocrlf'), '')
+        self.assertEqual(self.restored_keys(experiment), ['local:core.autocrlf'])
+
+    def test_filter_planted_through_check_without_exec_is_invalid_and_restored(self):
+        # No run tool, but check runs evaluate.py, which imports a worker-written json.py from its own
+        # directory. That module plants a smudge filter; the worker deletes it and commits a benign change.
+        # Scored after a checkout under the filter, the candidate would get 100 for a commit that scores 1.
+        common = self.common_dir()
+        planted = ("import os, subprocess\n"
+                   "git = lambda *a: subprocess.run(['git', *a], capture_output=True, text=True).stdout.strip()\n"
+                   "git('config', 'filter.v.smudge', 'sed s/^1$/100/')\n"
+                   "git('config', 'filter.v.clean', 'sed s/^100$/1/')\n"
+                   "info = os.path.join(git('rev-parse', '--git-common-dir'), 'info')\n"
+                   "os.makedirs(info, exist_ok=True)\n"
+                   "open(os.path.join(info, 'attributes'), 'w').write('value.txt filter=v\\n')\n"
+                   "dumps = lambda value: '{\"score\": %d}' % value['score']\n")
+        steps = iter([{'tool': 'write', 'path': 'json.py', 'content': planted}, {'tool': 'check'},
+                      {'tool': 'delete', 'path': 'json.py'}, {'tool': 'write', 'path': 'value.txt', 'content': '1'},
+                      {'tool': 'done', 'summary': 'done'}])
+        def answer(router, role, prompt, cwd, attempt=0, task=None):
+            router.budget.claim()
+            if role == 'reviewer': return {'approve': True}
+            return next(steps)
+        runner = Run(self.root, self.config(parallel=1, rounds=1), 'Improve', allow_exec=False)
+        with patch.object(Router, 'ask', answer), contextlib.redirect_stdout(io.StringIO()):
+            report = runner.run()
+        experiment = report['rounds'][0]['experiments'][0]
+        self.assertEqual(git(self.root, 'show', experiment['commit'] + ':value.txt'), '1')
+        self.assertEqual(experiment['evaluation'], {'valid': False, 'reason': 'worker changed repository configuration'})
+        self.assertEqual(report['best'], 0)
+        self.assertEqual((self.config_value('filter.v.smudge'), self.config_value('filter.v.clean')), ('', ''))
+        self.assertFalse((common / 'info/attributes').exists())
+        keys = ['local:filter.v.smudge', 'local:filter.v.clean', 'info/attributes']
+        self.assertEqual(self.restored_keys(experiment), keys)
+        self.assertEqual([e['keys'] for e in self.events('repository_config_restored')], [keys])
+        self.assertFalse((common / 'soso/unrestored.json').exists())  # restored, so new runs may start
 
     def test_restore_is_logged_when_the_candidate_ends_with_an_error(self):
         steps = iter([{'tool': 'run', 'argv': ['sh', '-c', 'git config core.autocrlf true && echo "# x" >> evaluate.py']},

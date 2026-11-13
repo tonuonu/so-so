@@ -956,7 +956,6 @@ class Run:
             self.started_experiments += 1
             self.active_experiments += 1
         own, recorded, restored = None, False, []
-        guarded = self.config.get("allow_exec")  # without command execution a worker cannot change config
         path = self.folder / name
         result = {"candidate": index, "task": task}
         preserve = getattr(self, 'retain_candidate', None)
@@ -989,7 +988,7 @@ class Run:
                     atomic_json(self.folder / "watched-config.json", dump_watched(self.watched), private=True)
                 own_real = os.path.realpath(own_file)  # read even if the extension is off
                 own = (own_file, own_real, watched_config(path, own_file, own_real)[:2])
-                recorded = guarded
+                recorded = True
             if continuation and fingerprint(path, self.config['protected']) != self.pinned:
                 raise ValueError('retained candidate policy changed')
             if not continuation or continuation['phase'] == 'worker':
@@ -997,7 +996,7 @@ class Run:
             # Under the lock no sibling restores or commits, and a watched change that appears before the
             # re-check came from elsewhere while this commit was made.
             with self.lock:
-                changed = self.restore_watched(path, own, restored) if guarded else []
+                changed = self.restore_watched(path, own, restored)
                 alone = alone and self.started_experiments == sequence + 1
                 if fingerprint(path, self.config["protected"]) != self.pinned:
                     raise ValueError("protected files changed")
@@ -1007,7 +1006,7 @@ class Run:
                 if staged:
                     git(path, "add", "--all")
                     git(path, "-c", "commit.gpgsign=false", "commit", "-m", f"Experiment {round_number}.{index}")
-                foreign = self.restore_watched(path, own, restored) if guarded else []
+                foreign = self.restore_watched(path, own, restored)
             # Its own worktree settings, or shared ones it changed alone, are the worker's doing.
             reconfigured = (bool(foreign) and staged or any(key.startswith("worktree:") for key in changed)
                             or bool(changed and alone))
@@ -1024,8 +1023,7 @@ class Run:
             # A sibling may have changed watched settings since; compare and check out with the repository's
             # own. Outside the lock (which logging also takes): unsettled() then sees any change meanwhile.
             with self.lock:
-                if guarded:
-                    self.restore_watched(path, own, restored)
+                self.restore_watched(path, own, restored)
                 restores = self.restores
             # The worker's files on disk against its commit, without trusting the index's stat cache.
             drift = differs_from_commit(path, result["commit"], flagged)
@@ -1053,7 +1051,7 @@ class Run:
             # Score exactly the commit: from here on the files are a fresh checkout of it, as the baseline's were.
             elif checkout(path, result["commit"], flagged):
                 result["evaluation"] = {"valid": False, "reason": "files Git cannot remove"}
-            elif guarded and self.unsettled(path, own, restored, restores):
+            elif self.unsettled(path, own, restored, restores):
                 result["evaluation"] = {"valid": False, "reason": "repository configuration changed during checkout"}
             # A link out of the worktree scores files that are not in the commit, and breaks on a clone.
             elif outside(path, links):
