@@ -354,6 +354,14 @@ GUARDS = [
      ['test_evaluated_tree.EvaluatedTreeTests.test_review_of_binary_shown_files_stops_at_its_deadline']),
     ('soso/process.py', 'ok = finished == 0 if whole else', 'ok = True if whole else',
      ['test_evaluated_tree.EvaluatedTreeTests.test_blob_read_that_fails_after_its_bytes_is_unreadable']),
+    # Sixth review: the per-file text diff's separator, flags and deadline.
+    ('soso/engine.py', '*text, "--")', '*text)', ['test_evaluated_tree.EvaluatedTreeTests.test_file_named_after_a_blob_id_does_not_stop_the_review']),
+    ('soso/engine.py', '"--text", "--no-ext-diff", "--no-textconv", *text', '"--text", *text',
+     ['test_evaluated_tree.EvaluatedTreeTests.test_text_shown_for_a_binary_shown_file_ignores_external_diff_and_textconv']),
+    ('soso/engine.py', 'if changed:  # e.g.', 'if True:  # e.g.',
+     ['test_evaluated_tree.EvaluatedTreeTests.test_mode_change_of_a_binary_shown_text_file_shows_no_empty_text_section']),
+    ('soso/engine.py', 'if time.monotonic() > stop or any(', 'if any(',
+     ['test_evaluated_tree.EvaluatedTreeTests.test_text_diffs_of_binary_shown_files_stop_at_the_deadline']),
     # Fifth review: the base's attributes, text sides only, bytes, quoted names, the review's time and reads.
     ('soso/engine.py', '["--attr-source=" + base]', '["--attr-source=" + git(root, "mktree", stdin="", quiet=True)]',
      ['test_evaluated_tree.EvaluatedTreeTests.test_base_attributes_that_force_text_still_apply']),

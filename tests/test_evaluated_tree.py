@@ -778,6 +778,52 @@ class EvaluatedTreeTests(RepoCase):
         self.commit('attributes', '.gitattributes')
         return self.change(f'deps{size}.lock', b'version = 1\n' * size, b'version = 2\n' * size)
 
+    def test_file_named_after_a_blob_id_does_not_stop_the_review(self):
+        # The text diff of a binary-shown file passes blob ids; a base file with the same name must not make
+        # them ambiguous. Here, the empty blob, passed whenever only the new side is text.
+        empty = git(self.root, 'hash-object', '-t', 'blob', '--stdin', stdin='')
+        (self.root / empty).write_text('a file named like a blob\n')
+        self.commit('named', empty)
+        base = self.change('b.bin', b'\0old', b'new text\n')
+        diff, reason = self.reviewed(base)
+        self.assertIsNone(reason)
+        self.assertIn('+new text', diff)
+
+    def test_text_shown_for_a_binary_shown_file_ignores_external_diff_and_textconv(self):
+        # The user's attributes give every path a textconv driver that prints nothing; *.lock is -diff.
+        (self.common_dir() / 'info/attributes').write_text('* diff=conv\n*.lock -diff\n')
+        base = self.change('deps.lock', b'version = 1\n', b'version = 1\nPAYLOAD\n')
+        for key, value in (('diff.conv.textconv', 'true'), ('diff.external', 'true')):
+            with self.subTest(key=key):
+                git(self.root, 'config', key, value)
+                try:
+                    diff, reason = self.reviewed(base)
+                finally:
+                    git(self.root, 'config', '--unset', key)
+                self.assertIsNone(reason)
+                self.assertIn('+PAYLOAD', diff)
+
+    def test_mode_change_of_a_binary_shown_text_file_shows_no_empty_text_section(self):
+        (self.root / '.gitattributes').write_text('*.lock -diff\n')
+        (self.root / 'deps.lock').write_text('version = 1\n')
+        self.commit('lock', '.gitattributes', 'deps.lock')
+        base = git(self.root, 'rev-parse', 'HEAD')
+        (self.root / 'deps.lock').chmod(0o755)
+        self.commit('mode', 'deps.lock')
+        with self.old_git():
+            diff, reason = self.reviewed(base)
+        self.assertIsNone(reason)
+        self.assertIn('(deps.lock: text 12 B \u2192 text 12 B)', diff)
+        self.assertNotIn('Git shows it as binary', diff)
+
+    def test_text_diffs_of_binary_shown_files_stop_at_the_deadline(self):
+        # Every side read in time: the text diffs that follow are bounded on their own.
+        base = self.lockfile_change()
+        real = engine.blob_kinds
+        with self.old_git(), patch('soso.engine.blob_kinds', lambda root, blobs, stop: real(root, blobs, float('inf'))):
+            self.assertEqual(engine.review_diff(self.root, base, 'HEAD', 0),
+                             (None, 'could not show every binary-shown file in time; split the change'))
+
     def test_side_that_cannot_be_read_is_withheld(self):
         base = self.lockfile_change()
         with self.old_git(), patch('soso.engine.blob_head', return_value=None):  # a failed or stalled read

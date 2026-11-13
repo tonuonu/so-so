@@ -322,9 +322,10 @@ def review_diff(root, base, commit, seconds=300):
             (_, old), (_, new) = sides
             text = [old if old_kind == new_kind == "text" else nothing, new if new_kind == "text" else nothing]
             if text != [nothing, nothing]:
-                note += ("\n(Git shows it as binary; the change as text:)\n" if old_kind != "binary"
-                         else "\n(Git shows it as binary; its new text, the binary side not shown:)\n")
-                note += git(root, "diff", "--text", "--no-ext-diff", "--no-textconv", *text)
+                changed = git(root, "diff", "--text", "--no-ext-diff", "--no-textconv", *text, "--")
+                if changed:  # e.g. not for a mode change or a pure rename
+                    note += ("\n(Git shows it as binary; the change as text:)\n" if old_kind != "binary"
+                             else "\n(Git shows it as binary; its new text, the binary side not shown:)\n") + changed
             sent += len(note.encode())
             if sent > GIT_OUTPUT_LIMIT:
                 return None, too_large
