@@ -52,12 +52,13 @@ class WorkspaceTests(RepoCase):
         self.assertEqual((self.root/'value.txt').read_text(),'0')
         self.assertTrue((self.root/'link.txt').is_symlink())
         self.assertFalse((self.root/'real/new.txt').exists())
-    def test_read_and_list_bounds_must_be_finite_integers(self):
+    def test_read_and_list_bounds_keep_their_reading_but_overflow_is_an_error(self):
         # JSON reads 1e999 as infinity; int() of it raised OverflowError, which the worker loop does not catch.
         ws=Workspace(self.root,[])
-        self.assertEqual(ws.tool({'tool':'read','path':'value.txt','start':1.0,'lines':2.0})['start'],1)
-        self.assertEqual(ws.tool({'tool':'list','offset':0.0})['offset'],0)
-        for value in (float('inf'),float('-inf'),float('nan'),2.5,'abc','2',True,None):
+        for value, expected in ((1, 1), (1.0, 1), ('1', 1), (1.7, 1), (True, 1)):  # accepted as before
+            self.assertEqual(ws.tool({'tool':'read','path':'value.txt','start':value,'lines':value})['start'],expected)
+            self.assertEqual(ws.tool({'tool':'list','offset':value})['offset'],expected)
+        for value in (float('inf'),float('-inf'),float('nan'),'abc',None,[1]):
             for action in ({'tool':'read','path':'value.txt','start':value},{'tool':'read','path':'value.txt','lines':value},
                            {'tool':'list','offset':value}):
                 with self.subTest(action=action):

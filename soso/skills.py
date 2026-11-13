@@ -16,10 +16,12 @@ def catalog():
 
 
 def whole(value, name):
-    """A finite integer as JSON gives it (3 or 3.0); 1e999 is infinity, which int() cannot convert."""
-    if type(value) is int or type(value) is float and value.is_integer():
+    """int(value), as models have always been answered ("10", 10.7 and true work); an infinity such as
+    1e999 in JSON, a missing value or text that is no number is a ValueError naming the field."""
+    try:
         return int(value)
-    raise ValueError(name + ' must be a finite integer')
+    except (OverflowError, TypeError, ValueError) as exc:
+        raise ValueError(f'{name} must be an integer: {exc}') from None
 
 
 def read_skill(name, start=1, lines=60):
