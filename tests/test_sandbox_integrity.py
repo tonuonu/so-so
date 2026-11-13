@@ -521,8 +521,11 @@ class SandboxIntegrityTests(RepoCase):
     def test_filter_set_during_the_baseline_evaluation_blocks_new_runs(self):
         baseline = self.hiding_baseline(self.HIDE_WITH_FILTER)
         self.assertEqual(baseline, {'valid': False, 'reason': 'baseline evaluation changed repository configuration'})
-        with self.assertRaisesRegex(ValueError, 'could not restore'):
+        with self.assertRaises(ValueError) as refused:
             Run(self.root, self.config(), 'Improve')
+        # No restore was attempted: the message says what happened, with the usual repair instructions.
+        self.assertRegex(str(refused.exception), r"^run [\w-]+'s baseline evaluation changed repository settings; "
+                                                 r"put back the settings recorded in .*watched-config\.json, or delete ")
 
     def test_index_flag_set_during_the_baseline_evaluation_is_invalid(self):
         baseline = self.hiding_baseline(self.HIDE_WITH_FLAG)

@@ -125,7 +125,7 @@ GUARDS = [
     ('soso/engine.py', 'if not self.baseline_kept(settings):\n                    self.report',
      'if False:\n                    self.report',
      ['test_sandbox_integrity.SandboxIntegrityTests.test_filter_set_during_the_baseline_evaluation_blocks_new_runs']),
-    ('soso/engine.py', 'atomic_json(self.unrestored, {"run": self.run_id, "file": self.config_file})', 'pass',
+    ('soso/engine.py', 'atomic_json(self.unrestored, {"run": self.run_id, "file": self.config_file, "baseline": True})', 'pass',
      ['test_sandbox_integrity.SandboxIntegrityTests.test_filter_set_during_the_baseline_evaluation_blocks_new_runs']),
     ('soso/engine.py', '\n                        or differs_from_commit(self.integration, self.report["base"], flagged)):', '):',
      ['test_sandbox_integrity.SandboxIntegrityTests.test_index_flag_set_during_the_baseline_evaluation_is_invalid']),
@@ -524,6 +524,9 @@ GUARDS = [
      ['test_delivery.DeliveryTests.test_lower_baseline_for_the_same_commit_is_recorded_as_drift']),
     ('soso/delivery.py', "type(previous.get('best')) in (int, float)", 'True',
      ['test_delivery.DeliveryTests.test_epoch_without_a_best_score_gives_no_drift_evidence']),
+    # A baseline's changed settings are named as such, not as a failed restore.
+    ('soso/engine.py', 'if failed.get("baseline") is True', 'if False',
+     ['test_sandbox_integrity.SandboxIntegrityTests.test_filter_set_during_the_baseline_evaluation_blocks_new_runs']),
     # Launcher, dashboard and entry-point review.
     ('so-so', '    # Help skips the .so-so ownership check, so it never runs the runtime stored there.\n'
      '    if [ -n "$so_so_help" ]; then\n        so_so_usage\n    fi\n    so_so_root="$so_so_state/runtime"',

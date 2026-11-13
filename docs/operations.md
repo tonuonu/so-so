@@ -89,7 +89,9 @@ with a filter or an index flag; the candidate is rejected when they differ. A
 baseline is checked the same way and is invalid when its evaluation changes the
 files or a watched setting; a changed setting also writes `soso/unrestored.json`
 (below), because nothing is recorded yet to restore it from, and in persistent
-delivery it blocks the goal. In persistent delivery the goal
+delivery it blocks the goal. The refusal then says that the run's baseline
+evaluation changed repository settings, not that a restore failed, with the same
+repair instructions. In persistent delivery the goal
 worktree is checked out again the same way before each epoch's baseline, because
 `merge --ff-only` rewrites only the files that changed; when an interrupt cuts that
 checkout short, resuming the goal finishes it.

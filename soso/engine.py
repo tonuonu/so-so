@@ -824,7 +824,7 @@ class Run:
         if self.shared(self.integration) == settings:
             return True
         atomic_json(self.folder / "watched-config.json", dump_watched(settings), private=True)
-        atomic_json(self.unrestored, {"run": self.run_id, "file": self.config_file})
+        atomic_json(self.unrestored, {"run": self.run_id, "file": self.config_file, "baseline": True})
         return False
 
     def require_restored(self):
@@ -844,9 +844,10 @@ class Run:
             repaired = self.repaired(recorded)
         except (RuntimeError, OSError):
             repaired = False  # what cannot be read cannot be shown to match
-        if not repaired:
-            raise ValueError(f"run {failed['run']} could not restore {failed['file']}; put back the settings recorded "
-                             f"in {record}, or " + keep)
+        if not repaired:  # a baseline's change was never restored: nothing was recorded to restore it from
+            happened = ("'s baseline evaluation changed repository settings" if failed.get("baseline") is True
+                        else f" could not restore {failed['file']}")
+            raise ValueError(f"run {failed['run']}{happened}; put back the settings recorded in {record}, or " + keep)
         self.unrestored.unlink()
 
     def repaired(self, recorded):
