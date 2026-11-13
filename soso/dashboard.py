@@ -22,6 +22,7 @@ from .models import redact
 LIMIT = 2_000_000
 IMAGES = {'.png', '.jpg', '.jpeg', '.webp', '.gif'}
 IMAGE_LIMIT = 10_000_000
+CHUNK = 65536  # bytes per send; a slow client must take each within Dashboard.REQUEST_SECONDS
 SCALAR = (str, int, float, bool, type(None))
 
 
@@ -48,11 +49,18 @@ def read_image(path, limit=IMAGE_LIMIT):
     return data
 
 
+def wildcard(address):
+    """Whether an IP address names every interface, also as IPv4-mapped IPv6 ('::ffff:0.0.0.0')."""
+    address = ipaddress.ip_address(address)
+    mapped = getattr(address, 'ipv4_mapped', None)
+    return address.is_unspecified or bool(mapped and mapped.is_unspecified)
+
+
 def unspecified(host):
-    """Whether a numeric host names every interface, in any spelling ('0', '0x0', '0.0.0.0', '::0')."""
+    """Whether a numeric host names every interface, in any spelling ('0', '0x0', '0.0.0.0.', '::0')."""
     try:
-        return any(ipaddress.ip_address(info[4][0]).is_unspecified
-                   for info in socket.getaddrinfo(host, None, flags=socket.AI_NUMERICHOST))
+        return any(wildcard(info[4][0])
+                   for info in socket.getaddrinfo(host.rstrip('.'), None, flags=socket.AI_NUMERICHOST))
     except (OSError, ValueError):
         return False  # a hostname
 
@@ -406,7 +414,8 @@ class Dashboard:
             raise ValueError(f'{config}: "dashboard" must be an object')
         host = host or os.environ.get('SOSO_DASHBOARD_HOST') or settings.get('host', '127.0.0.1')
         public_host = public_host or os.environ.get('SOSO_DASHBOARD_PUBLIC_HOST') or settings.get('public_host')
-        if not (isinstance(host, str) and host and isinstance(public_host or host, str)):
+        blank = public_host is not None and not (isinstance(public_host, str) and public_host.strip())
+        if not (isinstance(host, str) and host) or blank:
             raise ValueError('dashboard.host and dashboard.public_host must be nonempty hostnames or IP addresses')
         self.monitor = Monitor(project)
         self.token = secrets.token_urlsafe(24)
@@ -452,7 +461,8 @@ class Dashboard:
                     self.send_header('Referrer-Policy', 'no-referrer')
                     self.send_header('Content-Security-Policy', "default-src 'self'; object-src 'none'; frame-ancestors 'none'; base-uri 'none'")
                     self.end_headers()
-                    self.wfile.write(data)
+                    for start in range(0, len(data), CHUNK):  # the timeout bounds each send, not the whole body
+                        self.wfile.write(data[start:start + CHUNK])
                 except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError, TimeoutError):
                     return  # the client closed or stalled the connection; nothing to log or answer
                 except Exception as exc:
@@ -472,7 +482,7 @@ class Dashboard:
             raise OSError(f'cannot listen on {host} port {port}: {exc.strerror or exc}') from exc
         self.server.daemon_threads = True
         # Decided from the address actually bound: '0' and '0x0' bind every interface as '0.0.0.0' does.
-        if ipaddress.ip_address(self.server.server_address[0]).is_unspecified and (
+        if wildcard(self.server.server_address[0]) and (
                 not public_host or unspecified(public_host)):
             self.server.server_close()
             raise ValueError('set dashboard.public_host to a reachable hostname or IP when binding all interfaces')

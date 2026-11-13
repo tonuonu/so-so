@@ -276,9 +276,11 @@ class DashboardTests(unittest.TestCase):
 
     def test_wildcard_binding_needs_a_public_host_in_every_spelling(self):
         for host, public in (('', None), ('', '192.0.2.10'), ('0', None), ('0x0', None), ('0.0.0.0', None),
-                             ('0.0.0.0', '0'), ('::', None), ('::0', None), ('::', '::')):
+                             ('0.0.0.0', '0'), ('::', None), ('::0', None), ('::', '::'), ('::ffff:0.0.0.0', None),
+                             ('0.0.0.0', '::ffff:0.0.0.0'), ('0.0.0.0', '0.0.0.0.'), ('0.0.0.0', ' '), ('127.0.0.1', ' '),
+                             ('127.0.0.1', '')):
             with self.subTest(host=host, public=public), tempfile.TemporaryDirectory() as tmp:
-                with self.settings(Path(tmp), {'host': host, **({'public_host': public} if public else {})}):
+                with self.settings(Path(tmp), {'host': host, **({'public_host': public} if public is not None else {})}):
                     with self.assertRaises(Exception) as caught:
                         Dashboard(Path(tmp)).server.server_close()
                     self.assertIsInstance(caught.exception, ValueError)
@@ -286,6 +288,14 @@ class DashboardTests(unittest.TestCase):
             with Dashboard(Path(tmp)) as dashboard:
                 self.assertEqual(dashboard.server.server_address[0], '0.0.0.0')
                 self.assertTrue(dashboard.url.startswith('http://192.0.2.10:'))
+
+    def test_ipv4_mapped_wildcard_is_a_wildcard(self):
+        # Python 3.11 reports is_unspecified False for '::ffff:0.0.0.0'; Linux can report that bound address as is.
+        from soso.dashboard import wildcard
+        for address, expected in (('::ffff:0.0.0.0', True), ('0.0.0.0', True), ('::', True),
+                                  ('::ffff:127.0.0.1', False), ('127.0.0.1', False), ('::1', False)):
+            with self.subTest(address=address):
+                self.assertEqual(wildcard(address), expected)
 
     def test_ipv6_host_binds_and_is_bracketed_in_the_url(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -421,6 +431,24 @@ class DashboardTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError,'too large'):read_image(image,limit=9)
             (Path(tmp)/'link.png').symlink_to(image)
             with self.assertRaises(OSError):read_image(Path(tmp)/'link.png')
+
+    def test_slow_client_gets_the_whole_image(self):
+        # The request timeout bounds each send; a large image to a slow reader must not be cut short.
+        import socket,time
+        with tempfile.TemporaryDirectory() as tmp, patch.object(Dashboard,'REQUEST_SECONDS',0.5):
+            root=Path(tmp);_,_,report=self.fixture(root)
+            result=report.parent/'result';result.mkdir();(result/'big.png').write_bytes(b'x'*4_000_000)
+            with Dashboard(root) as d:
+                with urllib.request.urlopen(d.url+'api',timeout=10) as r:path=json.load(r)['images'][0]['path']
+                received=b''
+                with socket.create_connection(d.server.server_address[:2],timeout=10) as client:
+                    client.sendall(f'GET /{d.token}/asset/{path} HTTP/1.0\r\n\r\n'.encode())
+                    while chunk:=client.recv(65536):
+                        received+=chunk
+                        time.sleep(0.05)  # about 1.3 MB/s: the whole body takes longer than the timeout
+                head,_,body=received.partition(b'\r\n\r\n')
+                self.assertIn(b' 200 ',head.split(b'\r\n')[0])
+                self.assertEqual(len(body),4_000_000)
 
     def test_idle_connections_are_closed(self):
         import socket,time
