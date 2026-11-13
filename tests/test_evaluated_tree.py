@@ -535,6 +535,8 @@ class EvaluatedTreeTests(RepoCase):
             with self.subTest(error=error.__name__):
                 real, calls = engine.replace_refs, []
                 def failing(path):
+                    if Path(path).name == 'result':  # the baseline evaluation's own check, before any record
+                        return real(path)
                     calls.append(path)
                     if len(calls) > 1:  # the baseline is recorded; the first restore fails
                         raise error('cannot read refs')
@@ -1220,7 +1222,7 @@ class EvaluatedTreeTests(RepoCase):
             git(self.root, 'config', 'core.safecrlf', 'warn')  # e.g. a sibling worker
             return left
         with patch('soso.engine.checkout', sibling_changes_config):
-            report = self.run_candidate([{'tool': 'write', 'path': 'value.txt', 'content': '5'}])
+            report = self.run_candidate([{'tool': 'write', 'path': 'value.txt', 'content': '5'}], allow_exec=False)
         self.assertEqual(self.experiment(report)['evaluation'],
                          {'valid': False, 'reason': 'repository configuration changed during checkout'})
         self.assertEqual(git(self.root, 'config', '--get', 'core.safecrlf', ok=(0, 1)), '')
