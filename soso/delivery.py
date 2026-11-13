@@ -346,6 +346,10 @@ class DeliveryEpoch(Run):
         if draft:
             self.report['draft'] = draft
 
+    @contextlib.contextmanager
+    def owned(self):
+        yield  # start_goal holds the repository's run lock around every epoch; a second flock would refuse it
+
     def draft_binding(self):
         return {'config_sha256': hashlib.sha256(json.dumps(self.config, sort_keys=True).encode()).hexdigest(),
                 'intent_sha256': hashlib.sha256(self.intent.encode()).hexdigest(), 'policy': self.pinned}

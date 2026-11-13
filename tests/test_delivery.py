@@ -633,6 +633,19 @@ print(json.dumps({'score':10*stage+(50 if expanded else 0),'complete':False}))
         report = json.loads(Path(second['epochs'][-1]['report']).read_text())
         self.assertFalse(report['completion_review']['approve'])
 
+    def test_goal_resume_checks_a_failed_restore_under_its_own_lock(self):
+        # start_goal holds the run lock while it builds each epoch: the epoch's restore check must run, not be
+        # refused by that same lock.
+        first = self.start()
+        marker = Path(git(self.repo, 'rev-parse', '--path-format=absolute', '--git-common-dir')) / 'soso/unrestored.json'
+        marker.write_text(json.dumps({'run': 'gone', 'file': 'config'}))
+        with patch('soso.delivery.time.time', return_value=time.time() + 5), \
+             self.assertRaisesRegex(ValueError, 'its record is gone'):  # past the retry delay
+            self.start(resume_goal=first['goal_id'])
+        state = json.loads((Path(first['report']).parent / 'state.json').read_text())
+        self.assertEqual(state['status'], 'blocked')
+        self.assertIn('its record is gone', state['reason'])  # the repair instructions, not a lock refusal
+
     def test_provider_wait_is_durable_and_resume_makes_no_calls_before_reset(self):
         retry = time.time() + 86400
         with patch('soso.delivery.configure_models', side_effect=ModelUnavailable(retry)) as discover:
