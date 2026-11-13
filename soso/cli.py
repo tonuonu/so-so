@@ -7,6 +7,14 @@ from .engine import Run, load_config, local_programs, resources
 from .models import Budget, Router
 
 
+def checked_config(path):
+    """load_config, with a value of the wrong JSON type reported as an error instead of a traceback."""
+    try:
+        return load_config(path)
+    except (TypeError, AttributeError) as exc:
+        raise ValueError(f"{path}: a setting has the wrong type ({exc})") from exc
+
+
 def main(argv=None):
     argv = list(sys.argv[1:] if argv is None else argv)
     if not argv or argv[0] not in ('run', 'doctor', 'probe'):
@@ -25,7 +33,7 @@ def main(argv=None):
             result = start_goal(Path(args.repo), args.goal, backend=args.backend, model=args.model,
                                 once=args.once, resume_goal=args.resume_goal, allow_exec=not args.no_exec, models_path=args.models)
             print(json.dumps(result, indent=2))
-            return 0 if result['status'] == 'complete' else 2
+            return 0 if result['status'] == 'complete' else 1 if result['status'] == 'blocked' else 2
         except (ValueError, OSError, RuntimeError, KeyError) as exc:
             print('soso: ' + str(exc), file=sys.stderr)
             return 1
@@ -47,11 +55,11 @@ def main(argv=None):
         if args.command == "doctor":
             print(json.dumps(resources(), indent=2))
             if args.config:
-                load_config(args.config)
+                checked_config(args.config)
                 print("Configuration valid")
             return 0
         if args.command == "probe":
-            config = load_config(args.config)
+            config = checked_config(args.config)
             router = Router(config, Budget(5, 240), lambda *a, **kw: None)
             examples = {'worker': {'tool': 'done'}, 'reviewer': {'approve': False},
                         'planner': {'experiments': [{'task': 'Connectivity probe only'}]},
@@ -62,7 +70,7 @@ def main(argv=None):
             print(json.dumps(router.ask(args.role, prompt, Path.cwd())))
             return 0
         root = Path(args.repo).resolve()
-        config = load_config(root / args.config)
+        config = checked_config(root / args.config)
         intent = (root / args.intent).read_text()
         for name in (args.config, args.intent):
             path = (root / name).resolve()

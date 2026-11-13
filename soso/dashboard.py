@@ -3,11 +3,14 @@ import argparse
 import collections
 import contextlib
 import fcntl
+import ipaddress
 import json
 import mimetypes
 import os
 from pathlib import Path
 import secrets
+import socket
+import stat
 import statistics
 import sys
 import threading
@@ -18,6 +21,47 @@ from .models import redact
 
 LIMIT = 2_000_000
 IMAGES = {'.png', '.jpg', '.jpeg', '.webp', '.gif'}
+IMAGE_LIMIT = 10_000_000
+CHUNK = 65536  # bytes per send; a slow client must take each within Dashboard.REQUEST_SECONDS
+SCALAR = (str, int, float, bool, type(None))
+
+
+def field(record, key, kind, default):
+    """record[key] when it has the recorded type, else the default: a hand-edited record never stops the monitor."""
+    value = record.get(key, default)
+    return value if isinstance(value, kind) else default
+
+
+def wellformed(event):
+    """Keys the snapshot indexes by are hashable and measurements are numbers; other events are skipped."""
+    return (all(isinstance(event.get(key), SCALAR) for key in ('event', 'call_id', 'model', 'role', 'tool', 'phase'))
+            and all(type(event.get(key, 0)) in (int, float) for key in ('time', 'seconds', 'prompt_bytes')))
+
+
+def read_image(path, limit=IMAGE_LIMIT):
+    """At most limit bytes of a regular file; never waits on a FIFO or device, nor follows a final symlink."""
+    with open(os.open(path, os.O_RDONLY | os.O_NONBLOCK | os.O_NOFOLLOW), 'rb') as stream:
+        if not stat.S_ISREG(os.fstat(stream.fileno()).st_mode):
+            raise ValueError('not a regular file')
+        data = stream.read(limit + 1)
+    if len(data) > limit:
+        raise ValueError('asset too large')
+    return data
+
+
+def wildcard(address):
+    """Whether an IP address names every interface, also as IPv4-mapped IPv6 ('::ffff:0.0.0.0')."""
+    address = ipaddress.ip_address(address)
+    return int(getattr(address, 'ipv4_mapped', None) or address) == 0  # not is_unspecified: mapped is False on 3.11
+
+
+def unspecified(host):
+    """Whether a numeric host names every interface, in any spelling ('0', '0x0', '0.0.0.0.', '::0')."""
+    try:
+        return any(wildcard(info[4][0])
+                   for info in socket.getaddrinfo(host.rstrip('.'), None, flags=socket.AI_NUMERICHOST))
+    except (OSError, ValueError):
+        return False  # a hostname
 
 
 def roadmap(events, report, status, live, calls):
@@ -48,7 +92,7 @@ def roadmap(events, report, status, live, calls):
         if stage:
             observed.add(stage)
             current = stage
-    if report.get('baseline', {}).get('valid'):
+    if field(report, 'baseline', dict, {}).get('valid'):
         observed.add('baseline')
     active = {'plan' if c.get('phase') == 'contract_setup' else roles[c['role']] for c in calls if c.get('live') and c.get('role') in roles}
     if status in ('complete', 'optimized'):
@@ -98,7 +142,7 @@ class Monitor:
             for line in lines[-2000:]:
                 try:
                     event = json.loads(line)
-                    if isinstance(event, dict):
+                    if isinstance(event, dict) and wellformed(event):
                         result.append(event)
                 except ValueError:
                     pass  # A writer may be midway through its final line.
@@ -120,7 +164,7 @@ class Monitor:
 
     def snapshot(self):
         active = self.read(self.root / 'active.json')
-        project = active.get('project', '')
+        project = field(active, 'project', str, '')
         folder = Path(project).parent if project else self.root
         journal = self.read(folder / 'optimization.json')
         goal = {}
@@ -139,14 +183,14 @@ class Monitor:
                         candidates.append((path.parent.name, path.parent, state))
                 if candidates:
                     _, goal_folder, goal = max(candidates, key=lambda item: item[0])
-        report_name = goal.get('active_epoch') or active.get('report')
+        report_name = field(goal, 'active_epoch', str, None) or field(active, 'report', str, None)
         if goal and (not report_name or Path(report_name).name == 'state.json'):
-            report_name = next((epoch.get('report') for epoch in reversed(goal.get('epochs', []))
-                                if isinstance(epoch, dict) and epoch.get('report')), None)
+            report_name = next((epoch['report'] for epoch in reversed(field(goal, 'epochs', list, []))
+                                if isinstance(epoch, dict) and field(epoch, 'report', str, '')), None)
         report = self.read(report_name) if report_name else {}
         paths = []
-        for epoch in (journal or goal).get('epochs', [])[-20:]:
-            if isinstance(epoch, dict) and epoch.get('report'):
+        for epoch in field(journal or goal, 'epochs', list, [])[-20:]:
+            if isinstance(epoch, dict) and field(epoch, 'report', str, ''):
                 paths.append(epoch['report'])
         if report_name:
             paths.append(report_name)
@@ -223,26 +267,27 @@ class Monitor:
             model['active_seconds'] = sum(c['elapsed_seconds'] for c in calls if c['model'] == model['model'] and c['live'])
             model['elapsed_seconds'] = model['seconds'] + model['active_seconds']
         pool = self.read(active.get('models_path') or goal.get('models_path', ''))
-        definitions = pool.get('models', {})
+        definitions = field(pool, 'models', dict, {})
         # Live display labels may change without altering the frozen execution policy.
         labels = {}
         label_path = self.project / 'soso.json'
         try:
             if not label_path.is_symlink() and label_path.stat().st_size <= LIMIT:
-                labels = json.loads(label_path.read_text()).get('models', {})
+                labels = field(json.loads(label_path.read_text()), 'models', dict, {})
         except (OSError, ValueError, AttributeError):
             pass
         for item in [*calls, *models.values()]:
-            definition = definitions.get(item['model'], {})
-            display = labels.get(item['model'], {})
+            definition = field(definitions, item['model'], dict, {})
+            display = field(labels, item['model'], dict, {})
             model_name = str(definition.get('model') or definition.get('kind') or item['model'] or 'unknown model')
             item['model_name'] = Path(model_name).name if model_name.startswith('/') else model_name
             item['display_name'] = str(display.get('display_name') or item['model_name'])
             item['host_label'] = str(display.get('host_label') or '')
-            endpoint = urlsplit(definition.get('url', ''))
-            item['host'] = endpoint.hostname or 'Local CLI'
-            if endpoint.port:
-                item['host'] += ':' + str(endpoint.port)
+            try:  # a hand-edited URL, such as one with port 99999, hides only this host
+                endpoint = urlsplit(definition.get('url', ''))
+                item['host'] = (endpoint.hostname or 'Local CLI') + (':' + str(endpoint.port) if endpoint.port else '')
+            except (ValueError, TypeError, AttributeError):
+                item['host'] = 'Unknown host'
             if item in calls:
                 setup = item.get('phase') == 'contract_setup'
                 item['purpose'] = ({'architect': 'Define the overall strategy', 'coordinator': 'Prepare acceptance criteria and checks',
@@ -254,15 +299,17 @@ class Monitor:
                 item['output_tokens_per_second'] = usage.get('output_tokens_per_second')
         rounds = []
         for r in reports:
-            for row in r.get('rounds', []):
+            for row in field(r, 'rounds', list, []):
+                if not isinstance(row, dict):
+                    continue
                 rounds.append({'round': row.get('round'), 'accepted': row.get('accepted'), 'outcome': row.get('outcome'),
                                'experiments': [{k: x.get(k) for k in ('task', 'evaluation', 'error', 'error_kind', 'review', 'candidate', 'commit')}
-                                               for x in row.get('experiments', [])]})
-        contract = goal.get('contract', {})
+                                               for x in field(row, 'experiments', list, []) if isinstance(x, dict)]})
+        contract = field(goal, 'contract', dict, {})
         if not contract and project:
             contract = self.read(Path(project) / '.soso-delivery/contract.json')
         milestones = [{'title': title, 'status': 'not_reported', 'evidence': ''}
-                      for title in contract.get('milestones', []) if isinstance(title, str)]
+                      for title in field(contract, 'milestones', list, []) if isinstance(title, str)]
         for row in rounds:
             for exp in row['experiments']:
                 review = exp.get('review') if isinstance(exp.get('review'), dict) else {}
@@ -284,20 +331,20 @@ class Monitor:
         done = sum(m['status'] == 'complete' for m in milestones)
         percent = round(100 * done / len(milestones)) if milestones and all(m['status'] != 'not_reported' for m in milestones) else None
         latest = events[-1] if events else {}
-        plan = next((e.get('tasks', []) for e in reversed(events) if e.get('event') == 'plan'), [])
+        plan = next((field(e, 'tasks', list, []) for e in reversed(events) if e.get('event') == 'plan'), [])
         if not plan:
-            strategy = next((e.get('plan', {}) for e in reversed(events) if e.get('event') == 'architecture'), {})
-            plan = ['Proposed: ' + step for step in strategy.get('milestones', []) if isinstance(step, str)]
+            strategy = next((field(e, 'plan', dict, {}) for e in reversed(events) if e.get('event') == 'architecture'), {})
+            plan = ['Proposed: ' + step for step in field(strategy, 'milestones', list, []) if isinstance(step, str)]
         schema = next((e.get('monitoring') for e in reversed(events)
                        if e.get('event') == 'plan' and isinstance(e.get('monitoring'), list) and e['monitoring']), [])
-        values = {'best_score': report.get('best'), 'baseline_score': (report.get('baseline') or {}).get('score'),
+        values = {'best_score': report.get('best'), 'baseline_score': field(report, 'baseline', dict, {}).get('score'),
                   'accepted_count': sum(bool(r.get('accepted')) for r in rounds),
                   'plateau_count': journal.get('plateau', report.get('plateau'))}
-        measured = (report.get('baseline') or {}).get('metrics', {})
+        measured = field(report, 'baseline', dict, {}).get('metrics', {})
         for row in rounds:
             for exp in row['experiments']:
                 if row.get('accepted') and exp.get('commit') == row['accepted']:
-                    measured = (exp.get('evaluation') or {}).get('metrics', {})
+                    measured = field(exp, 'evaluation', dict, {}).get('metrics', {})
         if isinstance(measured, dict):
             values.update({'metric:' + k: v for k, v in measured.items() if isinstance(k, str)})
         insights = []
@@ -315,7 +362,7 @@ class Monitor:
         for e in events[-80:]:
             timeline.append({k: e[k] for k in ('time', 'event', 'role', 'model', 'phase', 'task', 'tool', 'path', 'seconds', 'status', 'error', 'retry_at', 'round', 'best', 'prompt_bytes', 'input_tokens', 'output_tokens', 'error_kind', 'problem', 'attempt', 'retrying') if k in e})
         images = []
-        worktree = active.get('worktree') or goal.get('worktree') or (str(Path(report_name).parent / 'result') if report_name else '')
+        worktree = field(active, 'worktree', str, '') or field(goal, 'worktree', str, '') or (str(Path(report_name).parent / 'result') if report_name else '')
         try:
             base = self.path(worktree)
             visited = 0
@@ -328,11 +375,12 @@ class Monitor:
                     path = Path(directory) / name
                     if path.suffix.lower() in IMAGES and not path.is_symlink():
                         path = self.path(path)
-                        if path.stat().st_size <= 10_000_000:
+                        info = path.stat()
+                        if stat.S_ISREG(info.st_mode) and info.st_size <= IMAGE_LIMIT:  # never a FIFO or device
                             images.append({'path': str(path.relative_to(self.root)), 'name': str(path.relative_to(base))})
         except (OSError, ValueError):
             pass
-        return {'project': self.project.name, 'intent_title': active.get('title') or goal.get('intent', '').split('\n')[0], 'mode': active.get('mode'), 'status': status,
+        return {'project': self.project.name, 'intent_title': active.get('title') or field(goal, 'intent', str, '').split('\n')[0], 'mode': active.get('mode'), 'status': status,
                 'runner_active': live, 'phase': active.get('phase'), 'updated_at': active.get('updated_at'),
                 'last_event_at': latest.get('time'), 'next_retry_at': goal.get('next_retry_at') or active.get('next_retry_at'),
                 'reason': (journal.get('reason') or goal.get('reason') or report.get('reason')) if status != 'running' else None,
@@ -350,21 +398,31 @@ class Monitor:
 
 class Dashboard:
     IMAGE_SECONDS = 2  # asset checks reuse the image list of a snapshot at most this old
+    REQUEST_SECONDS = 30  # an idle or stalled connection gives up its thread after this long
 
     def __init__(self, project, port=0, host=None, public_host=None):
         settings = {}
         config = Path(project) / 'soso.json'
         if config.is_file() and not config.is_symlink() and config.stat().st_size <= LIMIT:
-            settings = json.loads(config.read_text()).get('dashboard', {})
+            try:
+                settings = json.loads(config.read_text())
+            except ValueError as exc:
+                raise ValueError(f'{config} is not valid JSON: {exc}') from exc
+            settings = settings.get('dashboard', {}) if isinstance(settings, dict) else None
+        if not isinstance(settings, dict):
+            raise ValueError(f'{config}: "dashboard" must be an object')
         host = host or os.environ.get('SOSO_DASHBOARD_HOST') or settings.get('host', '127.0.0.1')
-        public_host = public_host or os.environ.get('SOSO_DASHBOARD_PUBLIC_HOST') or settings.get('public_host') or host
-        if public_host in ('0.0.0.0', '::'):
-            raise ValueError('set dashboard.public_host to a reachable hostname or IP when binding all interfaces')
+        public_host = public_host or os.environ.get('SOSO_DASHBOARD_PUBLIC_HOST') or settings.get('public_host')
+        blank = public_host is not None and not (isinstance(public_host, str) and public_host.strip())
+        if not (isinstance(host, str) and host) or blank:
+            raise ValueError('dashboard.host and dashboard.public_host must be nonempty hostnames or IP addresses')
         self.monitor = Monitor(project)
         self.token = secrets.token_urlsafe(24)
         self.images = (float('-inf'), set())
         owner = self
         class Handler(BaseHTTPRequestHandler):
+            timeout = owner.REQUEST_SECONDS
+
             def log_message(self, *args):
                 pass
 
@@ -390,9 +448,7 @@ class Dashboard:
                                 p.is_symlink() for p in [candidate, *candidate.parents] if p.is_relative_to(owner.monitor.root)):
                             raise ValueError('unknown asset')
                         path = owner.monitor.path(owner.monitor.root / relative)
-                        data = path.read_bytes()
-                        if len(data) > 10_000_000:
-                            raise ValueError('asset too large')
+                        data = read_image(path)
                         mime = mimetypes.guess_type(path.name)[0] or 'application/octet-stream'
                     else:
                         raise ValueError('unknown route')
@@ -404,9 +460,10 @@ class Dashboard:
                     self.send_header('Referrer-Policy', 'no-referrer')
                     self.send_header('Content-Security-Policy', "default-src 'self'; object-src 'none'; frame-ancestors 'none'; base-uri 'none'")
                     self.end_headers()
-                    self.wfile.write(data)
-                except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError):
-                    return  # the client closed the connection; nothing to log or answer
+                    for start in range(0, len(data), CHUNK):  # the timeout bounds each send, not the whole body
+                        self.wfile.write(data[start:start + CHUNK])
+                except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError, TimeoutError):
+                    return  # the client closed or stalled the connection; nothing to log or answer
                 except Exception as exc:
                     # Unknown routes and assets are 404; anything else is a monitor defect, logged once per reason.
                     if route != 'api' and isinstance(exc, (OSError, ValueError, TypeError, KeyError)):
@@ -417,9 +474,19 @@ class Dashboard:
                         owner.last_error = reason
                         print('Dashboard error: ' + reason, file=sys.stderr, flush=True)
                     self.send_error(500)
-        self.server = ThreadingHTTPServer((host, port), Handler)
+        family = socket.AF_INET6 if ':' in host else socket.AF_INET
+        try:
+            self.server = type('Server', (ThreadingHTTPServer,), {'address_family': family})((host, port), Handler)
+        except OSError as exc:
+            raise OSError(f'cannot listen on {host} port {port}: {exc.strerror or exc}') from exc
         self.server.daemon_threads = True
-        self.url = f'http://{public_host}:{self.server.server_port}/{self.token}/'
+        # Decided from the address actually bound: '0' and '0x0' bind every interface as '0.0.0.0' does.
+        if wildcard(self.server.server_address[0]) and (
+                not public_host or unspecified(public_host)):
+            self.server.server_close()
+            raise ValueError('set dashboard.public_host to a reachable hostname or IP when binding all interfaces')
+        public_host = public_host or host
+        self.url = f'http://{f"[{public_host}]" if ":" in public_host else public_host}:{self.server.server_port}/{self.token}/'
         self.thread = threading.Thread(target=self.server.serve_forever, daemon=True)
 
     def snapshot(self):
@@ -465,14 +532,20 @@ def main():
     parser.add_argument('--project', type=Path, default=Path.cwd())
     parser.add_argument('--port', type=int, default=0)
     args = parser.parse_args()
-    with Dashboard(args.project, args.port) as dashboard:
+    try:
+        dashboard = Dashboard(args.project, args.port)
+    except (OSError, OverflowError, ValueError) as exc:  # e.g. bad settings, an address not on this host, a bad port
+        print('dashboard: ' + str(exc), file=sys.stderr)
+        return 1
+    with dashboard:
         print('Dashboard: ' + dashboard.url, flush=True)
         try:
             while True:
                 time.sleep(1)
         except KeyboardInterrupt:
             pass
+    return 0
 
 
 if __name__ == '__main__':
-    main()
+    raise SystemExit(main())

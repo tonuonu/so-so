@@ -40,7 +40,8 @@ can read environment variables, use the network or alter shared Git metadata.
 
 ## Failure handling
 
-- Invalid model JSON: try the next configured route; if none succeeds, record a failed candidate.
+- Invalid model JSON or role response: up to two repair attempts on the same model; no other route is tried.
+  Exhausted repairs are a protocol failure, not a plateau (see [response repair](routing.md#availability-limits-and-response-repair)).
 - Tool error: return a bounded error and escalate to a later route on the next step.
 - Failed check or invalid/nonfinite score: reject the candidate.
 - Changed protected source: reject the candidate.

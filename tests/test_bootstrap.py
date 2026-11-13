@@ -172,6 +172,25 @@ class BootstrapTests(unittest.TestCase):
             self.assertIn('usage: so-so', result.stdout)
             self.assertFalse(marker.exists())
 
+    def test_help_never_runs_an_unchecked_managed_runtime(self):
+        # A launcher used alone runs .so-so/runtime; help skips the ownership check, so it must not run it.
+        with tempfile.TemporaryDirectory() as folder:
+            root, env, log = self.shell_fixture(folder)
+            launcher = Path(folder) / 'alone/so-so'
+            launcher.parent.mkdir()
+            shutil.copy2(root / 'so-so', launcher)
+            cwd = Path(folder) / 'elsewhere'
+            runtime = cwd / '.so-so/runtime/soso'
+            runtime.mkdir(parents=True)
+            marker = Path(folder) / 'runtime-ran'
+            (runtime / '__init__.py').write_text('')
+            (runtime / 'launch.py').write_text(f'open({str(marker)!r}, "w").close()\n')
+            result = subprocess.run([str(launcher), '--help'], cwd=cwd, env=env,
+                                    capture_output=True, text=True, timeout=10)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertIn('usage: so-so', result.stdout)
+            self.assertFalse(marker.exists())
+
     def test_resume_of_bundled_assignment_prepares_its_check_tools(self):
         with tempfile.TemporaryDirectory() as folder:
             root, env, log = self.shell_fixture(folder)
