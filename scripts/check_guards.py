@@ -457,6 +457,13 @@ GUARDS = [
     ('soso/cli.py', "1 if result['status'] == 'blocked' else ", '', ['test_cli.CliTests.test_goal_exit_codes_match_the_launcher']),
     ('soso/cli.py', 'except (TypeError, AttributeError) as exc:', 'except () as exc:',
      ['test_cli.CliTests.test_malformed_config_is_a_one_line_error']),
+    # Spanning a line break, so that the guard text never matches this entry itself.
+    ('scripts/check_guards.py', "[-1]\n    return 'broken' if kind in BROKEN else 'error'", "[-1]\n    return 'error'",
+     ['test_check_guards.CheckGuardsTests.test_outcomes_tell_a_broken_or_killed_test_from_a_failing_one',
+      'test_check_guards.CheckGuardsTests.test_only_failures_and_ordinary_errors_count_as_red']),
+    ('scripts/check_guards.py', "if result.returncode < 0:\n        return 'killed'", "if False:\n        return 'killed'",
+     ['test_check_guards.CheckGuardsTests.test_outcomes_tell_a_broken_or_killed_test_from_a_failing_one',
+      'test_check_guards.CheckGuardsTests.test_only_failures_and_ordinary_errors_count_as_red']),
     ('soso/skills.py', 'except (OverflowError, TypeError, ValueError) as exc:', 'except ValueError as exc:',
      ['test_skills.SkillTests.test_page_bounds_keep_their_reading_but_overflow_is_an_error',
       'test_core.WorkspaceTests.test_read_and_list_bounds_keep_their_reading_but_overflow_is_an_error']),
@@ -474,12 +481,16 @@ ENV = {**{k: v for k, v in os.environ.items() if not k.startswith('GIT_')}, 'PYT
 
 
 SEPARATOR = '-' * 70  # unittest's line between a traceback and its summary
+# Errors that mean the mutant broke the module or the test file, not that a guard is missing.
+BROKEN = {'ImportError', 'ModuleNotFoundError', 'NameError', 'SyntaxError', 'IndentationError', 'TabError'}
 # Mutants run side by side, each in its own snapshot; few, so timing tests do not fail from load alone.
 WORKERS = max(1, int(os.environ.get('CHECK_GUARDS_WORKERS', min(4, os.cpu_count() or 1))))
 
 
 def run_tests(root, tests):
-    """Run tests in one unittest call: 'pass', 'fail' (assertions only), 'error' or 'timeout', and its log."""
+    """Run tests in one unittest call and return its outcome and log. The outcome is 'pass', 'fail'
+    (assertions only), 'error', or one that proves nothing: 'broken' (import, name or syntax error),
+    'killed' (by a signal) or 'timeout'."""
     env = {**ENV, 'PYTHONPATH': os.pathsep.join([str(root / 'tests'), str(root)])}
     try:
         result = subprocess.run([sys.executable, '-m', 'unittest', *tests], cwd=root, env=env,
@@ -488,15 +499,20 @@ def run_tests(root, tests):
         return 'timeout', ''
     if result.returncode == 0:
         return 'pass', ''  # a skipped test passes too
-    summary = result.stderr.rstrip().rsplit('\n', 1)[-1]
-    return 'fail' if summary.startswith('FAILED (failures=') else 'error', result.stderr
+    if result.returncode < 0:
+        return 'killed', result.stderr
+    if result.stderr.rstrip().rsplit('\n', 1)[-1].startswith('FAILED (failures='):
+        return 'fail', result.stderr
+    kind = last_exception(result.stderr).split(':', 1)[0].rsplit('.', 1)[-1]
+    return 'broken' if kind in BROKEN else 'error', result.stderr
 
 
 def last_exception(log):
     """The final line of the last traceback in a unittest log, e.g. 'TypeError: ...'."""
     blocks = log.split('\n' + SEPARATOR + '\n')
-    lines = [line for line in blocks[-2].splitlines() if line.strip()] if len(blocks) > 1 else []
-    return lines[-1] if lines else log.strip()[-300:]
+    # Without unittest's summary (a test module that fails to import) the traceback ends the log.
+    lines = [line for line in (blocks[-2] if len(blocks) > 1 else log).splitlines() if line.strip()]
+    return lines[-1][:300] if lines else ''
 
 
 def snapshot(source, root):
@@ -526,16 +542,16 @@ def check(root, file, guard, disabled, tests):
     finally:
         path.write_text(original)
     passed = [test for test, outcome, _ in results if outcome == 'pass']
-    timed_out = [test for test, outcome, _ in results if outcome == 'timeout']
+    invalid = [f'{test} ({outcome})' for test, outcome, _ in results if outcome in ('broken', 'killed', 'timeout')]
     # An error is red, but it is listed so that a crash unrelated to the guard can be told from a real failure.
-    notes = [f'    {outcome}: {test}' + (': ' + last_exception(log) if outcome == 'error' else '')
+    notes = [f'    {outcome}: {test}' + (': ' + last_exception(log) if outcome in ('error', 'broken', 'killed') else '')
              for test, outcome, log in results if outcome != 'fail']
-    line = ('GREEN ' if passed else 'red   ') + file + ': ' + guard.strip()
+    line = ('GREEN ' if passed else 'NOPROOF ' if invalid else 'red   ') + file + ': ' + guard.strip()
     problem = None
     if passed:
         problem = f'{file}: tests still pass with this guard disabled ({", ".join(passed)}): {guard.strip()}'
-    elif timed_out:
-        problem = f'{file}: tests timed out with this guard disabled ({", ".join(timed_out)}): {guard.strip()}'
+    elif invalid:
+        problem = f'{file}: tests broke, were killed or timed out rather than failing ({", ".join(invalid)}): {guard.strip()}'
     return line, notes, problem
 
 
