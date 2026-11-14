@@ -3,35 +3,19 @@ import io
 import json
 import os
 from pathlib import Path
-import sys
 import tempfile
 import unittest
 from unittest.mock import patch
 
+import test_core
 from soso.engine import DEFAULTS, Run
 from soso.process import git
 
 
-class RepoCase(unittest.TestCase):
+class RepoCase(test_core.RepoCase):
     def setUp(self):
-        self.tmp = tempfile.TemporaryDirectory()
-        self.root = Path(self.tmp.name).resolve()
-        git(self.root, 'init', '-b', 'main')
-        git(self.root, 'config', 'user.name', 'Test')
-        git(self.root, 'config', 'user.email', 'test@example.invalid')
-        (self.root / '.gitignore').write_text('__pycache__/\n')
-        (self.root / 'value.txt').write_text('0')
-        (self.root / 'evaluate.py').write_text("import json\nfrom pathlib import Path\nprint(json.dumps({'score':int(Path('value.txt').read_text())}))\n")
-        git(self.root, 'add', '--all')
-        git(self.root, 'commit', '-m', 'fixture')
-
-    def tearDown(self):
-        self.tmp.cleanup()
-
-    def config(self, **changes):
-        return {**DEFAULTS, 'models': {'test': {'kind': 'command', 'command': ['false'], 'parallel': 2}},
-                'routes': {'worker': ['test']}, 'evaluate': [sys.executable, 'evaluate.py'],
-                'rounds': 3, 'patience': 1, 'max_steps': 5, 'max_calls': 40, **changes}
+        super().setUp()
+        self.root = self.root.resolve()
 
 
 class RedactionTests(RepoCase):

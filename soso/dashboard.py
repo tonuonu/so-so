@@ -188,10 +188,8 @@ class Monitor:
             report_name = next((epoch['report'] for epoch in reversed(field(goal, 'epochs', list, []))
                                 if isinstance(epoch, dict) and field(epoch, 'report', str, '')), None)
         report = self.read(report_name) if report_name else {}
-        paths = []
-        for epoch in field(journal or goal, 'epochs', list, [])[-20:]:
-            if isinstance(epoch, dict) and field(epoch, 'report', str, ''):
-                paths.append(epoch['report'])
+        paths = [epoch['report'] for epoch in field(journal or goal, 'epochs', list, [])[-20:]
+                 if isinstance(epoch, dict) and field(epoch, 'report', str, '')]
         if report_name:
             paths.append(report_name)
         paths = list(dict.fromkeys(paths))
@@ -214,17 +212,16 @@ class Monitor:
         pending, models = {}, {}
         for e in events:
             name = e.get('model')
+            if e.get('event') in ('call_started', 'call_finished'):
+                m = models.setdefault(name, {'model': name, 'calls': 0, 'seconds': 0, 'errors': 0,
+                                             'input_tokens': None, 'output_tokens': None, 'peak_prompt_bytes': 0, 'durations': []})
             if e.get('event') == 'call_started':
                 if e.get('call_id') is not None:
                     pending[e['call_id']] = e
-                m = models.setdefault(name, {'model': name, 'calls': 0, 'seconds': 0, 'errors': 0,
-                                             'input_tokens': None, 'output_tokens': None, 'peak_prompt_bytes': 0, 'durations': []})
                 m['calls'] += 1
                 m['peak_prompt_bytes'] = max(m['peak_prompt_bytes'], e.get('prompt_bytes', 0))
             if e.get('event') == 'call_finished':
                 pending.pop(e.get('call_id'), None)
-                m = models.setdefault(name, {'model': name, 'calls': 0, 'seconds': 0, 'errors': 0,
-                                             'input_tokens': None, 'output_tokens': None, 'peak_prompt_bytes': 0, 'durations': []})
                 m['last_status'] = e.get('status')
                 m['last_error'] = e.get('error_kind')
                 m['seconds'] += e.get('seconds', 0)
@@ -358,9 +355,7 @@ class Monitor:
             insights.append({'label': spec['label'][:100], 'unit': str(spec.get('unit', ''))[:30],
                              'source': source, 'value': value if type(value) in (int, float) else None})
         tools = [e for e in events if e.get('event') == 'tool']
-        timeline = []
-        for e in events[-80:]:
-            timeline.append({k: e[k] for k in ('time', 'event', 'role', 'model', 'phase', 'task', 'tool', 'path', 'seconds', 'status', 'error', 'retry_at', 'round', 'best', 'prompt_bytes', 'input_tokens', 'output_tokens', 'error_kind', 'problem', 'attempt', 'retrying') if k in e})
+        timeline = [{k: e[k] for k in ('time', 'event', 'role', 'model', 'phase', 'task', 'tool', 'path', 'seconds', 'status', 'error', 'retry_at', 'round', 'best', 'prompt_bytes', 'input_tokens', 'output_tokens', 'error_kind', 'problem', 'attempt', 'retrying') if k in e} for e in events[-80:]]
         images = []
         worktree = field(active, 'worktree', str, '') or field(goal, 'worktree', str, '') or (str(Path(report_name).parent / 'result') if report_name else '')
         try:

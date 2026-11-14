@@ -2,13 +2,12 @@ import json
 import sys
 from unittest.mock import patch
 
-from test_core import RepoCase
-from test_worker_progress import ScriptedRouter
+from test_worker_progress import ScriptedCase, ScriptedRouter
 from soso.models import Budget, Router
 from soso.workspace import worker
 
 
-class ReadContextTests(RepoCase):
+class ReadContextTests(ScriptedCase):
     def setUp(self):
         super().setUp()
         self.source = '\n'.join(f'SOURCE_OLD_{i:03}: ' + 'x' * 20 for i in range(1, 301))
@@ -23,13 +22,6 @@ class ReadContextTests(RepoCase):
         if '\nPRIOR READS:\n' not in prompt:
             return []
         return json.loads(prompt.split('\nPRIOR READS:\n')[1].split('\nRECENT ACTIONS:')[0])
-
-    def run_actions(self, actions, before=None, **changes):
-        router = ScriptedRouter(actions + [{'tool': 'done'}], before)
-        result = worker(router, 'Improve ledger', self.root,
-                        self.config(max_steps=len(actions) + 1, **changes), lambda *a, **k: None)
-        self.assertTrue(result['finished'])
-        return router
 
     def test_exact_pages_survive_list_and_search_without_model_notes(self):
         router = self.run_actions([self.read(1), self.read(61), self.read(121),
