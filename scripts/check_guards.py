@@ -718,10 +718,17 @@ def main():
         for n in range(WORKERS):
             snapshot(source, Path(folder) / f'repo{n}')
             roots.put(Path(folder) / f'repo{n}')
-        outcome, log = run_tests(Path(folder) / 'repo0', sorted({t for *_, tests in GUARDS for t in tests}))
-        if outcome != 'pass':
-            print('check_guards: guard tests fail with every guard in place\n' + log[-3000:], file=sys.stderr)
-            return 1
+        # Every guard test must pass first. One share per snapshot, in parallel, so each unittest call stays well
+        # inside run_tests' timeout on a slow runner.
+        listed = sorted({t for *_, tests in GUARDS for t in tests})
+        shares = [(Path(folder) / f'repo{n}', listed[n::WORKERS]) for n in range(WORKERS) if listed[n::WORKERS]]
+        with concurrent.futures.ThreadPoolExecutor(WORKERS) as pool:
+            baseline = list(pool.map(lambda share: run_tests(*share), shares))  # never an empty share: that discovers
+        for outcome, log in baseline:
+            if outcome != 'pass':
+                print(f'check_guards: guard tests do not pass with every guard in place ({outcome})\n' + log[-3000:],
+                      file=sys.stderr)
+                return 1
 
         def checked(entry):
             root = roots.get()
