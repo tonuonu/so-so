@@ -99,7 +99,12 @@ runner's own fields that are read back to resume, such as paths, ids, refs,
 hashes, the policy fingerprint and a goal's intent (redacted once, when the goal
 is stored), are kept exactly, even when a secret value happens to occur in them;
 everything else, including model replies and tool output nested in those
-records, is redacted. Event logs redact every field.
+records, is redacted. Event logs redact every field. The intent's title (its
+first line) is redacted where it is shown, in the dashboard and the `.so-so`
+README files, and in the name of a new snapshot folder; the launcher's
+`entry.json` and the snapshot's `INTENT.md` keep it as written. An existing
+snapshot is found by the fingerprint at the end of its folder name, so a folder
+named before titles were redacted still resumes.
 
 Delivery supports `--once`, `--resume-goal ID`, and `--no-exec`. Provider waiting
 and configured epoch limits are separate from optimization `run --resume`, whose

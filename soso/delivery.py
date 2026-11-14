@@ -20,12 +20,15 @@ from .architecture import planning_reply
 from .engine import (DEFAULTS, Run, atomic_json, checkout, evaluate, fingerprint, index_flags, load_config,
                      local_programs, resources, review_diff)
 from .models import ModelProtocolError, Budget, BudgetExceeded, HTTP_TRANSPORT, ModelUnavailable, Router, redact, redact_record, redact_value, \
-    register_key_variables
+    register_key_variables, retry_time
 from .process import IDENTITY, common_dir, execute, git
 from .workspace import Workspace
 
 
 POLICY = '.soso-delivery'
+MAX_STALLED = 6  # consecutive epochs or setup attempts without an accepted change before a goal blocks
+SETUP_STALLED = (f'acceptance setup: stalled: no approved acceptance contract in {MAX_STALLED} consecutive attempts; '
+                 'resume to try again: ')
 
 
 class ContractRepairNeeded(RuntimeError):
@@ -344,8 +347,10 @@ class DeliveryEpoch(Run):
     """Reuse isolated candidates and commit guards, with nonregressing acceptance."""
     MAX_REPAIRS = 3
 
-    def __init__(self, root, config, intent, contract, feedback, allow_exec, draft=None, goal_exec=None):
+    def __init__(self, root, config, intent, contract, feedback, allow_exec, draft=None, goal_exec=None,
+                 config_path='soso.json'):
         super().__init__(root, config, intent, allow_exec)
+        self.config_path = config_path  # the goal's runner configuration, kept out of the completion excerpt
         # The draft binding uses the goal's own permission: one resume with --no-exec narrows only that epoch.
         self.goal_exec = allow_exec if goal_exec is None else goal_exec
         self.integration = root
@@ -497,7 +502,7 @@ class DeliveryEpoch(Run):
             raise ValueError('completion evidence does not match HEAD')
         # GOAL and CONTRACT already carry the instructions: the bounded excerpt is for implementation, tests and
         # evaluators, not for instruction files or runner configuration.
-        ws = Workspace(self.integration, ['AGENTS.md', '*/AGENTS.md', 'INTENT.md', '.gitignore', 'soso.json'])
+        ws = Workspace(self.integration, ['AGENTS.md', '*/AGENTS.md', 'INTENT.md', '.gitignore', 'soso.json', self.config_path])
         files = []
         size = 0
         for name in ws.files():
@@ -539,6 +544,12 @@ class DeliveryEpoch(Run):
             self.report.update(baseline=baseline, best=baseline.get('score'))
             if not baseline['valid']:
                 raise ValueError('invalid delivery baseline')
+            previous = self.feedback[-1] if self.feedback else None
+            if (previous and previous.get('head') == baseline['head'] and type(previous.get('best')) in (int, float)
+                    and baseline['score'] < previous['best']):
+                # The same commit scored higher in the last epoch: evidence of a drifting evaluator, not a rejection.
+                self.report['baseline_drift'] = {'previous_best': previous['best'], 'baseline': baseline['score']}
+                self.log('baseline_drift', **self.report['baseline_drift'])
             if self.completion(baseline):
                 self.report.pop('draft', None)
                 self.report['status'] = 'complete'
@@ -638,6 +649,16 @@ def _wait(until):
         time.sleep(min(1, max(0, until - time.time())))
 
 
+def _stall(state, reason):
+    """Count an epoch or setup attempt that changed nothing. At MAX_STALLED, block the goal with reason and start the
+    count again, so a resume gets as many attempts again; return whether it blocked."""
+    state['stalled'] = state.get('stalled', 0) + 1
+    if state['stalled'] < MAX_STALLED:
+        return False
+    state.update(status='blocked', reason=reason, next_retry_at=None, stalled=0)
+    return True
+
+
 def start_goal(repo: Path, intent: str | None = None, *, backend='auto', model=None, once=False,
                resume_goal=None, allow_exec=True, config_path='soso.json', state_dir=None, models_path=None, ignore_project_config=False):
     """Deliver persistently; --once returns after one bounded epoch or provider wait.
@@ -710,7 +731,7 @@ def start_goal(repo: Path, intent: str | None = None, *, backend='auto', model=N
                 if any(n not in ('INTENT.md', '.gitignore') and not n.startswith(POLICY + '/') for n in names):
                     raise ValueError('source changed during acceptance contract preparation')
                 _freeze(root, state['intent'])
-            state.update(contract=contract, protected=recovered['protected'],
+            state.update(contract=contract, protected=recovered['protected'], stalled=0,
                          policy=fingerprint(root, recovered['protected']), head=git(root, 'rev-parse', 'HEAD'),
                          config_sha256=hashlib.sha256((folder / 'config.json').read_bytes()).hexdigest())
         for report in (state.get('active_epoch'), *(epoch['report'] for epoch in state['epochs'][-1:])):
@@ -735,6 +756,8 @@ def start_goal(repo: Path, intent: str | None = None, *, backend='auto', model=N
             current = git(root, 'rev-parse', 'HEAD')
             accepted = [r['accepted'] for r in active.get('rounds', []) if r.get('accepted')]
             if current == active.get('head') or current in accepted:
+                if current != state['head']:
+                    state['stalled'] = 0  # the killed epoch accepted a change
                 state['head'] = current
                 draft = active.get('draft')
                 state['draft'] = None if draft and draft['commit'] == current and current in accepted else draft
@@ -781,17 +804,22 @@ def start_goal(repo: Path, intent: str | None = None, *, backend='auto', model=N
                     router = Router(config, Budget(min(config['max_calls'], 8), config['max_seconds']), setup_log)
                     contract = _contract(root, config, state['intent'], router, folder, state.get('setup_repair_reason', ''))
                     state.pop('setup_repair_reason', None)
-                    state['setup_repairs'] = 0
+                    state.update(setup_repairs=0, stalled=0)
                     state.update(contract=contract, protected=config['protected'], policy=fingerprint(root, config['protected']),
                                  head=git(root, 'rev-parse', 'HEAD'),
                                  config_sha256=hashlib.sha256((folder / 'config.json').read_bytes()).hexdigest())
                     _save(folder, state)
                 epoch = DeliveryEpoch(root, config, state['intent'], state['contract'], state['epochs'][-2:],
-                                      goal_exec and allow_exec, state.get('draft'), goal_exec=goal_exec)
+                                      goal_exec and allow_exec, state.get('draft'), goal_exec=goal_exec,
+                                      config_path=state['config_path'])
                 state['active_epoch'] = str(epoch.report_path)
                 _save(folder, state)
                 report = epoch.run_epoch()
                 state.pop('active_epoch', None)
+                moved = report['head'] != state['head']
+                if moved:  # before the status branch: a waiting or interrupted epoch that accepted a change counts
+                    state['stalled'] = 0
+                    state['failures'] = 0  # its wait, if any, is a first failure again
                 state['epochs'].append({'status': report['status'], 'head': report['head'], 'best': report.get('best'),
                                         'report': str(epoch.report_path), 'feedback': report.get('rounds', [])[-2:],
                                         'completion_review': report.get('completion_review')})
@@ -807,14 +835,16 @@ def start_goal(repo: Path, intent: str | None = None, *, backend='auto', model=N
                     state.update(status='interrupted', next_retry_at=None)
                 else:
                     state.update(status='incomplete', next_retry_at=time.time() + 2)
+                    if not moved:  # a retained draft is no accepted change
+                        _stall(state, f"stalled: no accepted change in {MAX_STALLED} consecutive epochs "
+                                      f"(last: {report['status']}); resume to try again")
                 state['failures'] = 0
                 _save(folder, state)
                 if once or state['status'] in ('complete', 'interrupted', 'blocked'):
                     break
             except ModelUnavailable as exc:
                 state['failures'] += 1
-                state.update(status='waiting', reason=str(exc), next_retry_at=max(time.time() + 1, exc.retry_at) if exc.retry_at is not None else
-                             time.time() + min(900, 30 * 2 ** min(state['failures'] - 1, 5)))
+                state.update(status='waiting', reason=str(exc), next_retry_at=retry_time(exc.retry_at, state['failures']))
                 print('Waiting: ' + str(exc) + '. Retrying automatically at ' + time.strftime('%H:%M:%S', time.localtime(state['next_retry_at'])) + '. Ctrl+C pauses the run.', flush=True)
                 _save(folder, state)
                 if once:
@@ -823,13 +853,15 @@ def start_goal(repo: Path, intent: str | None = None, *, backend='auto', model=N
                 state['setup_repairs'] = state.get('setup_repairs', 0) + 1
                 state.update(status='incomplete', setup_repair_reason=str(exc)[:2000], next_retry_at=
                              time.time() + min(60, 2 * 2 ** min(state['setup_repairs'] - 1, 5)))
+                blocked = _stall(state, SETUP_STALLED + state['setup_repair_reason'].strip()[:500])
                 _save(folder, state)
-                if once:
+                if once or blocked:
                     break
-            except BudgetExceeded:
+            except BudgetExceeded as exc:
                 state.update(status='incomplete', next_retry_at=time.time() + 2)
+                blocked = _stall(state, SETUP_STALLED + (state.get('setup_repair_reason') or str(exc)).strip()[:500])
                 _save(folder, state)
-                if once:
+                if once or blocked:
                     break
             except KeyboardInterrupt:
                 state['status'] = 'interrupted'

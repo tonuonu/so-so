@@ -140,6 +140,180 @@ class DeliveryTests(unittest.TestCase):
         common = Path(git(self.repo, 'rev-parse', '--path-format=absolute', '--git-common-dir'))
         self.assertTrue((common / 'soso/unrestored.json').exists())
 
+    def resume(self, result):
+        # A clock that only moves forward, past any retry time a previous call saved.
+        self.clock = max(getattr(self, 'clock', 0), time.time()) + 100
+        with patch('soso.delivery.time.time', return_value=self.clock):
+            return self.start(resume_goal=result['goal_id'])
+
+    def set_state(self, result, **values):
+        path = Path(result['report'])
+        path.write_text(json.dumps({**json.loads(path.read_text()), **values}))
+
+    def reject_increments(self):
+        original = self.answer
+        def answer(router, role, prompt, cwd, **kwargs):
+            if role == 'reviewer' and prompt.startswith('Independently review this increment.'):
+                router.budget.claim()
+                return {'approve': False, 'useful': False, 'reason': 'not useful'}
+            return original(router, role, prompt, cwd, **kwargs)
+        self.answer = answer
+
+    def reject_contracts(self):
+        original = self.answer
+        def answer(router, role, prompt, cwd, **kwargs):
+            if role == 'reviewer' and prompt.startswith('Independently review this proposed acceptance contract'):
+                router.budget.claim()
+                return {'approve': False, 'reason': 'it checks file presence only'}
+            return original(router, role, prompt, cwd, **kwargs)
+        self.answer = answer
+
+    def test_goal_blocks_after_six_epochs_without_an_accepted_change(self):
+        self.reject_increments()
+        result = self.start()
+        self.assertEqual((result['status'], result.get('stalled')), ('incomplete', 1))
+        self.set_state(result, stalled=4)  # as after four more such epochs, each a --once resume
+        result = self.resume(result)
+        self.assertEqual((result['status'], result.get('stalled')), ('incomplete', 5))
+        result = self.resume(result)
+        self.assertEqual(result['status'], 'blocked')
+        self.assertEqual(result['reason'], 'stalled: no accepted change in 6 consecutive epochs (last: plateau); '
+                                           'resume to try again')
+        self.assertIsNone(result['next_retry_at'])
+        self.assertEqual(result.get('stalled'), 0)
+        resumed = self.resume(result)  # a resume gets six more
+        self.assertEqual((resumed['status'], resumed.get('stalled')), ('incomplete', 1))
+
+    def test_epoch_that_accepts_a_change_resets_the_stall_count_even_when_it_waits(self):
+        accept = self.answer
+        self.reject_increments()
+        first = self.start()
+        self.set_state(first, stalled=5)
+        plans = []
+        def answer(router, role, prompt, cwd, **kwargs):
+            if role == 'planner' and prompt.startswith('Plan one small useful next milestone step.'):
+                plans.append(prompt)
+                if len(plans) == 2:
+                    raise ModelUnavailable(time.time() + 3600)
+            return accept(router, role, prompt, cwd, **kwargs)
+        self.answer = answer
+        self.config['rounds'] = 2
+        result = self.resume(first)
+        self.assertEqual(result['status'], 'waiting')
+        self.assertNotEqual(result['head'], first['head'])
+        self.assertEqual(result.get('stalled'), 0)
+
+    def test_killed_epoch_that_accepted_a_change_resets_the_stall_count(self):
+        first = self.start()  # accepts stage 1
+        root = Path(first['worktree'])
+        killed = first['epochs'][-1]['report']
+        self.set_state(first, active_epoch=killed, epochs=first['epochs'][:-1], head=git(root, 'rev-parse', 'HEAD~1'),
+                       status='running', stalled=5)  # killed after the merge, before the goal recorded it
+        self.reject_increments()
+        result = self.resume(first)
+        self.assertEqual(result['head'], first['head'])
+        self.assertEqual((result['status'], result.get('stalled')), ('incomplete', 1))
+
+    def test_epochs_that_accept_and_then_wait_keep_the_provider_time(self):
+        # Each epoch accepts a change, then a provider asks for a short wait: that wait is a first failure again.
+        self.use_evaluator(EVALUATOR.replace('stage>=2', 'stage>=9'))
+        accept = self.answer
+        plans = []
+        def answer(router, role, prompt, cwd, **kwargs):
+            if role == 'planner' and prompt.startswith('Plan one small useful next milestone step.'):
+                plans.append(prompt)
+                if len(plans) % 2 == 0:
+                    raise ModelUnavailable(time.time() + 5)
+            return accept(router, role, prompt, cwd, **kwargs)
+        self.answer = answer
+        self.config['rounds'] = 2
+        first = self.start()
+        self.assertEqual((first['status'], first['failures']), ('waiting', 1))
+        second = self.resume(first)
+        self.assertEqual(second['status'], 'waiting')
+        self.assertNotEqual(second['head'], first['head'])
+        self.assertEqual(second['failures'], 1)
+        self.assertEqual(second['next_retry_at'], self.clock + 5)
+
+    def test_setup_that_never_freezes_a_contract_blocks_after_six_attempts(self):
+        self.reject_contracts()
+        result = self.start()
+        self.assertEqual((result['status'], result.get('stalled')), ('incomplete', 1))
+        self.set_state(result, stalled=4)
+        result = self.resume(result)
+        self.assertEqual((result['status'], result.get('stalled')), ('incomplete', 5))
+        result = self.resume(result)
+        self.assertEqual(result['status'], 'blocked')
+        self.assertEqual(result['reason'], 'acceptance setup: stalled: no approved acceptance contract in 6 consecutive '
+                         'attempts; resume to try again: REPAIR ACCEPTANCE CONTRACT AFTER INDEPENDENT REVIEW: '
+                         'it checks file presence only')
+        self.assertIn('it checks file presence only', result['setup_repair_reason'])  # kept for the next attempt
+        self.assertIsNone(result['next_retry_at'])
+        self.assertEqual(result.get('stalled'), 0)
+        resumed = self.resume(result)
+        self.assertEqual((resumed['status'], resumed.get('stalled')), ('incomplete', 1))
+
+    def test_setup_that_keeps_running_out_of_budget_blocks_after_six_attempts(self):
+        def exhausted(router, role, prompt, cwd, **kwargs):
+            raise BudgetExceeded('model call budget exhausted')
+        self.answer = exhausted
+        result = self.start()
+        for _ in range(5):
+            self.assertEqual(result['status'], 'incomplete')
+            result = self.resume(result)
+        self.assertEqual(result['status'], 'blocked')
+        self.assertTrue(result['reason'].startswith('acceptance setup: stalled: '))
+        self.assertTrue(result['reason'].endswith('resume to try again: model call budget exhausted'))
+
+    def test_frozen_contract_resets_the_stall_count(self):
+        self.reject_contracts()
+        first = self.start()
+        self.assertEqual((first['status'], first.get('stalled')), ('incomplete', 1))
+        self.set_state(first, stalled=5)
+        self.answer = DeliveryTests.answer.__get__(self)
+        self.reject_increments()
+        result = self.resume(first)
+        self.assertIn('policy', result)
+        self.assertEqual((result['status'], result.get('stalled')), ('incomplete', 1))  # the stalled epoch, not 6
+
+    def test_recovered_contract_resets_the_stall_count(self):
+        def interrupt(root, *args):
+            if 'Freeze goal acceptance contract' in args:
+                raise KeyboardInterrupt
+            return git(root, *args)
+        with patch('soso.delivery.git', side_effect=interrupt):
+            first = self.start()
+        self.assertNotIn('policy', first)
+        self.set_state(first, stalled=5)
+        self.reject_increments()
+        result = self.resume(first)
+        self.assertIn('policy', result)
+        self.assertEqual((result['status'], result.get('stalled')), ('incomplete', 1))
+
+    def test_lower_baseline_for_the_same_commit_is_recorded_as_drift(self):
+        # The evaluator reads state outside the goal worktree, so the accepted commit scores lower in the next epoch.
+        drift = Path(self.tmp.name) / 'drift'
+        self.use_evaluator(EVALUATOR.replace("print(json.dumps({'score':100 if stage>=2 else 0,",
+                                             f"print(json.dumps({{'score':(100 if stage>=2 else 50*stage)-10*Path({str(drift)!r}).exists(),"))
+        first = self.start()
+        self.assertEqual(first['epochs'][-1]['best'], 50)
+        drift.write_text('')
+        second = self.resume(first)
+        report = json.loads(Path(second['epochs'][-1]['report']).read_text())
+        self.assertEqual(report.get('baseline_drift'), {'previous_best': 50, 'baseline': 40})
+        events = [json.loads(line) for line in (Path(second['epochs'][-1]['report']).parent / 'events.jsonl').read_text().splitlines()]
+        self.assertEqual([(e['previous_best'], e['baseline']) for e in events if e['event'] == 'baseline_drift'], [(50, 40)])
+        self.assertEqual(second['status'], 'complete')  # evidence only: acceptance is unchanged
+
+    def test_epoch_without_a_best_score_gives_no_drift_evidence(self):
+        first = self.start()
+        state = json.loads(Path(first['report']).read_text())
+        state['epochs'][-1]['best'] = None  # e.g. an epoch killed before its baseline
+        self.set_state(first, epochs=state['epochs'])
+        second = self.resume(first)
+        self.assertEqual(second['status'], 'complete')
+        self.assertNotIn('baseline_drift', json.loads(Path(second['epochs'][-1]['report']).read_text()))
+
     def test_baseline_ignores_files_left_by_earlier_evaluator_runs(self):
         # The goal worktree is long-lived; the contract-time evaluator run leaves an ignored marker there.
         # A slow machine must not run out of the 15 s epoch budget before the candidate is accepted.
@@ -827,6 +1001,26 @@ print(json.dumps({'score':10*stage+(50 if expanded else 0),'complete':False}))
             names = [f['path'] for f in json.loads(prompt.split('\nSOURCE:\n')[1])]
             self.assertEqual(names, ['stage.txt', 'tests/test_stage.py'])  # not AGENTS.md, INTENT.md or .gitignore
 
+    def test_completion_review_source_leaves_out_the_goal_config_file(self):
+        git(self.repo, 'init', '-b', 'main')
+        git(self.repo, 'config', 'user.name', 'Tester')
+        git(self.repo, 'config', 'user.email', 'test@example.invalid')
+        (self.repo / 'custom.py').write_text(EVALUATOR)
+        (self.repo / 'conf').mkdir()
+        (self.repo / 'conf/goal.json').write_text(json.dumps({**self.config, 'evaluate': [sys.executable, '-B', 'custom.py']}))
+        git(self.repo, 'add', '--all')
+        git(self.repo, '-c', 'commit.gpgsign=false', 'commit', '-m', 'configured policy')
+        def work(router, task, path, config, log, index):
+            (Path(path) / 'stage.txt').write_text('2')
+            return {'finished': True}
+        with patch('soso.engine.worker', side_effect=work):
+            self.assertEqual(self.start(config_path='conf/goal.json')['status'], 'complete')
+        final = [p for r, p in self.prompts if p.startswith('Perform independent final acceptance review.')]
+        self.assertTrue(final)
+        for prompt in final:
+            names = [f['path'] for f in json.loads(prompt.split('\nSOURCE:\n')[1])]
+            self.assertEqual(names, ['custom.py', 'stage.txt'])  # not conf/goal.json
+
     def test_withheld_review_reason_reaches_the_worker(self):
         # A diff too large to show is not reviewed; the draft is kept and the next worker learns why.
         self.config['max_seconds'] = 600
@@ -1032,6 +1226,18 @@ print(json.dumps({'score':10*stage+(50 if expanded else 0),'complete':False}))
             state = start_goal(self.repo, 'game', once=True)
         self.assertGreaterEqual(state['next_retry_at'], before + 30)
         self.assertLess(state['next_retry_at'], before + 35)
+
+    def test_provider_reset_that_is_always_now_still_backs_off(self):
+        def unavailable(*args):
+            raise ModelUnavailable(time.time())
+        with patch('soso.delivery.configure_models', side_effect=unavailable):
+            first = start_goal(self.repo, 'game', once=True)
+            later = time.time() + 5
+            with patch('soso.delivery.time.time', return_value=later):
+                second = start_goal(self.repo, once=True, resume_goal=first['goal_id'])
+        self.assertEqual(second['status'], 'waiting')
+        self.assertEqual(second['failures'], 2)
+        self.assertEqual(second['next_retry_at'], later + 30)
 
     def test_interrupt_wait_preserves_future_reset(self):
         retry = time.time() + 86400

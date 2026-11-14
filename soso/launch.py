@@ -15,7 +15,7 @@ import uuid
 from .delivery import _identity, _wait, start_goal
 from .engine import atomic_json
 from .history import folder_name, title, update_history
-from .models import ModelUnavailable, redact
+from .models import ModelUnavailable, redact, retry_time
 from .optimize import optimize_project, optimization_requested, prepared_optimization
 from .process import execute, git
 
@@ -100,7 +100,9 @@ def _snapshot(cwd, managed, intent):
     manifest, excluded = _inputs(cwd)
     digest = hashlib.sha256(json.dumps({'intent': intent, 'files': manifest}, sort_keys=True).encode()).hexdigest()
     legacy = managed / 'projects' / digest
-    folder = legacy if legacy.exists() else managed / 'projects' / folder_name(intent, digest)
+    # An existing snapshot is found by its fingerprint suffix, whatever title its name was made from.
+    named = sorted(p for p in (managed / 'projects').glob('*--' + digest[:12]) if not p.is_symlink())
+    folder = legacy if legacy.exists() else named[0] if named else managed / 'projects' / folder_name(redact(intent), digest)
     project = folder / 'project'
     if folder.exists():
         if not (folder / 'manifest.json').is_file() or not (project / '.git').is_dir():
@@ -287,9 +289,8 @@ def launch(cwd: Path, goal: str | None = None, intent_file: str | None = None, r
                         break
                     except ModelUnavailable as exc:
                         failures += 1
-                        entry.update(status='waiting', phase='model_setup', setup_failures=failures, next_retry_at=
-                                     max(time.time() + 1, exc.retry_at) if exc.retry_at is not None else
-                                     time.time() + min(900, 30 * 2 ** min(failures - 1, 5)))
+                        entry.update(status='waiting', phase='model_setup', setup_failures=failures,
+                                     next_retry_at=retry_time(exc.retry_at, failures))
                         _save(managed, folder, entry)
             if entry['mode'] == 'optimize':
                 def save_optimization(state):

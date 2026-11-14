@@ -271,6 +271,22 @@ class LauncherTests(unittest.TestCase):
         resolver.assert_not_called()
         self.assertEqual(resumed['next_retry_at'], retry)
 
+    def test_setup_reset_that_is_always_now_still_backs_off(self):
+        replies = [None, None, self.pool]
+        def resolve(*args):
+            reply = replies.pop(0)
+            if reply is None:
+                raise ModelUnavailable(time.time())  # the provider's reset time is always now
+            return reply
+        waits = []
+        with patch('soso.launch.resolve_pool', side_effect=resolve), \
+             patch('soso.launch._wait', side_effect=lambda until: waits.append(until - time.time())), \
+             patch('soso.launch.start_goal', side_effect=self.result):
+            self.assertEqual(launch(self.root)['status'], 'complete')
+        self.assertEqual(len(waits), 2)
+        self.assertLess(waits[0], 2)
+        self.assertGreater(waits[1], 29)
+
     def test_explicit_goal_needs_no_intent_file(self):
         (self.root / 'INTENT.md').unlink()
         self.run_goal('Build a game.')
@@ -326,6 +342,31 @@ class LauncherTests(unittest.TestCase):
             fcntl.flock(probe, fcntl.LOCK_EX)
             with self.assertRaisesRegex(RuntimeError, 'another so-so process owns this project'):
                 launch(self.root, resume='')
+
+    def test_intent_title_is_redacted_where_it_is_shown_not_where_it_is_stored(self):
+        secret = 'title-secret-value-1234'
+        with patch.dict(os.environ, {'SOSO_TEST_API_KEY': secret}):
+            result = self.run_goal('Deploy with ' + secret + '\nMore detail.')
+            folder = Path(result['snapshot']).parent
+            from soso.dashboard import Monitor
+            shown = [(folder / 'README.md').read_text(), (self.root / '.so-so/README.md').read_text(),
+                     Monitor(self.root).snapshot()['intent_title']]
+        self.assertIn('# Deploy with [REDACTED]', shown[0])
+        self.assertIn('[Deploy with [REDACTED]]', shown[1].replace('\\', ''))
+        self.assertEqual(shown[2], 'Deploy with [REDACTED]')
+        self.assertNotIn(secret, ''.join(shown))
+        self.assertTrue(folder.name.startswith('deploy-with-redacted--'))  # a new folder is named after the redacted title
+        self.assertEqual(json.loads((folder / 'entry.json').read_text())['title'], 'Deploy with ' + secret)
+
+    def test_snapshot_named_from_a_raw_title_still_resumes(self):
+        # A folder named before titles were redacted is found by its fingerprint, not by recomputing its name.
+        secret = 'title-secret-value-1234'
+        first = self.run_goal('Deploy with ' + secret)
+        self.assertIn(secret, Path(first['snapshot']).parent.name)
+        with patch.dict(os.environ, {'SOSO_TEST_API_KEY': secret}):
+            again = self.run_goal('Deploy with ' + secret)
+        self.assertEqual(again['snapshot'], first['snapshot'])
+        self.assertEqual(self.calls[-1][2]['resume_goal'], 'goal-1')
 
     def test_malformed_saved_entry_does_not_block_history(self):
         from soso.history import update_history

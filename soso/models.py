@@ -56,6 +56,17 @@ def retry_timestamp(value, now=None):
         return None
 
 
+def retry_time(retry_at, failures):
+    """When to try again after the given number of consecutive provider failures. Without a provider time the
+    backoff doubles from 30 s to 900 s. A provider time is kept, but from the second failure no sooner than the
+    backoff one step behind (30 s, 60 s, ... 900 s), so a reset time that is always now never makes a tight loop."""
+    now = time.time()
+    if retry_at is None:
+        return now + min(900, 30 * 2 ** min(failures - 1, 5))
+    floor = 1 if failures < 2 else min(900, 30 * 2 ** min(failures - 2, 5))
+    return max(retry_at, now + floor)
+
+
 class ModelProtocolError(RuntimeError):
     """A selected model failed the structured protocol after bounded repairs."""
 
@@ -296,9 +307,11 @@ class Router:
 
     def _cooldown(self, name, retry_at):
         with self.state_lock:
-            failures = self.failures.get(name, 0) + 1
+            # Calls already in flight when the model began cooling down fail together: one failure, not several.
+            cooling = self.cooldowns.get(name, 0) > time.time()
+            failures = max(1, self.failures.get(name, 0) + (not cooling))
             self.failures[name] = failures
-            until = max(time.time() + 1, retry_at) if retry_at is not None else time.time() + min(900, 30 * 2 ** min(failures - 1, 5))
+            until = max(retry_time(retry_at, failures), self.cooldowns.get(name, 0))
             self.cooldowns[name] = until
             self._persist()
             return until

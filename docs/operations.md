@@ -89,7 +89,9 @@ with a filter or an index flag; the candidate is rejected when they differ. A
 baseline is checked the same way and is invalid when its evaluation changes the
 files or a watched setting; a changed setting also writes `soso/unrestored.json`
 (below), because nothing is recorded yet to restore it from, and in persistent
-delivery it blocks the goal. In persistent delivery the goal
+delivery it blocks the goal. The refusal then says that the run's baseline
+evaluation changed repository settings, not that a restore failed, with the same
+repair instructions. In persistent delivery the goal
 worktree is checked out again the same way before each epoch's baseline, because
 `merge --ff-only` rewrites only the files that changed; when an interrupt cuts that
 checkout short, resuming the goal finishes it.
@@ -150,7 +152,10 @@ compared in a temporary detached worktree, as candidates read them, so
 `includeIf "onbranch:..."` and `"gitdir:..."` conditions hold as they did when
 recorded; a run killed during that check can leave a `soso/probe-*` worktree,
 which `git worktree remove --force` removes. Delete that file to keep the current
-settings instead.
+settings instead. Resuming the run that file names (`soso run --resume`) is
+refused the same way when the resume would measure a new baseline, for example
+after its baseline changed the settings; a resume that keeps its recorded
+baseline is not affected.
 
 Before the checkout, the worker's files are also compared with the commit through
 a fresh index, so a stat cache left by a worker's own `git add` cannot hide a
@@ -263,10 +268,44 @@ The normal goal entry point uses an outer controller around bounded experiment
 epochs. Local epoch budgets remain finite; the goal can open a new epoch from the
 accepted commit. Provider rate/quota failures carry safe retry metadata. HTTP
 `Retry-After` is honored, including long waits; unknown reset times use backoff.
+From the second consecutive provider failure a known reset time is kept but
+waited for at least as long as the backoff one step behind (see
+[routing](routing.md)), so a reset time that is always now cannot spin. An epoch
+that moves the accepted commit, or an optimization round that completes, makes the
+next wait a first failure again.
 Waiting is persisted before sleeping and is distinct from completion. `--once`
 returns after a bounded epoch or wait decision so an external service can manage
 lifetime. A process must be running, or restarted by your service manager, to wake
 and continue; writing a checkpoint is not an operating-system scheduler.
+
+A goal that stops making progress blocks instead of opening epochs forever. An
+epoch that ends in a plateau, at its round limit or with its budget spent, without
+moving the goal's accepted commit, counts as stalled; so does an acceptance setup
+attempt that ends without an approved contract or out of budget. After six in a
+row the goal is `blocked` with the reason `stalled: no accepted change in 6
+consecutive epochs (last: <status>); resume to try again`, or `acceptance setup:
+stalled: ...` followed by the last setup feedback. An epoch that moves the
+accepted commit, even one that then waits for a provider, and freezing the
+contract start the count again, and so does an epoch killed after it accepted a
+change, when the goal is resumed. A retained draft is not an accepted change, and
+waiting or interrupted epochs neither count nor reset. The count is kept in the
+goal's `state.json`, so it carries over across resumes and separate `--once`
+invocations. A resume after a stall block keeps the draft and the setup feedback
+and gets six more. Acceptance is non-regressing (a score at least the best so far,
+plus the reviewer's approval), so a goal that keeps accepting changes of equal
+score never counts as stalled; that is by design.
+
+When an epoch's baseline scores the commit the previous epoch ended on lower than
+that epoch's best, the epoch report records `baseline_drift` (`previous_best` and
+`baseline`) and the epoch logs a `baseline_drift` event. It is evidence of an
+evaluator that depends on time or on state outside the commit; it changes no
+acceptance decision.
+
+The final completion review gets a bounded excerpt of implementation and test
+sources. Instruction files (`AGENTS.md`, `INTENT.md`, `.gitignore`), the frozen
+acceptance policy and the runner configuration (`soso.json` and the goal's own
+config file, when it has another path) are left out: the review already gets the
+goal and its contract.
 
 The goal controller does not infer that credentials grant unlimited scope. Put the
 allowed accounts, regions, resource limits and release destination in INTENT.md.

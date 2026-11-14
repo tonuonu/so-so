@@ -5,7 +5,7 @@ import time
 import threading
 import unittest
 from unittest.mock import patch
-from soso.models import Router, Budget, ModelUnavailable, ModelOutputTruncated
+from soso.models import Router, Budget, ModelUnavailable, ModelOutputTruncated, retry_time
 
 
 def config():
@@ -194,6 +194,31 @@ class RoutingPolicyTests(unittest.TestCase):
                 restarted.ask('worker', 'p', Path.cwd())
             self.assertEqual(mocked.call_args.args[0]['command'], ['x'])
             self.assertEqual(restarted.cooldowns['qwen'], until)
+
+    def test_provider_reset_that_is_always_now_still_backs_off(self):
+        # A provider that keeps saying "retry now" must not make a tight loop: from the second consecutive failure
+        # its time is kept but no sooner than the backoff one step behind.
+        router = Router(config(), Budget(10, 30), lambda *a, **k: None)
+        clock, waits = 1000.0, []
+        with patch('soso.models.time.time', side_effect=lambda: clock):
+            for _ in range(8):
+                until = router._cooldown('x', clock)
+                waits.append(until - clock)
+                clock = until  # the next call fails once the cooldown is over
+        self.assertEqual(waits, [1, 30, 60, 120, 240, 480, 900, 900])
+        with patch('soso.models.time.time', return_value=1000.0):
+            self.assertEqual(retry_time(5000.0, 3), 5000.0)  # a later provider time is kept
+            self.assertEqual([retry_time(None, n) - 1000 for n in (1, 2, 6, 7)], [30, 60, 900, 900])  # unchanged
+
+    def test_calls_failing_together_are_one_failure(self):
+        # Parallel calls already in flight when the first 429 arrives are the same failure, not consecutive ones.
+        router = Router(config(), Budget(10, 30), lambda *a, **k: None)
+        with patch('soso.models.time.time', return_value=1000.0):
+            self.assertEqual([router._cooldown('x', 1000.0) for _ in range(4)], [1001.0] * 4)
+            self.assertEqual(router.failures['x'], 1)
+            self.assertEqual(router._cooldown('x', 2000.0), 2000.0)  # the later of the two times is kept
+            self.assertEqual(router._cooldown('x', 1000.0), 2000.0)
+            self.assertEqual(router.failures['x'], 1)
 
     def test_all_routes_wait_until_earliest_reset_without_dispatch(self):
         router = Router(config(), Budget(10, 30), lambda *a, **k: None)
