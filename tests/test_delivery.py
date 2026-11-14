@@ -921,7 +921,6 @@ print(json.dumps({'score':10*stage+(50 if expanded else 0),'complete':False}))
 
     def test_interrupt_during_goal_checkout_is_finished_on_resume(self):
         # The epoch's checkout deletes every file before writing them again; resume completes it.
-        from soso import delivery
         first = self.start()
         self.assertEqual((Path(first['worktree']) / 'stage.txt').read_text(), '1')
         def interrupted(root, *args):

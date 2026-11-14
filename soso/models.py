@@ -6,6 +6,7 @@ import re
 from datetime import datetime, timezone
 from email.utils import parsedate_to_datetime
 import sys
+import tempfile
 import threading
 import time
 import uuid
@@ -606,7 +607,6 @@ class Router:
             argv = [model.get('executable', 'kimi'), '--prompt', prompt, '--output-format', 'stream-json']
             if model.get('model'):
                 argv += ['--model', model['model']]
-            import tempfile
             with tempfile.TemporaryDirectory(prefix='soso-kimi-') as folder:
                 profile = Path(folder) / 'protocol.md'
                 profile.write_text('---\nname: soso-protocol\ndescription: Structured inference for the host controller\ntools: []\nsubagents: []\n---\n'
@@ -643,7 +643,6 @@ class Router:
             return result["output"]
         if kind == "codex":
             # Final message lives separately from progress/diagnostics.
-            import tempfile
             with tempfile.TemporaryDirectory(prefix="soso-model-") as folder:
                 out = Path(folder) / "answer.json"
                 argv = [model.get("executable", "codex"), "exec", "--ephemeral",

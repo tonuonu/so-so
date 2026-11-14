@@ -126,7 +126,7 @@ def configure_models(config, backend='auto', model=None):
         if model is not None:
             if model in names:
                 choices['local'] = {'kind': 'ollama', 'url': url, 'model': model}
-            elif backend == 'ollama' or backend == 'auto':
+            else:
                 # An explicit model must never silently select another provider/model.
                 raise ModelUnavailable(reason='requested local model is not installed; no download attempted')
         elif names:
@@ -231,6 +231,14 @@ def _bound(root, config, budget):
     return {**result, 'head': head}
 
 
+def _freeze(root, intent):
+    (root / 'INTENT.md').write_text(intent + '\n')
+    if not (root / '.gitignore').exists():
+        (root / '.gitignore').write_text('__pycache__/\n*.pyc\nnode_modules/\n.venv/\n.DS_Store\n')
+    git(root, 'add', '--', POLICY, 'INTENT.md', '.gitignore')
+    git(root, '-c', 'commit.gpgsign=false', 'commit', '-m', 'Freeze goal acceptance contract')
+
+
 def _contract(root, config, intent, router, folder, previous_feedback=''):
     policy = root / POLICY
     policy.mkdir(exist_ok=True)
@@ -330,11 +338,7 @@ def _contract(root, config, intent, router, folder, previous_feedback=''):
             contract['acceptance_review'] = acceptance_review
         atomic_json(policy / 'contract.json', redact_record(contract))
         atomic_json(folder / 'config.json', config)  # prepared transaction, before moving HEAD
-        (root / 'INTENT.md').write_text(intent + '\n')
-        if not (root / '.gitignore').exists():
-            (root / '.gitignore').write_text('__pycache__/\n*.pyc\nnode_modules/\n.venv/\n.DS_Store\n')
-        git(root, 'add', '--', POLICY, 'INTENT.md', '.gitignore')
-        git(root, '-c', 'commit.gpgsign=false', 'commit', '-m', 'Freeze goal acceptance contract')
+        _freeze(root, intent)
         return contract
     raise ContractRepairNeeded(feedback or 'acceptance contract still needs independent approval')
 
@@ -598,7 +602,6 @@ class DeliveryEpoch(Run):
                     git(self.integration, 'merge', '--ff-only', candidate['commit'])
                     self.report.pop('draft', None)
                     self.report['best'] = evaluation['score']
-                    round_result['accepted'] = candidate['commit']
                     self.report['plateau'] = 0
                     evaluation['head'] = candidate['commit']
                     self.checkpoint()
@@ -727,11 +730,7 @@ def start_goal(repo: Path, intent: str | None = None, *, backend='auto', model=N
                 names += git(root, 'ls-files', '--others', '--exclude-standard').splitlines()
                 if any(n not in ('INTENT.md', '.gitignore') and not n.startswith(POLICY + '/') for n in names):
                     raise ValueError('source changed during acceptance contract preparation')
-                (root / 'INTENT.md').write_text(state['intent'] + '\n')
-                if not (root / '.gitignore').exists():
-                    (root / '.gitignore').write_text('__pycache__/\n*.pyc\nnode_modules/\n.venv/\n.DS_Store\n')
-                git(root, 'add', '--', POLICY, 'INTENT.md', '.gitignore')
-                git(root, '-c', 'commit.gpgsign=false', 'commit', '-m', 'Freeze goal acceptance contract')
+                _freeze(root, state['intent'])
             state.update(contract=contract, protected=recovered['protected'], stalled=0,
                          policy=fingerprint(root, recovered['protected']), head=git(root, 'rev-parse', 'HEAD'),
                          config_sha256=hashlib.sha256((folder / 'config.json').read_bytes()).hexdigest())

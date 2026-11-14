@@ -4,7 +4,7 @@ import json
 from pathlib import Path
 import time
 
-from .delivery import configure_models, load_model_pool
+from .delivery import _wait, configure_models, load_model_pool
 from .engine import BudgetExceeded, Run, atomic_json, load_config, local_programs
 from .models import ModelUnavailable, redact_record, retry_time
 from .process import git
@@ -27,11 +27,6 @@ def prepared_optimization(project: Path, intent: str):
         return False
     config = json.loads((Path(project) / 'soso.json').read_text())
     return config.get('prepared_intent_sha256') == hashlib.sha256(intent.encode()).hexdigest()
-
-
-def _wait(until):
-    while time.time() < until:
-        time.sleep(min(1, max(0, until - time.time())))
 
 
 def optimize_project(project: Path, intent: str, folder: Path, models_path=None, save=None):
