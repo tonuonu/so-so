@@ -12,7 +12,7 @@ import sys
 import time
 import uuid
 
-from .delivery import _identity, start_goal
+from .delivery import _identity, _wait, start_goal
 from .engine import atomic_json
 from .history import folder_name, title, update_history
 from .models import ModelUnavailable, redact
@@ -45,8 +45,6 @@ def _managed(cwd):
     marker = folder / 'owner.json'
     if folder.is_symlink():
         raise ValueError('refusing a symlink at .so-so')
-    if folder.is_symlink():
-        raise ValueError('managed project must not be a symlink')
     if folder.exists():
         if not marker.is_file() or json.loads(marker.read_text()).get('owner') != 'so-so':
             raise ValueError('existing .so-so directory is not owned by this launcher')
@@ -91,10 +89,8 @@ def _inputs(cwd):
             if not any(part in ('.git', '.so-so') for part in relative.parts):
                 excluded.append(name)
             continue
-        if not source.exists():
-            continue  # A deleted tracked file stays deleted in the snapshot.
         if not source.is_file():
-            continue
+            continue  # A deleted tracked file stays deleted in the snapshot.
         info = source.stat()
         manifest.append({'path': name, 'sha256': _digest(source), 'mode': stat.S_IMODE(info.st_mode) & 0o777})
     return manifest, excluded
@@ -161,11 +157,6 @@ def _save(managed, folder, entry):
     atomic_json(folder / 'entry.json', entry)
     atomic_json(managed / 'active.json', entry)
     update_history(managed, folder, entry)
-
-
-def _wait(until):
-    while time.time() < until:
-        time.sleep(min(1, max(0, until - time.time())))
 
 
 def _resume_snapshot(managed, task_id):

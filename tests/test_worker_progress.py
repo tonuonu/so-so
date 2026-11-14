@@ -22,7 +22,16 @@ class ScriptedRouter:
         return next(self.actions)
 
 
-class WorkerProgressTests(RepoCase):
+class ScriptedCase(RepoCase):
+    def run_actions(self, actions, before=None, **changes):
+        router = ScriptedRouter(actions + [{'tool': 'done'}], before)
+        result = worker(router, 'Improve ledger', self.root,
+                        self.config(max_steps=len(actions) + 1, **changes), lambda *a, **k: None)
+        self.assertTrue(result['finished'])
+        return router
+
+
+class WorkerProgressTests(ScriptedCase):
     def setUp(self):
         super().setUp()
         (self.root / 'ledger.py').write_text('\n'.join('line ' + str(i) for i in range(1, 301)))
@@ -34,13 +43,6 @@ class WorkerProgressTests(RepoCase):
     @staticmethod
     def last(call):
         return json.loads(call['prompt'].split('LAST RESULT:\n')[1])
-
-    def run_actions(self, actions, before=None):
-        router = ScriptedRouter(actions + [{'tool': 'done'}], before)
-        result = worker(router, 'Improve ledger', self.root, self.config(max_steps=len(actions) + 1),
-                        lambda *args, **kwargs: None)
-        self.assertTrue(result['finished'])
-        return router
 
     def test_repeated_three_page_cycle_has_ranges_feedback_and_escalation(self):
         router = self.run_actions([self.read(1), self.read(61), self.read(121), self.read(1)])

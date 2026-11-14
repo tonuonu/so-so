@@ -33,9 +33,6 @@ def score_of(expression, imports=''):
 
 
 class EvaluatedTreeTests(RepoCase):
-    def common_dir(self):
-        return (self.root / '.git').resolve()  # RepoCase is a plain repository
-
     def run_candidate(self, steps, evaluate=None, allow_exec=True, prompts=None, **config):
         """One candidate taking the given worker steps (then done); returns the report."""
         steps = iter(steps + [{'tool': 'done', 'summary': 'done'}])
@@ -79,6 +76,15 @@ class EvaluatedTreeTests(RepoCase):
     def commit(self, message, *names):
         git(self.root, 'add', *names)
         git(self.root, '-c', 'commit.gpgsign=false', 'commit', '-qm', message)
+
+    def commit_submodule(self):
+        (self.root / 'sub').mkdir()
+        identity = ('-c', 'user.name=t', '-c', 'user.email=t@example.invalid', '-c', 'commit.gpgsign=false')
+        git(self.root / 'sub', 'init', '-q')
+        (self.root / 'sub/f.txt').write_text('x')
+        git(self.root / 'sub', 'add', 'f.txt')
+        git(self.root / 'sub', *identity, 'commit', '-qm', 'nested')
+        self.commit('submodule', 'sub')
 
     # 1. An ident attribute collapses "$Id: ... $" when staging, so the commit holds other code than the
     # worker's file; no command execution is needed.
@@ -700,13 +706,7 @@ class EvaluatedTreeTests(RepoCase):
         self.assertNotIn('EVIL', diff)
 
     def test_submodule_replaced_by_a_minus_diff_text_file_is_shown(self):
-        (self.root / 'sub').mkdir()
-        identity = ('-c', 'user.name=t', '-c', 'user.email=t@example.invalid', '-c', 'commit.gpgsign=false')
-        git(self.root / 'sub', 'init', '-q')
-        (self.root / 'sub/f.txt').write_text('x')
-        git(self.root / 'sub', 'add', 'f.txt')
-        git(self.root / 'sub', *identity, 'commit', '-qm', 'nested')
-        self.commit('submodule', 'sub')
+        self.commit_submodule()
         base = git(self.root, 'rev-parse', 'HEAD')
         (self.common_dir() / 'info/attributes').write_text('sub -diff\n')
         git(self.root, 'rm', '-q', '--cached', 'sub')
@@ -1272,13 +1272,7 @@ class EvaluatedTreeTests(RepoCase):
     def test_symlink_and_submodule_in_the_base_stay_valid(self):
         (self.root / 'link.txt').symlink_to('value.txt')
         self.commit('link', 'link.txt')
-        (self.root / 'sub').mkdir()
-        identity = ('-c', 'user.name=t', '-c', 'user.email=t@example.invalid', '-c', 'commit.gpgsign=false')
-        git(self.root / 'sub', 'init', '-q')
-        (self.root / 'sub/f.txt').write_text('x')
-        git(self.root / 'sub', 'add', 'f.txt')
-        git(self.root / 'sub', *identity, 'commit', '-qm', 'nested')
-        self.commit('submodule', 'sub')
+        self.commit_submodule()
         evaluate = score_of("int(open('link.txt').read()) if __import__('os').path.isdir('sub') else -1")
         self.assert_valid(self.run_candidate([{'tool': 'write', 'path': 'value.txt', 'content': '5'}], evaluate))
 

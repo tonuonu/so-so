@@ -117,7 +117,6 @@ class MarkdownPoolTests(unittest.TestCase):
 class ExplicitProjectPolicyTests(unittest.TestCase):
     def test_explicit_policy_bypasses_discovery_and_intent_cache(self):
         import json
-        from soso.models import Budget
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             policy = {'use_project_model_policy': True,

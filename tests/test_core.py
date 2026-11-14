@@ -27,6 +27,8 @@ class RepoCase(unittest.TestCase):
         git(self.root,'commit','-m','fixture')
     def tearDown(self):
         self.tmp.cleanup()
+    def common_dir(self):
+        return (self.root / '.git').resolve()  # a plain repository
     def config(self, **changes):
         return {**DEFAULTS,'models':{'test':{'kind':'command','command':['false'],'parallel':2}},
                 'routes':{'worker':['test']},'evaluate':[sys.executable,'evaluate.py'],

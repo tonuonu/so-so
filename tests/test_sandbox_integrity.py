@@ -34,18 +34,10 @@ class SandboxIntegrityTests(RepoCase):
         # Ignored files are never committed, so they must not influence the accepted score.
         code = ("import json\nfrom pathlib import Path\nbonus=Path('data/bonus.txt')\n"
                 "print(json.dumps({'score':int(Path('value.txt').read_text())+(int(bonus.read_text()) if bonus.exists() else 0)}))\n")
-        steps = iter([{'tool': 'write', 'path': 'data/.gitignore', 'content': '*\n'},
-                      {'tool': 'write', 'path': 'data/bonus.txt', 'content': '999'},
-                      {'tool': 'write', 'path': 'notes.txt', 'content': 'tracked change'},
-                      {'tool': 'done', 'summary': 'done'}])
-        def answer(router, role, prompt, cwd, attempt=0, task=None):
-            router.budget.claim()
-            if role == 'reviewer': return {'approve': True}
-            if role == 'planner': return {'experiments': [{'task': 'improve value'}]}
-            return next(steps)
-        runner = Run(self.root, self.config(evaluate=[sys.executable, '-c', code], parallel=1, rounds=1), 'Improve')
-        with patch.object(Router, 'ask', answer), contextlib.redirect_stdout(io.StringIO()):
-            report = runner.run()
+        report, _ = self.run_steps([{'tool': 'write', 'path': 'data/.gitignore', 'content': '*\n'},
+                                    {'tool': 'write', 'path': 'data/bonus.txt', 'content': '999'},
+                                    {'tool': 'write', 'path': 'notes.txt', 'content': 'tracked change'},
+                                    {'tool': 'done', 'summary': 'done'}], evaluate=[sys.executable, '-c', code])
         experiment = report['rounds'][0]['experiments'][0]
         self.assertTrue(experiment.get('commit'), experiment)
         self.assertEqual(experiment['evaluation']['score'], 0)
@@ -57,15 +49,8 @@ class SandboxIntegrityTests(RepoCase):
                 "print(json.dumps({'score':int(Path('value.txt').read_text())+(int(bonus.read_text()) if bonus.exists() else 0)}))\n")
         nested = ('git init -q sub && echo 999 > sub/bonus.txt && git -C sub add bonus.txt && git -C sub '
                   '-c user.name=t -c user.email=t@example.invalid -c commit.gpgsign=false commit -qm nested')
-        steps = iter([{'tool': 'run', 'argv': ['sh', '-c', nested]}, {'tool': 'done', 'summary': 'done'}])
-        def answer(router, role, prompt, cwd, attempt=0, task=None):
-            router.budget.claim()
-            if role == 'reviewer': return {'approve': True}
-            return next(steps)
-        runner = Run(self.root, self.config(evaluate=[sys.executable, '-c', code], parallel=1, rounds=1), 'Improve',
-                     allow_exec=True)
-        with patch.object(Router, 'ask', answer), contextlib.redirect_stdout(io.StringIO()):
-            report = runner.run()
+        report, _ = self.run_steps([{'tool': 'run', 'argv': ['sh', '-c', nested]}, {'tool': 'done', 'summary': 'done'}],
+                                   allow_exec=True, evaluate=[sys.executable, '-c', code])
         experiment = report['rounds'][0]['experiments'][0]
         self.assertTrue(experiment.get('commit'), experiment)
         self.assertIn('160000', git(self.root, 'ls-tree', experiment['commit'], 'sub'))
@@ -79,14 +64,7 @@ class SandboxIntegrityTests(RepoCase):
         git(self.root, 'add', 'extra/x.txt')
         git(self.root, '-c', 'commit.gpgsign=false', 'commit', '-qm', 'extra')
         git(self.root, 'sparse-checkout', 'set', 'keep')
-        steps = iter([{'tool': 'write', 'path': 'value.txt', 'content': '5'}, {'tool': 'done', 'summary': 'done'}])
-        def answer(router, role, prompt, cwd, attempt=0, task=None):
-            router.budget.claim()
-            if role == 'reviewer': return {'approve': True}
-            return next(steps)
-        runner = Run(self.root, self.config(parallel=1, rounds=1), 'Improve')
-        with patch.object(Router, 'ask', answer), contextlib.redirect_stdout(io.StringIO()):
-            report = runner.run()
+        report, runner = self.run_steps([{'tool': 'write', 'path': 'value.txt', 'content': '5'}, {'tool': 'done', 'summary': 'done'}])
         self.assertIn('S extra/x.txt', git(runner.integration, 'ls-files', '-v'))
         self.assertEqual(report['rounds'][0]['experiments'][0]['evaluation'].get('score'), 5, report['rounds'][0]['experiments'][0]['evaluation'])
         self.assertEqual(report['best'], 5)
@@ -96,34 +74,30 @@ class SandboxIntegrityTests(RepoCase):
         for flag in ('--skip-worktree', '--assume-unchanged'):
             with self.subTest(flag=flag):
                 hide = f'git update-index {flag} value.txt && echo 999 > value.txt'
-                steps = iter([{'tool': 'run', 'argv': ['sh', '-c', hide]},
-                              {'tool': 'write', 'path': 'notes.txt', 'content': 'tracked change'},
-                              {'tool': 'done', 'summary': 'done'}])
-                def answer(router, role, prompt, cwd, attempt=0, task=None):
-                    router.budget.claim()
-                    if role == 'reviewer': return {'approve': True}
-                    return next(steps)
-                runner = Run(self.root, self.config(parallel=1, rounds=1), 'Improve', allow_exec=True)
-                with patch.object(Router, 'ask', answer), contextlib.redirect_stdout(io.StringIO()):
-                    report = runner.run()
+                report, _ = self.run_steps([{'tool': 'run', 'argv': ['sh', '-c', hide]},
+                                            {'tool': 'write', 'path': 'notes.txt', 'content': 'tracked change'},
+                                            {'tool': 'done', 'summary': 'done'}], allow_exec=True)
                 experiment = report['rounds'][0]['experiments'][0]
                 self.assertTrue(experiment.get('commit'), experiment)
                 self.assertEqual(experiment['evaluation'], {'valid': False, 'reason': 'index flags hide worktree changes'})
                 self.assertEqual(report['best'], 0)
 
-    def hidden_score_run(self, command, evaluate=None):
-        # Run one exec-enabled candidate that also makes a tracked change; return its evaluation.
-        steps = iter([{'tool': 'run', 'argv': ['sh', '-c', command]},
-                      {'tool': 'write', 'path': 'notes.txt', 'content': 'tracked change'},
-                      {'tool': 'done', 'summary': 'done'}])
+    def run_steps(self, steps, allow_exec=False, **config):
+        """One candidate taking the given worker steps; returns (report, runner)."""
+        steps = iter(steps)
         def answer(router, role, prompt, cwd, attempt=0, task=None):
             router.budget.claim()
-            if role == 'reviewer': return {'approve': True}
             return next(steps)
-        config = self.config(parallel=1, rounds=1, **({'evaluate': evaluate} if evaluate else {}))
-        runner = Run(self.root, config, 'Improve', allow_exec=True)
+        runner = Run(self.root, self.config(**{'parallel': 1, 'rounds': 1, **config}), 'Improve', allow_exec=allow_exec)
         with patch.object(Router, 'ask', answer), contextlib.redirect_stdout(io.StringIO()):
-            report = runner.run()
+            return runner.run(), runner
+
+    def hidden_score_run(self, command, evaluate=None):
+        # Run one exec-enabled candidate that also makes a tracked change; return its evaluation.
+        report, _ = self.run_steps([{'tool': 'run', 'argv': ['sh', '-c', command]},
+                                    {'tool': 'write', 'path': 'notes.txt', 'content': 'tracked change'},
+                                    {'tool': 'done', 'summary': 'done'}],
+                                   allow_exec=True, **({'evaluate': evaluate} if evaluate else {}))
         self.assertEqual(report['best'], 0)
         return report['rounds'][0]['experiments'][0]['evaluation']
 
@@ -139,9 +113,6 @@ class SandboxIntegrityTests(RepoCase):
         hide = r"""h="$(git rev-parse --absolute-git-dir)/stub" && printf "#!/bin/sh\nprintf 'tok\\0'\n" > "$h" && chmod +x "$h" && git config core.fsmonitor "$h" && git status --porcelain > /dev/null && git update-index --fsmonitor-valid value.txt && echo 999 > value.txt"""
         evaluation = self.hidden_score_run(hide)
         self.assertEqual(evaluation, {'valid': False, 'reason': 'worker changed repository configuration'})
-
-    def common_dir(self):
-        return (self.root / '.git').resolve()  # RepoCase is a plain repository
 
     def config_value(self, key):
         return git(self.root, 'config', '--get', key, ok=(0, 1))
@@ -189,13 +160,8 @@ class SandboxIntegrityTests(RepoCase):
         attributes = self.common_dir() / 'info/attributes'
         attributes.write_text('*.bin binary\n')
         change = 'git config core.autocrlf true && echo "* text" >> "$(git rev-parse --git-common-dir)/info/attributes"'
-        steps = iter([{'tool': 'run', 'argv': ['sh', '-c', change]}, {'tool': 'done', 'summary': 'done'}])
-        def answer(router, role, prompt, cwd, attempt=0, task=None):
-            router.budget.claim()
-            return next(steps)
-        runner = Run(self.root, self.config(parallel=1, rounds=1), 'Improve', allow_exec=True)
-        with patch.object(Router, 'ask', answer), contextlib.redirect_stdout(io.StringIO()):
-            report = runner.run()
+        report, _ = self.run_steps([{'tool': 'run', 'argv': ['sh', '-c', change]}, {'tool': 'done', 'summary': 'done'}],
+                                   allow_exec=True)
         experiment = report['rounds'][0]['experiments'][0]
         self.assertEqual(experiment['evaluation'], {'valid': False, 'reason': 'no changes'})
         self.assertEqual(self.restored_keys(experiment), ['local:core.autocrlf', 'info/attributes'])
@@ -483,15 +449,9 @@ class SandboxIntegrityTests(RepoCase):
         return {'checks': [[sys.executable, 'check.py']], 'evaluate': [sys.executable, '-I', 'evaluate.py']}
 
     def hiding_candidate(self, hide):
-        steps = [{'tool': 'write', 'path': 'lib.py', 'content': self.hiding_lib(hide)},
-                 {'tool': 'write', 'path': 'value.txt', 'content': '1'}, {'tool': 'done', 'summary': 'done'}]
-        def answer(router, role, prompt, cwd, attempt=0, task=None):
-            router.budget.claim()
-            if role == 'reviewer': return {'approve': True}
-            return steps.pop(0)
-        runner = Run(self.root, self.config(parallel=1, rounds=1, **self.checked_config()), 'Improve')
-        with patch.object(Router, 'ask', answer), contextlib.redirect_stdout(io.StringIO()):
-            report = runner.run()
+        report, _ = self.run_steps([{'tool': 'write', 'path': 'lib.py', 'content': self.hiding_lib(hide)},
+                                    {'tool': 'write', 'path': 'value.txt', 'content': '1'}, {'tool': 'done', 'summary': 'done'}],
+                                   **self.checked_config())
         self.assertEqual(report['best'], 0)
         return report['rounds'][0]['experiments'][0]
 
@@ -529,14 +489,8 @@ class SandboxIntegrityTests(RepoCase):
         self.assertEqual(baseline, {'valid': False, 'reason': 'baseline evaluation modified source'})
 
     def test_restore_is_logged_when_the_candidate_ends_with_an_error(self):
-        steps = iter([{'tool': 'run', 'argv': ['sh', '-c', 'git config core.autocrlf true && echo "# x" >> evaluate.py']},
-                      {'tool': 'done', 'summary': 'done'}])
-        def answer(router, role, prompt, cwd, attempt=0, task=None):
-            router.budget.claim()
-            return next(steps)
-        runner = Run(self.root, self.config(parallel=1, rounds=1), 'Improve', allow_exec=True)
-        with patch.object(Router, 'ask', answer), contextlib.redirect_stdout(io.StringIO()):
-            report = runner.run()
+        report, _ = self.run_steps([{'tool': 'run', 'argv': ['sh', '-c', 'git config core.autocrlf true && echo "# x" >> evaluate.py']},
+                                    {'tool': 'done', 'summary': 'done'}], allow_exec=True)
         experiment = report['rounds'][0]['experiments'][0]
         self.assertEqual(experiment['error'], 'protected files changed')
         self.assertEqual(self.restored_keys(experiment), ['local:core.autocrlf'])
@@ -688,17 +642,10 @@ class SandboxIntegrityTests(RepoCase):
         stub.write_text("#!/bin/sh\nprintf 'tok\\0'\n")
         stub.chmod(0o755)
         git(self.root, 'config', 'core.fsmonitor', str(stub))
-        steps = iter([{'tool': 'run', 'argv': ['sh', '-c', 'git status --porcelain > /dev/null && '
-                                                'git update-index --fsmonitor-valid value.txt && echo 7 > value.txt']},
-                      {'tool': 'write', 'path': 'notes.txt', 'content': 'tracked change'},
-                      {'tool': 'done', 'summary': 'done'}])
-        def answer(router, role, prompt, cwd, attempt=0, task=None):
-            router.budget.claim()
-            if role == 'reviewer': return {'approve': True}
-            return next(steps)
-        runner = Run(self.root, self.config(parallel=1, rounds=1), 'Improve', allow_exec=True)
-        with patch.object(Router, 'ask', answer), contextlib.redirect_stdout(io.StringIO()):
-            report = runner.run()
+        report, _ = self.run_steps([{'tool': 'run', 'argv': ['sh', '-c', 'git status --porcelain > /dev/null && '
+                                                             'git update-index --fsmonitor-valid value.txt && echo 7 > value.txt']},
+                                    {'tool': 'write', 'path': 'notes.txt', 'content': 'tracked change'},
+                                    {'tool': 'done', 'summary': 'done'}], allow_exec=True)
         experiment = report['rounds'][0]['experiments'][0]
         self.assertEqual(experiment['evaluation'].get('score'), 7, experiment['evaluation'])
         self.assertEqual(git(self.root, 'show', experiment['commit'] + ':value.txt'), '7')
@@ -719,16 +666,9 @@ class SandboxIntegrityTests(RepoCase):
         self.commit_submodule()
         code = ("import json\nfrom pathlib import Path\nbonus=Path('sub/bonus.txt')\n"
                 "print(json.dumps({'score':int(Path('value.txt').read_text())+(int(bonus.read_text()) if bonus.exists() else 0)}))\n")
-        steps = iter([{'tool': 'write', 'path': 'sub/bonus.txt', 'content': '999'},
-                      {'tool': 'write', 'path': 'notes.txt', 'content': 'tracked change'},
-                      {'tool': 'done', 'summary': 'done'}])
-        def answer(router, role, prompt, cwd, attempt=0, task=None):
-            router.budget.claim()
-            if role == 'reviewer': return {'approve': True}
-            return next(steps)
-        runner = Run(self.root, self.config(evaluate=[sys.executable, '-c', code], parallel=1, rounds=1), 'Improve')
-        with patch.object(Router, 'ask', answer), contextlib.redirect_stdout(io.StringIO()):
-            report = runner.run()
+        report, _ = self.run_steps([{'tool': 'write', 'path': 'sub/bonus.txt', 'content': '999'},
+                                    {'tool': 'write', 'path': 'notes.txt', 'content': 'tracked change'},
+                                    {'tool': 'done', 'summary': 'done'}], evaluate=[sys.executable, '-c', code])
         self.assertEqual(report['best'], 0)
         ws = Workspace(self.root, [])
         for name in ('sub', 'sub/bonus.txt', './SUB/x.txt'):
@@ -740,17 +680,9 @@ class SandboxIntegrityTests(RepoCase):
         self.commit_submodule()
         code = ("import json\nfrom pathlib import Path\nbonus=Path('sub/bonus.txt')\n"
                 "print(json.dumps({'score':int(Path('value.txt').read_text())+(int(bonus.read_text()) if bonus.exists() else 0)}))\n")
-        steps = iter([{'tool': 'run', 'argv': ['sh', '-c', 'echo 999 > sub/bonus.txt']},
-                      {'tool': 'write', 'path': 'notes.txt', 'content': 'tracked change'},
-                      {'tool': 'done', 'summary': 'done'}])
-        def answer(router, role, prompt, cwd, attempt=0, task=None):
-            router.budget.claim()
-            if role == 'reviewer': return {'approve': True}
-            return next(steps)
-        runner = Run(self.root, self.config(evaluate=[sys.executable, '-c', code], parallel=1, rounds=1), 'Improve',
-                     allow_exec=True)
-        with patch.object(Router, 'ask', answer), contextlib.redirect_stdout(io.StringIO()):
-            report = runner.run()
+        report, _ = self.run_steps([{'tool': 'run', 'argv': ['sh', '-c', 'echo 999 > sub/bonus.txt']},
+                                    {'tool': 'write', 'path': 'notes.txt', 'content': 'tracked change'},
+                                    {'tool': 'done', 'summary': 'done'}], allow_exec=True, evaluate=[sys.executable, '-c', code])
         experiment = report['rounds'][0]['experiments'][0]
         self.assertEqual(experiment['evaluation'], {'valid': False, 'reason': 'files inside a submodule directory'})
         self.assertEqual(report['best'], 0)
